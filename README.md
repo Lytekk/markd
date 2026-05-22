@@ -18,7 +18,7 @@ Published publicly because it solves a real problem and a few people asked. If i
 - Tab session persistence — tabs and scroll position survive Ctrl+R refresh and app restarts
 - Per-tab scroll position remembered across tab switches
 - External file modification detection — prompts to reload when a file changes on disk
-- Recent files, folder-tree sidebar, outline panel with scroll-aware active heading highlight
+- Recent files, folder-tree sidebar, outline panel with scroll-aware active heading highlight, and collapsible heading sections
 - Drag-to-reorder document sections from the outline sidebar (or keyboard Alt+Up/Down)
 - Find + replace (Ctrl+F / Ctrl+H) with regex, whole-word, and case-sensitive toggles
 - F3 / Shift+F3 to find next/previous without reopening the panel; Ctrl+F3 to select word and search
@@ -46,6 +46,7 @@ Published publicly because it solves a real problem and a few people asked. If i
 | Ctrl+Shift+S | Save all open tabs |
 | Ctrl+W | Close tab |
 | Ctrl+T | New tab |
+| Ctrl+Shift+T | Reopen last closed tab |
 | Ctrl+Tab / Ctrl+Shift+Tab | Cycle tabs |
 | Ctrl+R | Reload active tab from disk |
 | Ctrl+Shift+R | Reload all tabs from disk |
@@ -55,6 +56,7 @@ Published publicly because it solves a real problem and a few people asked. If i
 | Ctrl+H | Find and replace |
 | Ctrl+F3 | Find word at cursor |
 | F3 / Shift+F3 | Find next / previous |
+| Ctrl+Shift+X | Toggle strikethrough |
 | Alt+1 | Sidebar: Files |
 | Alt+2 | Sidebar: Outline |
 | Alt+Up/Down | Reorder section (in outline) |
