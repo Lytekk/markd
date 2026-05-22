@@ -23,6 +23,49 @@ interface PersistedState {
   activeTabId: string;
 }
 
+export interface ClosedTab {
+  id: string;
+  fileName: string;
+  filePath: string | null;
+  scrollTop: number;
+  // content is non-null only for untitled tabs (no filePath to re-read from)
+  content: string | null;
+}
+
+export const CLOSED_STACK_KEY = "markd-closed-tabs";
+export const CLOSED_STACK_CAP = 10;
+
+export function loadClosedStack(): ClosedTab[] {
+  try {
+    const raw = localStorage.getItem(CLOSED_STACK_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(
+        (t): t is ClosedTab =>
+          t &&
+          typeof t.id === "string" &&
+          typeof t.fileName === "string" &&
+          (typeof t.filePath === "string" || t.filePath === null) &&
+          typeof t.scrollTop === "number" &&
+          (typeof t.content === "string" || t.content === null),
+      )
+      .slice(-CLOSED_STACK_CAP);
+  } catch {
+    return [];
+  }
+}
+
+export function persistClosedStack(stack: ClosedTab[]): void {
+  const trimmed = stack.slice(-CLOSED_STACK_CAP);
+  try {
+    localStorage.setItem(CLOSED_STACK_KEY, JSON.stringify(trimmed));
+  } catch {
+    // QuotaExceededError — untitled tabs with large content could blow the budget
+  }
+}
+
 const STORAGE_KEY = "markd-tabs";
 
 const VALID_EXTENSIONS = [".md", ".markdown", ".mdx", ".txt"];
