@@ -1,4 +1,5 @@
 import StarterKit from "@tiptap/starter-kit";
+import { Extension } from "@tiptap/core";
 import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
 import Table from "@tiptap/extension-table";
 import TableRow from "@tiptap/extension-table-row";
@@ -14,6 +15,15 @@ import { ImagePasteDrop } from "@/lib/image-paste-drop";
 import { ResolvedImage } from "@/lib/resolved-image";
 
 const lowlight = createLowlight(common);
+
+const StrikeShortcut = Extension.create({
+  name: "strikeShortcut",
+  addKeyboardShortcuts() {
+    return {
+      "Mod-Shift-x": () => this.editor.commands.toggleStrike(),
+    };
+  },
+});
 
 export interface ExtensionOptions {
   getFileDir: () => string;
@@ -49,5 +59,6 @@ export function getExtensions(opts: ExtensionOptions) {
     SearchAndReplace,
     ImagePasteDrop,
     SectionCommands,
+    StrikeShortcut,
   ];
 }
