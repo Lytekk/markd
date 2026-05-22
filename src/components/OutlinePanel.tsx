@@ -1,10 +1,13 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import type { Editor } from "@tiptap/react";
 import { extractHeadings, type HeadingEntry } from "@/lib/section-commands";
+import { computeHiddenSet, hasChildren } from "@/lib/outline-tree";
 
 interface OutlinePanelProps {
   editor: Editor | null;
 }
+
+const COLLAPSED_KEY = "markd-outline-collapsed";
 
 export function OutlinePanel({ editor }: OutlinePanelProps) {
   const [headings, setHeadings] = useState<HeadingEntry[]>([]);
@@ -13,6 +16,36 @@ export function OutlinePanel({ editor }: OutlinePanelProps) {
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
   const activeItemRef = useRef<HTMLDivElement>(null);
   const headingsRef = useRef<HeadingEntry[]>([]);
+
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem(COLLAPSED_KEY);
+      if (!raw) return new Set();
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? new Set(parsed) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
+
+  const toggleCollapsed = useCallback((id: string) => {
+    setCollapsedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      try {
+        localStorage.setItem(COLLAPSED_KEY, JSON.stringify(Array.from(next)));
+      } catch {
+        // Quota exceeded — collapse state is non-critical, drop silently
+      }
+      return next;
+    });
+  }, []);
+
+  const hiddenSet = useMemo(
+    () => computeHiddenSet(headings, collapsedIds),
+    [headings, collapsedIds],
+  );
 
   useEffect(() => {
     if (!editor) return;
@@ -160,28 +193,49 @@ export function OutlinePanel({ editor }: OutlinePanelProps) {
 
   return (
     <div className="markd-outline">
-      {headings.map((heading, index) => (
-        <div
-          key={heading.id}
-          className={`markd-outline-item ${index === activeHeadingIndex ? "active" : ""} ${index === draggingIndex ? "dragging" : ""} ${index === dragOverIndex ? "drag-over" : ""}`}
-          style={{ paddingLeft: 16 + (heading.level - minLevel) * 16 }}
-          onClick={() => handleClick(heading.pos)}
-          aria-current={index === activeHeadingIndex ? "true" : undefined}
-          ref={index === activeHeadingIndex ? activeItemRef : undefined}
-          draggable
-          onDragStart={(e) => handleDragStart(e, index)}
-          onDragEnd={handleDragEnd}
-          onDragEnter={(e) => handleDragEnter(e, index)}
-          onDragOver={handleDragOver}
-          onDragLeave={() => setDragOverIndex(null)}
-          onDrop={(e) => handleDrop(e, index)}
-          tabIndex={0}
-          onKeyDown={(e) => handleKeyDown(e, index)}
-        >
-          <span className="markd-outline-level">H{heading.level}</span>
-          <span className="markd-outline-text">{heading.text}</span>
-        </div>
-      ))}
+      {headings.map((heading, index) => {
+        if (hiddenSet.has(index)) return null;
+        const isParent = hasChildren(headings, index);
+        const isCollapsed = collapsedIds.has(heading.id);
+        return (
+          <div
+            key={heading.id}
+            className={`markd-outline-item ${index === activeHeadingIndex ? "active" : ""} ${index === draggingIndex ? "dragging" : ""} ${index === dragOverIndex ? "drag-over" : ""}`}
+            style={{ paddingLeft: 16 + (heading.level - minLevel) * 16 }}
+            onClick={() => handleClick(heading.pos)}
+            aria-current={index === activeHeadingIndex ? "true" : undefined}
+            ref={index === activeHeadingIndex ? activeItemRef : undefined}
+            draggable
+            onDragStart={(e) => handleDragStart(e, index)}
+            onDragEnd={handleDragEnd}
+            onDragEnter={(e) => handleDragEnter(e, index)}
+            onDragOver={handleDragOver}
+            onDragLeave={() => setDragOverIndex(null)}
+            onDrop={(e) => handleDrop(e, index)}
+            tabIndex={0}
+            onKeyDown={(e) => handleKeyDown(e, index)}
+          >
+            {isParent ? (
+              <button
+                type="button"
+                className="markd-outline-caret"
+                aria-label={isCollapsed ? "Expand section" : "Collapse section"}
+                aria-expanded={!isCollapsed}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleCollapsed(heading.id);
+                }}
+              >
+                {isCollapsed ? "▸" : "▾"}
+              </button>
+            ) : (
+              <span className="markd-outline-caret markd-outline-caret-empty" aria-hidden="true" />
+            )}
+            <span className="markd-outline-level">H{heading.level}</span>
+            <span className="markd-outline-text">{heading.text}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }
