@@ -23,6 +23,49 @@ interface PersistedState {
   activeTabId: string;
 }
 
+export interface ClosedTab {
+  id: string;
+  fileName: string;
+  filePath: string | null;
+  scrollTop: number;
+  // content is non-null only for untitled tabs (no filePath to re-read from)
+  content: string | null;
+}
+
+export const CLOSED_STACK_KEY = "markd-closed-tabs";
+export const CLOSED_STACK_CAP = 10;
+
+export function loadClosedStack(): ClosedTab[] {
+  try {
+    const raw = localStorage.getItem(CLOSED_STACK_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(
+        (t): t is ClosedTab =>
+          t &&
+          typeof t.id === "string" &&
+          typeof t.fileName === "string" &&
+          (typeof t.filePath === "string" || t.filePath === null) &&
+          typeof t.scrollTop === "number" &&
+          (typeof t.content === "string" || t.content === null),
+      )
+      .slice(-CLOSED_STACK_CAP);
+  } catch {
+    return [];
+  }
+}
+
+export function persistClosedStack(stack: ClosedTab[]): void {
+  const trimmed = stack.slice(-CLOSED_STACK_CAP);
+  try {
+    localStorage.setItem(CLOSED_STACK_KEY, JSON.stringify(trimmed));
+  } catch {
+    // QuotaExceededError — untitled tabs with large content could blow the budget
+  }
+}
+
 const STORAGE_KEY = "markd-tabs";
 
 const VALID_EXTENSIONS = [".md", ".markdown", ".mdx", ".txt"];
@@ -109,6 +152,9 @@ export function useFileTabs() {
   tabsRef.current = tabs;
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
+  const [closedStack, setClosedStack] = useState<ClosedTab[]>(() => loadClosedStack());
+  const closedStackRef = useRef(closedStack);
+  closedStackRef.current = closedStack;
 
   const registerGetMarkdown = useCallback((fn: () => string) => {
     getMarkdownRef.current = fn;
@@ -217,9 +263,37 @@ export function useFileTabs() {
     return tab;
   }, [snapshotActiveTab]);
 
+  const pushClosedTab = useCallback((tab: FileTab) => {
+    // Skip empty untitled scratch tabs — they aren't worth remembering
+    if (!tab.filePath && tab.content === "" && tab.fileName === "Untitled" && !tab.isDirty) {
+      return;
+    }
+    const entry: ClosedTab = {
+      id: tab.id,
+      fileName: tab.fileName,
+      filePath: tab.filePath,
+      scrollTop: tab.scrollTop,
+      // For untitled (no filePath), remember content so we can restore it. For named files,
+      // content is re-read from disk by the caller, so don't waste localStorage on it.
+      content: tab.filePath ? null : tab.content,
+    };
+    setClosedStack((prev) => {
+      const next = [...prev, entry].slice(-CLOSED_STACK_CAP);
+      persistClosedStack(next);
+      return next;
+    });
+  }, []);
+
   const closeTab = useCallback(
     (tabId: string): { switchTo: FileTab | null } => {
       const currentTabs = tabsRef.current;
+      const closing = currentTabs.find((t) => t.id === tabId);
+      if (closing && tabId === activeTabIdRef.current) {
+        const md = getMarkdownRef.current?.() ?? closing.content;
+        pushClosedTab({ ...closing, content: md });
+      } else if (closing) {
+        pushClosedTab(closing);
+      }
       if (currentTabs.length <= 1) {
         const fresh = createTab();
         setTabs([fresh]);
@@ -241,7 +315,7 @@ export function useFileTabs() {
       queueMicrotask(() => persistTabs(remaining, activeTabIdRef.current));
       return { switchTo: null };
     },
-    [],
+    [pushClosedTab],
   );
 
   const closeAllTabs = useCallback((): { switchTo: FileTab } => {
@@ -251,6 +325,50 @@ export function useFileTabs() {
     queueMicrotask(() => persistTabs([fresh], fresh.id));
     return { switchTo: fresh };
   }, []);
+
+  // Pops the most-recent closed tab. For untitled tabs, restore inline with cached content.
+  // For named files, return a sentinel populated with filePath — caller (App.tsx) is
+  // responsible for reading from disk and calling openInTab. NOTE: This split avoids
+  // bloating localStorage with file contents we can re-read from disk.
+  const reopenLastClosed = useCallback((): { tab: FileTab | null } => {
+    const stack = closedStackRef.current;
+    if (stack.length === 0) return { tab: null };
+    const entry = stack[stack.length - 1]!;
+    const remaining = stack.slice(0, -1);
+    setClosedStack(remaining);
+    persistClosedStack(remaining);
+
+    if (!entry.filePath) {
+      snapshotActiveTab();
+      const tab = createTab({
+        fileName: entry.fileName,
+        filePath: null,
+        content: entry.content ?? "",
+        savedContent: entry.content ?? "",
+        scrollTop: entry.scrollTop,
+        isDirty: (entry.content ?? "") !== "",
+      });
+      const newTabs = [...tabsRef.current, tab];
+      setTabs(newTabs);
+      setActiveTabId(tab.id);
+      queueMicrotask(() => persistTabs(newTabs, tab.id));
+      return { tab };
+    }
+
+    // Named file — caller (App.tsx) is responsible for reading from disk and
+    // calling openInTab. Return a sentinel with filePath populated.
+    return {
+      tab: {
+        id: entry.id,
+        fileName: entry.fileName,
+        filePath: entry.filePath,
+        content: "",
+        isDirty: false,
+        savedContent: "",
+        scrollTop: entry.scrollTop,
+      },
+    };
+  }, [snapshotActiveTab]);
 
   const markTabDirty = useCallback(
     (tabId?: string) => {
@@ -320,5 +438,7 @@ export function useFileTabs() {
     markTabSaved,
     hydrateTab,
     registerGetMarkdown,
+    closedStack,
+    reopenLastClosed,
   };
 }

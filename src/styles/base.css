@@ -771,6 +771,33 @@ body {
   font-size: 13px;
 }
 
+.markd-outline-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-right: 4px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+.markd-outline-caret:hover {
+  opacity: 1;
+}
+
+.markd-outline-caret-empty {
+  cursor: default;
+  pointer-events: none;
+}
+
 /* Recent Files */
 .markd-recent-files {
   padding: 4px 0;

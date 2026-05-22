@@ -386,6 +386,28 @@ export function App() {
     });
   }, [fileTabs.newTab, fileState.handleNew]);
 
+  const handleReopenClosedTab = useCallback(async () => {
+    const { tab } = fileTabs.reopenLastClosed();
+    if (!tab) return;
+    // Untitled tabs are inserted directly by reopenLastClosed; hydrate the editor.
+    if (!tab.filePath) {
+      fileState.restoreState(tab);
+      return;
+    }
+    // Named file — read from disk and route through openInTab.
+    try {
+      const content = await readFileByPath(tab.filePath);
+      const { tab: inserted } = fileTabs.openInTab(tab.fileName, tab.filePath, content);
+      fileState.restoreState(inserted);
+      requestAnimationFrame(() => {
+        const el = document.querySelector(".markd-editor-scroll") as HTMLElement | null;
+        if (el) el.scrollTop = tab.scrollTop;
+      });
+    } catch {
+      // File is gone — silently drop. The stack entry is already popped.
+    }
+  }, [fileTabs.reopenLastClosed, fileTabs.openInTab, fileState.restoreState]);
+
   const cycleTab = useCallback(
     (direction: 1 | -1) => {
       const t = fileTabs.tabs;
@@ -526,9 +548,12 @@ export function App() {
             cycleTab(e.shiftKey ? -1 : 1);
             break;
           case "t":
-            if (e.shiftKey) break;
             e.preventDefault();
-            handleNewTab();
+            if (e.shiftKey) {
+              void handleReopenClosedTab();
+            } else {
+              handleNewTab();
+            }
             break;
           case "=":
           case "+":
@@ -583,6 +608,7 @@ export function App() {
     handleCloseTab,
     handleCloseAllTabs,
     handleNewTab,
+    handleReopenClosedTab,
     cycleTab,
     fileTabs.activeTabId,
     zoomIn,
