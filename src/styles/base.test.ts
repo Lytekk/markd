@@ -86,4 +86,21 @@ describe("base.css layout", () => {
   test("the code toolbar is screen-only — hidden in print", () => {
     expect(css).toMatch(/@media print[\s\S]*\.markd-code-toolbar[\s\S]*display:\s*none/);
   });
+
+  test("the command palette sits near the top (Spotlight-style) with a bounded, scrollable list", () => {
+    const palette = ruleBody(".markd-command-palette");
+    expect(palette, "missing `.markd-command-palette` rule").not.toBeNull();
+    expect(palette).toMatch(/align-self:\s*flex-start/);
+    expect(palette).toMatch(/max-height:/);
+
+    const list = ruleBody(".markd-command-list");
+    expect(list, "missing `.markd-command-list` rule").not.toBeNull();
+    expect(list).toMatch(/overflow-y:\s*auto/);
+  });
+
+  test("the highlighted command row is visually distinct", () => {
+    const selected = ruleBody(".markd-command-item.selected");
+    expect(selected, "missing `.markd-command-item.selected` rule").not.toBeNull();
+    expect(selected).toMatch(/background:/);
+  });
 });

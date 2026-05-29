@@ -13,6 +13,7 @@ import { FindReplace } from "@/components/FindReplace";
 import { SourceEditor } from "@/components/SourceEditor";
 import { ContextMenu } from "@/components/ContextMenu";
 import { ModalHost } from "@/components/ModalHost";
+import { CommandPalette } from "@/components/CommandPalette";
 import { useRecentFiles } from "@/hooks/use-recent-files";
 import { useFullWidth } from "@/hooks/use-full-width";
 import { useLineNumbers } from "@/hooks/use-line-numbers";
@@ -37,6 +38,7 @@ export function App() {
   const [heldModifier, setHeldModifier] = useState<"ctrl" | "alt" | null>(null);
   const [findReplaceOpen, setFindReplaceOpen] = useState(false);
   const [findReplaceShowReplace, setFindReplaceShowReplace] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const lastSearchTermRef = useRef("");
   const [sourceMode, setSourceMode] = useState(false);
   const [sourceMarkdown, setSourceMarkdown] = useState("");
@@ -602,6 +604,13 @@ export function App() {
             e.preventDefault();
             resetZoom();
             break;
+          case "p":
+            // Ctrl+Shift+P only — bare Ctrl+P stays the webview's native print.
+            if (e.shiftKey) {
+              e.preventDefault();
+              setCommandPaletteOpen((o) => !o);
+            }
+            break;
         }
       }
 
@@ -972,6 +981,47 @@ export function App() {
       </div>
       <ContextMenu editor={editor} />
       <ModalHost />
+      <CommandPalette
+        open={commandPaletteOpen}
+        onClose={() => setCommandPaletteOpen(false)}
+        commands={[
+          { id: "new", label: "New File", hint: "Ctrl+N", keywords: "create blank", run: fileState.handleNew },
+          { id: "new-tab", label: "New Tab", hint: "Ctrl+T", run: handleNewTab },
+          { id: "open", label: "Open File…", hint: "Ctrl+O", keywords: "load", run: fileState.handleOpen },
+          { id: "open-folder", label: "Open Folder…", keywords: "directory workspace", run: fileState.handleOpenFolder },
+          { id: "save", label: "Save", hint: "Ctrl+S", run: fileState.handleSave },
+          { id: "save-as", label: "Save As…", hint: "Ctrl+Shift+S", run: fileState.handleSaveAs },
+          { id: "reopen-tab", label: "Reopen Closed Tab", hint: "Ctrl+Shift+T", keywords: "restore", run: handleReopenClosedTab },
+          { id: "close-tab", label: "Close Tab", hint: "Ctrl+W", run: () => handleCloseTab(fileTabs.activeTabId) },
+          { id: "close-all", label: "Close All Tabs", hint: "Ctrl+Shift+W", run: handleCloseAllTabs },
+          { id: "find", label: "Find", hint: "Ctrl+F", keywords: "search", run: () => { setFindReplaceShowReplace(false); setFindReplaceOpen(true); window.dispatchEvent(new Event("markd:find-focus")); } },
+          { id: "replace", label: "Find and Replace", hint: "Ctrl+H", keywords: "search substitute", run: () => { setFindReplaceShowReplace(true); setFindReplaceOpen(true); } },
+          { id: "toggle-source", label: "Toggle Source / Rendered View", hint: "Ctrl+/", keywords: "markdown raw code", run: handleToggleSource },
+          { id: "toggle-theme", label: "Toggle Theme (Day / Night)", keywords: "dark light appearance", run: handleThemeToggle },
+          { id: "full-width", label: "Toggle Full Width", keywords: "column wide narrow", run: toggleFullWidth },
+          { id: "line-numbers", label: "Toggle Line Numbers", keywords: "gutter", run: toggleLineNumbers },
+          { id: "sidebar", label: "Toggle Sidebar", hint: "Ctrl+\\", keywords: "files outline panel", run: () => setSidebarCollapsed((c) => !c) },
+          { id: "export-html", label: "Export as HTML…", keywords: "save download", run: handleExportHtml },
+          { id: "export-pdf", label: "Export as PDF…", keywords: "print save download", run: exportAsPdf },
+          { id: "zoom-in", label: "Zoom In", hint: "Ctrl+=", run: zoomIn },
+          { id: "zoom-out", label: "Zoom Out", hint: "Ctrl+-", run: zoomOut },
+          { id: "zoom-reset", label: "Reset Zoom", hint: "Ctrl+0", run: resetZoom },
+          ...(editor
+            ? [
+                { id: "h1", label: "Heading 1", keywords: "title section", run: () => editor.chain().focus().toggleHeading({ level: 1 }).run() },
+                { id: "h2", label: "Heading 2", keywords: "section", run: () => editor.chain().focus().toggleHeading({ level: 2 }).run() },
+                { id: "h3", label: "Heading 3", keywords: "section", run: () => editor.chain().focus().toggleHeading({ level: 3 }).run() },
+                { id: "bullet", label: "Bullet List", keywords: "unordered", run: () => editor.chain().focus().toggleBulletList().run() },
+                { id: "ordered", label: "Numbered List", keywords: "ordered", run: () => editor.chain().focus().toggleOrderedList().run() },
+                { id: "task", label: "Task List", keywords: "checkbox todo", run: () => editor.chain().focus().toggleTaskList().run() },
+                { id: "quote", label: "Blockquote", keywords: "citation", run: () => editor.chain().focus().toggleBlockquote().run() },
+                { id: "code-block", label: "Code Block", keywords: "fenced pre", run: () => editor.chain().focus().toggleCodeBlock().run() },
+                { id: "table", label: "Insert Table", keywords: "grid", run: () => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run() },
+                { id: "hr", label: "Horizontal Rule", keywords: "divider separator", run: () => editor.chain().focus().setHorizontalRule().run() },
+              ]
+            : []),
+        ]}
+      />
     </div>
   );
 }

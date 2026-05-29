@@ -1006,6 +1006,77 @@ body {
   color: var(--danger-color, #d9534f);
 }
 
+/* Command palette (Ctrl+Shift+P) — fuzzy launcher. Reuses .markd-modal-backdrop
+   but sits near the top (Spotlight-style) instead of centered. */
+.markd-command-palette {
+  align-self: flex-start;
+  margin-top: 12vh;
+  background: var(--bg-color, #fff);
+  color: var(--text-color);
+  border: 1px solid var(--border-color, rgba(0, 0, 0, 0.12));
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  width: min(560px, calc(100vw - 64px));
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.markd-command-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 14px 16px;
+  font-size: 15px;
+  font-family: inherit;
+  color: var(--text-color);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border-color, rgba(0, 0, 0, 0.12));
+  outline: none;
+}
+
+.markd-command-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+}
+
+.markd-command-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.markd-command-item.selected {
+  background: var(--primary-color, #4a90d9);
+  color: #fff;
+}
+
+.markd-command-hint {
+  font-size: 11px;
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.markd-command-item.selected .markd-command-hint {
+  opacity: 0.85;
+}
+
+.markd-command-empty {
+  padding: 16px 12px;
+  font-size: 13px;
+  opacity: 0.6;
+  text-align: center;
+}
+
 /* Keyboard focus visibility — the button resets strip the UA outline, leaving
    keyboard/AT users with no focus indicator on the chrome. Restore a ring via
    :focus-visible (mouse users are unaffected). #write is intentionally excluded
