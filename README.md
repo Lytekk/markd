@@ -59,6 +59,7 @@ Published publicly because it solves a real problem and a few people asked. If i
 | F3 / Shift+F3 | Find next / previous |
 | Ctrl+Shift+X | Toggle strikethrough |
 | Ctrl+Shift+P | Command palette |
+| Ctrl+Space | Insert snippet (customizable) |
 | Ctrl+K | Add / edit link |
 | Alt+1 | Sidebar: Files |
 | Alt+2 | Sidebar: Outline |
