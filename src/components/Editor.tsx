@@ -40,29 +40,67 @@ export function Editor({ editor, focusMode }: EditorProps) {
     editor?.commands.setFocusMode(focusMode);
   }, [editor, focusMode]);
 
-  // While focus mode is on, scrolling re-targets the crisp block to the one
-  // centered in the viewport (reading focus), overriding the caret until the
-  // caret moves again (nextScrollPos clears it on selection change). rAF-
-  // coalesced to one update per frame.
+  // Reading focus: while focus mode is on, scrolling and hovering both
+  // re-target the crisp block to where the user is looking — the viewport
+  // centre on scroll, the block under the pointer on hover. Both feed
+  // setFocusScrollPos; a caret move clears it (see nextScrollPos). Priority:
+  // typing / caret movement wins over the mouse — hover is suppressed for a
+  // short window after any caret activity, so an incidental mouse move can't
+  // steal focus mid-edit. Scroll is NOT suppressed (it intentionally overrides
+  // the caret). rAF-coalesced; hover is deduped to the top-level block.
   useEffect(() => {
     if (!editor || !focusMode) return;
     const scroller = scrollRef.current;
     if (!scroller) return;
+
+    const TYPING_PRIORITY_MS = 500;
     let raf = 0;
+    let lastHoverBlock = -1;
+    let lastCaretActivity = 0;
+
+    const noteCaretActivity = ({ transaction }: { transaction: { docChanged: boolean; selectionSet: boolean } }) => {
+      // Real typing / caret moves only — the reading-focus updates dispatch a
+      // meta-only transaction (no doc change, no selection change).
+      if (transaction.docChanged || transaction.selectionSet) {
+        lastCaretActivity = performance.now();
+      }
+    };
+    editor.on("transaction", noteCaretActivity);
+
+    const blockAt = (left: number, top: number): { pos: number; blockStart: number } | null => {
+      const at = editor.view.posAtCoords({ left, top });
+      if (!at) return null;
+      const $pos = editor.state.doc.resolve(at.pos);
+      return { pos: at.pos, blockStart: $pos.depth > 0 ? $pos.before(1) : at.pos };
+    };
+
     const onScroll = () => {
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
         const rect = scroller.getBoundingClientRect();
-        const at = editor.view.posAtCoords({
-          left: rect.left + rect.width / 2,
-          top: rect.top + rect.height / 2,
-        });
-        if (at) editor.commands.setFocusScrollPos(at.pos);
+        const hit = blockAt(rect.left + rect.width / 2, rect.top + rect.height / 2);
+        if (hit) editor.commands.setFocusScrollPos(hit.pos);
       });
     };
+
+    const onMove = (e: MouseEvent) => {
+      const { clientX, clientY } = e;
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        if (performance.now() - lastCaretActivity < TYPING_PRIORITY_MS) return; // caret wins
+        const hit = blockAt(clientX, clientY);
+        if (!hit || hit.blockStart === lastHoverBlock) return;
+        lastHoverBlock = hit.blockStart;
+        editor.commands.setFocusScrollPos(hit.pos);
+      });
+    };
+
     scroller.addEventListener("scroll", onScroll, { passive: true });
+    scroller.addEventListener("mousemove", onMove, { passive: true });
     return () => {
+      editor.off("transaction", noteCaretActivity);
       scroller.removeEventListener("scroll", onScroll);
+      scroller.removeEventListener("mousemove", onMove);
       cancelAnimationFrame(raf);
     };
   }, [editor, focusMode]);
