@@ -70,14 +70,33 @@ export async function renderMermaid(
     m.initialize({
       startOnLoad: false,
       securityLevel: "strict",
+      // Don't let mermaid draw its "Syntax error in text" graphic into <body> on
+      // a bad diagram: it appends a temp <div id="d{id}"> to document.body and
+      // throws before removing it, orphaning a tall element that shifts the page.
+      suppressErrorRendering: true,
       theme: opts.theme ?? "default",
       ...(opts.themeVariables ? { themeVariables: opts.themeVariables } : {}),
     });
     const { svg } = await m.render(id, source);
     return { status: "done", svg };
   } catch (e) {
+    // mermaid throws after appending its temp render node to <body> (before its
+    // own cleanup runs), so remove the leftover ourselves — otherwise it orphans
+    // and shifts the page layout. See cleanupMermaidOrphan.
+    cleanupMermaidOrphan(id);
     return { status: "error", message: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/** Remove the temporary render element mermaid appends to document.body — a
+    wrapper `<div id="d{id}">` containing `<svg id="{id}">`. mermaid removes it
+    itself on success, but on a render error it throws first and leaves it behind
+    (mermaid.core.mjs render() catch re-throws before its cleanup). Belt-and-
+    suspenders alongside suppressErrorRendering. */
+function cleanupMermaidOrphan(id: string): void {
+  if (typeof document === "undefined") return;
+  document.getElementById("d" + id)?.remove();
+  document.getElementById(id)?.remove();
 }
 
 /**

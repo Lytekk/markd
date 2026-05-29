@@ -114,9 +114,31 @@ describe("renderMermaid (lazy import, never throws)", () => {
     const res = await renderMermaid("graph TD;A-->B;", "mmd-1", { load: () => Promise.resolve(m) });
     expect(res).toEqual({ status: "done", svg: "<svg/>" });
     expect(m.initialize).toHaveBeenCalledWith(
-      expect.objectContaining({ startOnLoad: false, securityLevel: "strict" }),
+      expect.objectContaining({ startOnLoad: false, securityLevel: "strict", suppressErrorRendering: true }),
     );
     expect(m.render).toHaveBeenCalledWith("mmd-1", "graph TD;A-->B;");
+  });
+
+  it("removes the orphan temp element mermaid leaves in <body> when a render throws", async () => {
+    // mermaid appends <div id="d{id}"><svg id="{id}"> to document.body, then on a
+    // syntax error throws BEFORE removing it (mermaid.core.mjs render catch), so
+    // it orphans a tall element that shifts the whole page layout up. We must
+    // clean it up ourselves (suppressErrorRendering stops the visible graphic; this
+    // removes the leftover node).
+    const id = "mmd-orphan";
+    const wrapper = document.createElement("div");
+    wrapper.id = "d" + id;
+    const inner = document.createElement("div");
+    inner.id = id;
+    wrapper.appendChild(inner);
+    document.body.appendChild(wrapper);
+
+    const m = fakeMermaid({ render: vi.fn().mockRejectedValue(new Error("Parse error")) });
+    const res = await renderMermaid("bad diagram", id, { load: () => Promise.resolve(m) });
+
+    expect(res.status).toBe("error");
+    expect(document.getElementById("d" + id)).toBeNull();
+    expect(document.getElementById(id)).toBeNull();
   });
 
   it("unwraps an ESM default export from the dynamic import", async () => {
