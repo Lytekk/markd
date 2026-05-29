@@ -74,16 +74,13 @@ export async function renderMermaid(
 }
 
 /**
- * Build the preview widget DOM for one mermaid block. `contenteditable=false`
- * so the rendered SVG is never treated as editable content. On a cache miss it
- * shows a loading placeholder and calls `onRequest` to trigger a render; the
- * error message is set via textContent so a diagram's error string can never
- * inject markup.
+ * Build the preview widget DOM for one mermaid block from the cached render.
+ * Pure: a cache miss shows a loading placeholder (the render is kicked by the
+ * plugin's view lifecycle, not here). `contenteditable=false` so the SVG is
+ * never editable; the error message is set via textContent so a diagram's error
+ * string can never inject markup.
  */
-export function createMermaidPreview(
-  cached: MermaidRender | undefined,
-  onRequest: () => void,
-): HTMLElement {
+export function createMermaidPreview(cached: MermaidRender | undefined): HTMLElement {
   const el = document.createElement("div");
   el.className = "markd-mermaid-preview";
   el.setAttribute("contenteditable", "false");
@@ -94,7 +91,6 @@ export function createMermaidPreview(
     ph.className = "markd-mermaid-loading";
     ph.textContent = "Rendering diagram…";
     el.appendChild(ph);
-    onRequest();
     return el;
   }
   if (cached.status === "error") {
@@ -159,14 +155,38 @@ function requestRender(source: string, view: EditorView, theme: string): void {
   });
 }
 
-/** One preview widget per mermaid block, attached just after the code block. */
-export function buildMermaidDecorations(doc: PmNode, onRequestFor: (source: string) => void): DecorationSet {
+/** Kick a render for every mermaid block in the doc. Driven by the plugin's
+    view lifecycle (initial + every update) so a render reliably starts — we
+    can't rely on props.decorations, which may run before the plugin view has
+    captured the EditorView (the "stuck on Rendering…" bug). */
+function kickMermaidRenders(view: EditorView, theme: string): void {
+  for (const b of findMermaidBlocks(view.state.doc)) {
+    requestRender(b.source, view, theme);
+  }
+}
+
+/** Cache-status tag baked into the widget key so PM rebuilds the widget when a
+    render resolves (pending -> done/error). A stable key makes ProseMirror reuse
+    the stale placeholder DOM and never re-render (prosemirror-view compares
+    spec.key) — which is why a diagram previously only appeared after a source
+    toggle forced a full re-parse. */
+function statusTag(c: Map<string, MermaidRender>, source: string): string {
+  const r = c.get(source);
+  return r ? r.status : "pending";
+}
+
+/** One preview widget per mermaid block, attached just after the code block.
+    `c` defaults to the shared render cache; tests inject their own. */
+export function buildMermaidDecorations(
+  doc: PmNode,
+  c: Map<string, MermaidRender> = cache,
+): DecorationSet {
   const decorations = findMermaidBlocks(doc).map((b) =>
-    Decoration.widget(
-      b.pos + b.nodeSize,
-      () => createMermaidPreview(cache.get(b.source), () => onRequestFor(b.source)),
-      { side: 1, key: `mermaid-${b.pos}`, ignoreSelection: true },
-    ),
+    Decoration.widget(b.pos + b.nodeSize, () => createMermaidPreview(c.get(b.source)), {
+      side: 1,
+      key: `mermaid-${b.pos}-${statusTag(c, b.source)}`,
+      ignoreSelection: true,
+    }),
   );
   return DecorationSet.create(doc, decorations);
 }
@@ -175,27 +195,28 @@ export const MermaidPreview = Extension.create({
   name: "mermaidPreview",
 
   addProseMirrorPlugins() {
-    let pmView: EditorView | null = null;
     const currentTheme = () =>
       typeof document !== "undefined" && document.documentElement.getAttribute("data-theme") === "night"
         ? "dark"
         : "default";
-    const onRequestFor = (source: string) => {
-      if (pmView) requestRender(source, pmView, currentTheme());
-    };
     return [
       new Plugin({
         key: mermaidKey,
         view(editorView) {
-          pmView = editorView;
+          // Kick renders for the initial document. props.decorations may already
+          // have run before any view was captured, so the plugin-view lifecycle
+          // is the reliable place to start the async render.
+          kickMermaidRenders(editorView, currentTheme());
           return {
-            destroy() {
-              pmView = null;
+            update(view) {
+              // Content loaded after init (setContent), edits, and the empty-tx
+              // redraw all reach here; requestRender self-guards on cache/pending.
+              kickMermaidRenders(view, currentTheme());
             },
           };
         },
         props: {
-          decorations: (state) => buildMermaidDecorations(state.doc, onRequestFor),
+          decorations: (state) => buildMermaidDecorations(state.doc),
         },
       }),
     ];
