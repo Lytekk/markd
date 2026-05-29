@@ -56,6 +56,34 @@ describe("buildFocusDecorations", () => {
     expect(count(set, "focus-near")).toBe(1); // block idx 3 (after the active run)
     expect(count(set, "focus-dimmed")).toBe(1); // block idx 4
   });
+
+  // A heading groups with the block directly below it. "Title" = nodeSize 7
+  // → heading [0,7), body [7,13), other [13,19).
+  const headingDoc = createTestDoc([
+    { type: "heading", text: "Title", level: 1 },
+    { type: "paragraph", text: "body" },
+    { type: "paragraph", text: "later" },
+  ]);
+
+  it("activates the block below a heading when the heading is focused", () => {
+    const set = buildFocusDecorations(headingDoc, 3, 3); // caret in the heading
+    const active = set
+      .find()
+      .filter((d) => classOf(d) === "focus-active")
+      .map((d) => d.from)
+      .sort((a, b) => a - b);
+    expect(active).toEqual([0, 7]); // heading + body
+  });
+
+  it("activates the heading when the block directly below it is focused", () => {
+    const set = buildFocusDecorations(headingDoc, 9, 9); // caret in the body
+    const active = set
+      .find()
+      .filter((d) => classOf(d) === "focus-active")
+      .map((d) => d.from)
+      .sort((a, b) => a - b);
+    expect(active).toEqual([0, 7]); // body pulls in the heading above it
+  });
 });
 
 describe("nextScrollPos (scroll vs caret arbitration)", () => {

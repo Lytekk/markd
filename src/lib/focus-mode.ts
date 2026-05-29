@@ -35,19 +35,34 @@ export function isBlockActive(
 
 /** One node decoration per top-level block: focus-active or focus-dimmed. */
 export function buildFocusDecorations(doc: PmNode, from: number, to: number): DecorationSet {
-  const blocks: { from: number; to: number }[] = [];
-  doc.forEach((node, offset) => blocks.push({ from: offset, to: offset + node.nodeSize }));
+  const blocks: { from: number; to: number; isHeading: boolean }[] = [];
+  doc.forEach((node, offset) =>
+    blocks.push({
+      from: offset,
+      to: offset + node.nodeSize,
+      isHeading: node.type.name === "heading",
+    }),
+  );
 
-  const activeIndices = blocks
-    .map((b, i) => (isBlockActive(b.from, b.to, from, to) ? i : -1))
-    .filter((i) => i >= 0);
-  const activeSet = new Set(activeIndices);
+  // Base active blocks, then group a heading with the block directly below it:
+  // focusing either lights both, so a heading is never crisp on its own and
+  // its lead content stays readable with it.
+  const activeSet = new Set<number>();
+  blocks.forEach((b, i) => {
+    if (isBlockActive(b.from, b.to, from, to)) activeSet.add(i);
+  });
+  for (const i of [...activeSet]) {
+    if (blocks[i]?.isHeading && i + 1 < blocks.length) activeSet.add(i + 1);
+    if (i > 0 && blocks[i - 1]?.isHeading) activeSet.add(i - 1);
+  }
+
+  const activeIndices = [...activeSet];
   const minActive = activeIndices.length ? Math.min(...activeIndices) : -1;
   const maxActive = activeIndices.length ? Math.max(...activeIndices) : -1;
 
   // Three tiers so a thin one-line active block still has readable context:
-  // the active block(s) are crisp, the immediately adjacent blocks are
-  // feathered ('near'), and everything else is dimmed.
+  // active block(s) crisp, immediately adjacent blocks feathered ('near'),
+  // everything else dimmed.
   const decorations = blocks.map((b, i) => {
     let cls = "focus-dimmed";
     if (activeSet.has(i)) cls = "focus-active";
