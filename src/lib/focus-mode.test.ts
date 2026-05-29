@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isBlockActive, buildFocusDecorations } from "./focus-mode";
+import { isBlockActive, buildFocusDecorations, nextScrollPos } from "./focus-mode";
 import { createTestDoc } from "@/test/editor-helpers";
 
 // Top-level block layout for "first"/"second"/"third" paragraphs:
@@ -50,5 +50,23 @@ describe("buildFocusDecorations", () => {
     const set = buildFocusDecorations(doc, 3, 18); // spans blocks 1, 2, 3
     const active = set.find().filter((d) => classOf(d) === "focus-active");
     expect(active.length).toBe(3);
+  });
+});
+
+describe("nextScrollPos (scroll vs caret arbitration)", () => {
+  it("adopts a scroll position when one is provided", () => {
+    expect(nextScrollPos(null, { selectionSet: false, metaScrollPos: 42 })).toBe(42);
+  });
+
+  it("reverts to the caret (null) when the user moves the selection", () => {
+    expect(nextScrollPos(42, { selectionSet: true, metaScrollPos: undefined })).toBeNull();
+  });
+
+  it("preserves the scroll position across non-selection transactions", () => {
+    expect(nextScrollPos(42, { selectionSet: false, metaScrollPos: undefined })).toBe(42);
+  });
+
+  it("lets a scroll update win even in a transaction that also set the selection", () => {
+    expect(nextScrollPos(10, { selectionSet: true, metaScrollPos: 99 })).toBe(99);
   });
 });

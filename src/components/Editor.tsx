@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { EditorContent } from "@tiptap/react";
 import type { Editor as TiptapEditor } from "@tiptap/react";
 
@@ -9,6 +9,8 @@ interface EditorProps {
 }
 
 export function Editor({ editor, focusMode }: EditorProps) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+
   // Dispatch word/char stats on every transaction. `transaction` (not
   // `update`) is required because file loads use `setContent(md, false)`
   // which suppresses the `update` event — stats would stay at 0 after load.
@@ -38,10 +40,37 @@ export function Editor({ editor, focusMode }: EditorProps) {
     editor?.commands.setFocusMode(focusMode);
   }, [editor, focusMode]);
 
+  // While focus mode is on, scrolling re-targets the crisp block to the one
+  // centered in the viewport (reading focus), overriding the caret until the
+  // caret moves again (nextScrollPos clears it on selection change). rAF-
+  // coalesced to one update per frame.
+  useEffect(() => {
+    if (!editor || !focusMode) return;
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    let raf = 0;
+    const onScroll = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const rect = scroller.getBoundingClientRect();
+        const at = editor.view.posAtCoords({
+          left: rect.left + rect.width / 2,
+          top: rect.top + rect.height / 2,
+        });
+        if (at) editor.commands.setFocusScrollPos(at.pos);
+      });
+    };
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      scroller.removeEventListener("scroll", onScroll);
+      cancelAnimationFrame(raf);
+    };
+  }, [editor, focusMode]);
+
   if (!editor) return null;
 
   return (
-    <div className={`markd-editor-scroll ${focusMode ? "focus-mode" : ""}`}>
+    <div ref={scrollRef} className={`markd-editor-scroll ${focusMode ? "focus-mode" : ""}`}>
       <EditorContent editor={editor} />
     </div>
   );

@@ -47,13 +47,29 @@ export function buildFocusDecorations(doc: PmNode, from: number, to: number): De
   return DecorationSet.create(doc, decorations);
 }
 
-const focusModeKey = new PluginKey("focusMode");
+/**
+ * Arbitrate the focused position between scroll and caret across one
+ * transaction. A scroll update (metaScrollPos) always wins; otherwise a user
+ * selection change reverts focus to the caret (null); otherwise the previous
+ * scroll position is preserved. Pure so the scroll-vs-caret rule is testable.
+ */
+export function nextScrollPos(
+  prev: number | null,
+  opts: { selectionSet: boolean; metaScrollPos: number | null | undefined },
+): number | null {
+  if (typeof opts.metaScrollPos === "number") return opts.metaScrollPos;
+  if (opts.selectionSet) return null;
+  return prev;
+}
+
+const focusModeKey = new PluginKey<{ scrollPos: number | null }>("focusMode");
 
 declare module "@tiptap/core" {
   interface Commands<ReturnType> {
     focusMode: {
       setFocusMode: (enabled: boolean) => ReturnType;
       toggleFocusMode: () => ReturnType;
+      setFocusScrollPos: (pos: number | null) => ReturnType;
     };
   }
 }
@@ -87,17 +103,41 @@ export const FocusMode = Extension.create({
           refresh(editor);
           return true;
         },
+      // Driven by the editor's scroll listener: focus the block centered in the
+      // viewport. Stored in plugin state so a later caret move can clear it.
+      setFocusScrollPos:
+        (pos: number | null) =>
+        ({ tr, dispatch }) => {
+          if (dispatch) dispatch(tr.setMeta(focusModeKey, { scrollPos: pos }));
+          return true;
+        },
     };
   },
 
   addProseMirrorPlugins() {
     const storage = this.storage;
     return [
-      new Plugin({
+      new Plugin<{ scrollPos: number | null }>({
         key: focusModeKey,
+        state: {
+          init: () => ({ scrollPos: null }),
+          apply(tr, prev) {
+            const meta = tr.getMeta(focusModeKey) as { scrollPos?: number | null } | undefined;
+            return {
+              scrollPos: nextScrollPos(prev.scrollPos, {
+                selectionSet: tr.selectionSet,
+                metaScrollPos: meta?.scrollPos,
+              }),
+            };
+          },
+        },
         props: {
           decorations: (state) => {
             if (!storage.enabled) return null;
+            // Scroll position (reading focus) overrides the caret when set; a
+            // caret move clears it via nextScrollPos so editing re-focuses.
+            const scrollPos = focusModeKey.getState(state)?.scrollPos ?? null;
+            if (scrollPos != null) return buildFocusDecorations(state.doc, scrollPos, scrollPos);
             const { from, to } = state.selection;
             return buildFocusDecorations(state.doc, from, to);
           },
