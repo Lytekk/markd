@@ -1,0 +1,34 @@
+/* Mermaid live preview. A view-only Decoration.widget rendered just after a
+   ```mermaid code block (the fence stays editable above it). Never serialized
+   to markdown — the document keeps the plain fenced code block, so the markdown
+   round-trip is byte-stable. Kept in its own file (not base.css) so the diagram
+   component's styles stay isolated from the core editor layout rules. */
+.markd-mermaid-preview {
+  display: flex;
+  justify-content: center;
+  margin: 0.4em 0 0.9em;
+  padding: 14px;
+  background: var(--code-block-bg-color);
+  border: 1px solid var(--code-block-border-color, var(--border-color));
+  border-radius: 6px;
+  overflow-x: auto;
+}
+.markd-mermaid-preview svg {
+  max-width: 100%;
+  height: auto;
+}
+.markd-mermaid-preview.is-loading,
+.markd-mermaid-preview.is-error {
+  justify-content: flex-start;
+}
+.markd-mermaid-loading {
+  font-size: 0.8rem;
+  font-style: italic;
+  color: var(--control-text-color, #8b949e);
+}
+.markd-mermaid-error {
+  font-family: var(--monospace);
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+  color: var(--code-keyword, #d73a49);
+}

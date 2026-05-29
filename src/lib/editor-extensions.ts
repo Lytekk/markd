@@ -18,6 +18,7 @@ import { CodeBlockEnhance } from "@/lib/code-block-enhance";
 import { ExternalLinkOpen } from "@/lib/external-link-open";
 import { SlashMenu } from "@/lib/slash-menu";
 import { FocusMode } from "@/lib/focus-mode";
+import { MermaidPreview } from "@/lib/mermaid-preview";
 
 const lowlight = createLowlight(common);
 
@@ -77,5 +78,6 @@ export function getExtensions(opts: ExtensionOptions) {
     ExternalLinkOpen,
     SlashMenu,
     FocusMode,
+    MermaidPreview,
   ];
 }

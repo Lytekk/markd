@@ -4,6 +4,7 @@ import { App } from "./App";
 import "./styles/base.css";
 import "./styles/themes/day.css";
 import "./styles/themes/night.css";
+import "./styles/mermaid.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
