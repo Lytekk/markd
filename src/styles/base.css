@@ -888,13 +888,6 @@ body {
   transition: opacity 0.2s ease;
 }
 
-/* Feathered neighbors of the active block — readable context for thin one-line
-   blocks, dimmer than active so big adjacent blocks aren't fully lit. */
-.focus-mode #write > .focus-near {
-  opacity: 0.55;
-  transition: opacity 0.2s ease;
-}
-
 .markd-version {
   opacity: 0.7;
   font-size: 11px;
@@ -1483,7 +1476,6 @@ body {
 
   /* Focus-mode dimming would wash out half the document on print */
   #write > .focus-dimmed,
-  #write > .focus-near,
   #write > .focus-active {
     opacity: 1 !important;
   }

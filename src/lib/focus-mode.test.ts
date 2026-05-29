@@ -41,20 +41,20 @@ describe("buildFocusDecorations", () => {
   const count = (set: ReturnType<typeof buildFocusDecorations>, cls: string) =>
     set.find().filter((d) => classOf(d) === cls).length;
 
-  it("feathers the caret block: active, adjacent blocks 'near', rest dimmed", () => {
+  it("activates the caret block and dims all others (no feathering)", () => {
     const set = buildFocusDecorations(doc, 7, 7); // caret in the middle block (idx 2) [6,9)
     expect(set.find().length).toBe(5);
     expect(count(set, "focus-active")).toBe(1);
-    expect(count(set, "focus-near")).toBe(2); // the blocks above and below
-    expect(count(set, "focus-dimmed")).toBe(2);
+    expect(count(set, "focus-near")).toBe(0); // feathering removed — crisp must pop
+    expect(count(set, "focus-dimmed")).toBe(4);
     expect(set.find().find((d) => classOf(d) === "focus-active")!.from).toBe(6);
   });
 
-  it("keeps every touched block active for a multi-block selection, feathering the edges", () => {
+  it("keeps every touched block active for a multi-block selection; rest dimmed", () => {
     const set = buildFocusDecorations(doc, 1, 7); // spans blocks 1-3 (idx 0,1,2)
     expect(count(set, "focus-active")).toBe(3);
-    expect(count(set, "focus-near")).toBe(1); // block idx 3 (after the active run)
-    expect(count(set, "focus-dimmed")).toBe(1); // block idx 4
+    expect(count(set, "focus-near")).toBe(0);
+    expect(count(set, "focus-dimmed")).toBe(2); // blocks idx 3, 4
   });
 
   // A heading groups with the block directly below it. "Title" = nodeSize 7

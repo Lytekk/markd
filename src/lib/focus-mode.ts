@@ -56,19 +56,14 @@ export function buildFocusDecorations(doc: PmNode, from: number, to: number): De
     if (i > 0 && blocks[i - 1]?.isHeading) activeSet.add(i - 1);
   }
 
-  const activeIndices = [...activeSet];
-  const minActive = activeIndices.length ? Math.min(...activeIndices) : -1;
-  const maxActive = activeIndices.length ? Math.max(...activeIndices) : -1;
-
-  // Three tiers so a thin one-line active block still has readable context:
-  // active block(s) crisp, immediately adjacent blocks feathered ('near'),
-  // everything else dimmed.
-  const decorations = blocks.map((b, i) => {
-    let cls = "focus-dimmed";
-    if (activeSet.has(i)) cls = "focus-active";
-    else if (minActive >= 0 && (i === minActive - 1 || i === maxActive + 1)) cls = "focus-near";
-    return Decoration.node(b.from, b.to, { class: cls });
-  });
+  // Two tiers only: active block(s) crisp, everything else dimmed. (A feathered
+  // middle tier was tried but it lowered the active block's relative contrast,
+  // so the crisp block stopped popping — removed per user feedback.)
+  const decorations = blocks.map((b, i) =>
+    Decoration.node(b.from, b.to, {
+      class: activeSet.has(i) ? "focus-active" : "focus-dimmed",
+    }),
+  );
   return DecorationSet.create(doc, decorations);
 }
 
