@@ -364,6 +364,24 @@ export function App() {
     if (fileState.isDirty) fileTabsRef.current.markTabDirty();
   }, [fileState.isDirty]);
 
+  // Pin the app shell: the layout viewport must NEVER scroll — only
+  // .markd-editor-scroll does. Some WebView2 focus handling scrolls the document
+  // root when an off-screen element gains focus on a tab switch, sliding the
+  // menubar/tabbar up under the native title bar (the shell is overflow:hidden,
+  // so there's no scrollbar to undo it). Snap any root scroll back to 0,0. This
+  // listener only fires for document-root scrolls, never for .markd-editor-scroll.
+  useEffect(() => {
+    const pin = () => {
+      if (window.scrollX !== 0 || window.scrollY !== 0) window.scrollTo(0, 0);
+      const de = document.documentElement;
+      if (de.scrollTop !== 0) de.scrollTop = 0;
+      if (de.scrollLeft !== 0) de.scrollLeft = 0;
+      if (document.body.scrollTop !== 0) document.body.scrollTop = 0;
+    };
+    window.addEventListener("scroll", pin, { passive: true });
+    return () => window.removeEventListener("scroll", pin);
+  }, []);
+
   const handleSwitchTab = useCallback(
     async (tabId: string) => {
       // In source mode the live edits live in the SourceEditor textarea
