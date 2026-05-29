@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { normalizeUrl } from "./links";
+import { normalizeUrl, wordRangeAt } from "./links";
+import { createTestDoc } from "@/test/editor-helpers";
 
 describe("normalizeUrl", () => {
   it("returns null for empty / whitespace input", () => {
@@ -42,5 +43,19 @@ describe("normalizeUrl", () => {
 
   it("does not add a scheme to a plain word with no dot", () => {
     expect(normalizeUrl("draft")).toBe("draft");
+  });
+});
+
+describe("wordRangeAt", () => {
+  it("returns the document range of the word under the caret", () => {
+    const doc = createTestDoc([{ type: "paragraph", text: "hello world" }]);
+    expect(wordRangeAt(doc, 3)).toEqual({ from: 1, to: 6 }); // caret in "hello"
+    expect(wordRangeAt(doc, 9)).toEqual({ from: 7, to: 12 }); // caret in "world"
+  });
+
+  it("returns null when the caret is not inside a word", () => {
+    expect(wordRangeAt(createTestDoc([{ type: "paragraph", text: "" }]), 1)).toBeNull();
+    // "a  b": caret between the two spaces (offset 2 → doc pos 3)
+    expect(wordRangeAt(createTestDoc([{ type: "paragraph", text: "a  b" }]), 3)).toBeNull();
   });
 });

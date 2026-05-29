@@ -497,6 +497,11 @@ body {
   text-decoration: none;
 }
 
+/* While Ctrl/Cmd is held, links read as clickable (Ctrl/Cmd-click opens them). */
+.markd-app[data-mod="ctrl"] #write a {
+  cursor: pointer;
+}
+
 #write a:hover {
   text-decoration: underline;
 }

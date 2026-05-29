@@ -24,7 +24,7 @@ import { exportAsHtml, exportAsPdf, readFileByPath, saveToFile } from "@/lib/fil
 import { shouldCheckForUpdate, makeUpdateCheckRecord } from "@/lib/updater";
 import { askDialog } from "@/lib/dialogs";
 import { confirmModal, promptModal } from "@/lib/modal";
-import { normalizeUrl } from "@/lib/links";
+import { normalizeUrl, wordRangeAt } from "@/lib/links";
 import { splitFrontmatter, joinFrontmatter } from "@/lib/frontmatter";
 
 function isTauri(): boolean {
@@ -475,20 +475,26 @@ export function App() {
       return;
     }
     const { from, to } = editor.state.selection;
-    if (from === to && !prev) {
-      // Nothing selected and not already on a link: drop the URL in as its own
-      // linked text so the user isn't left with an invisible empty-range mark.
-      editor
-        .chain()
-        .focus()
-        .insertContent({
-          type: "text",
-          text: input.trim(),
-          marks: [{ type: "link", attrs: { href: url } }],
-        })
-        .run();
-    } else {
+    if (from !== to || prev) {
+      // A selection, or the caret on an existing link → (re)link that range.
       editor.chain().focus().extendMarkRange("link").setLink({ href: url }).run();
+    } else {
+      // No selection: link the word under the caret if there is one; otherwise
+      // drop the URL in as its own linked text.
+      const word = wordRangeAt(editor.state.doc, from);
+      if (word) {
+        editor.chain().focus().setTextSelection(word).setLink({ href: url }).run();
+      } else {
+        editor
+          .chain()
+          .focus()
+          .insertContent({
+            type: "text",
+            text: input.trim(),
+            marks: [{ type: "link", attrs: { href: url } }],
+          })
+          .run();
+      }
     }
   }, [editor]);
 
@@ -906,7 +912,7 @@ export function App() {
   }, [editor]);
 
   return (
-    <div className="markd-app">
+    <div className="markd-app" data-mod={heldModifier ?? undefined}>
       <Sidebar
         tree={fileState.dirTree}
         activeFile={fileState.fileName}
