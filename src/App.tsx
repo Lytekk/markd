@@ -12,6 +12,7 @@ import { StatusBar } from "@/components/StatusBar";
 import { FindReplace } from "@/components/FindReplace";
 import { SourceEditor } from "@/components/SourceEditor";
 import { ContextMenu } from "@/components/ContextMenu";
+import { ModalHost } from "@/components/ModalHost";
 import { useRecentFiles } from "@/hooks/use-recent-files";
 import { useFullWidth } from "@/hooks/use-full-width";
 import { useLineNumbers } from "@/hooks/use-line-numbers";
@@ -20,6 +21,8 @@ import { useZoom } from "@/hooks/use-zoom";
 import { TabBar } from "@/components/TabBar";
 import { exportAsHtml, exportAsPdf, readFileByPath, saveToFile } from "@/lib/file-system";
 import { shouldCheckForUpdate, makeUpdateCheckRecord } from "@/lib/updater";
+import { askDialog } from "@/lib/dialogs";
+import { splitFrontmatter, joinFrontmatter } from "@/lib/frontmatter";
 
 function isTauri(): boolean {
   // Tauri v2 exposes the IPC bridge as __TAURI_INTERNALS__ by default;
@@ -36,6 +39,8 @@ export function App() {
   const lastSearchTermRef = useRef("");
   const [sourceMode, setSourceMode] = useState(false);
   const [sourceMarkdown, setSourceMarkdown] = useState("");
+  // Markdown captured when entering source mode, to detect a no-op toggle.
+  const sourceEntryMdRef = useRef("");
   const [focusMode, setFocusMode] = useState(false);
   const { activeTheme, switchTheme, themes } = useTheme();
   const { fullWidth, toggleFullWidth } = useFullWidth();
@@ -49,6 +54,9 @@ export function App() {
   // time, so it must be updated BEFORE setContent runs — do it synchronously
   // inside the registerSetContent callback.
   const fileDirRef = useRef<string>("");
+  // Leading YAML frontmatter, kept out of the editor (tiptap-markdown would
+  // corrupt it) and re-prepended verbatim on serialize. Tracks the active file.
+  const frontmatterRef = useRef<string>("");
 
   const editor = useEditor({
     extensions: [
@@ -75,16 +83,18 @@ export function App() {
   // Register editor methods with file state
   useEffect(() => {
     if (!editor) return;
-    fileState.registerGetMarkdown(() => {
-      return editor.storage.markdown.getMarkdown();
-    });
+    fileState.registerGetMarkdown(() =>
+      joinFrontmatter(frontmatterRef.current, editor.storage.markdown.getMarkdown()),
+    );
     fileState.registerSetContent((md: string, fileDir: string) => {
       fileDirRef.current = fileDir;
-      editor.commands.setContent(md, false);
+      const { frontmatter, body } = splitFrontmatter(md);
+      frontmatterRef.current = frontmatter;
+      editor.commands.setContent(body, false);
     });
-    fileTabs.registerGetMarkdown(() => {
-      return editor.storage.markdown.getMarkdown();
-    });
+    fileTabs.registerGetMarkdown(() =>
+      joinFrontmatter(frontmatterRef.current, editor.storage.markdown.getMarkdown()),
+    );
   }, [editor, fileState.registerGetMarkdown, fileState.registerSetContent, fileTabs.registerGetMarkdown]);
 
   // Track recent files when files are opened/saved
@@ -228,12 +238,24 @@ export function App() {
 
     if (!sourceMode) {
       // Switching TO source: serialize current editor content
-      const md = editor.storage.markdown.getMarkdown() as string;
+      const md = joinFrontmatter(
+        frontmatterRef.current,
+        editor.storage.markdown.getMarkdown() as string,
+      );
       setSourceMarkdown(md);
+      sourceEntryMdRef.current = md;
       setSourceMode(true);
     } else {
-      // Switching FROM source: parse markdown back into editor
-      editor.commands.setContent(sourceMarkdown);
+      // Switching FROM source: re-parse only if the source actually changed.
+      // Passing false suppresses onUpdate so a no-op toggle never flags a clean
+      // doc dirty (dirty is driven solely by edits via handleSourceMarkdownChange),
+      // and skipping the re-parse entirely keeps an unedited buffer byte-stable
+      // (no markdown normalization of list markers / spacing on a round-trip).
+      if (sourceMarkdown !== sourceEntryMdRef.current) {
+        const { frontmatter, body } = splitFrontmatter(sourceMarkdown);
+        frontmatterRef.current = frontmatter;
+        editor.commands.setContent(body, false);
+      }
       setSourceMode(false);
     }
   }, [editor, sourceMode, sourceMarkdown]);
@@ -319,15 +341,17 @@ export function App() {
     async (tabId: string) => {
       const tab = fileTabs.tabs.find((t) => t.id === tabId);
       if (tab && tab.isDirty) {
-        const shouldSave = window.confirm(
+        const shouldSave = await askDialog(
           `"${tab.fileName}" has unsaved changes.\n\nSave before closing?`,
+          { title: "Unsaved Changes", kind: "warning" },
         );
         if (shouldSave) {
           const saved = await fileState.handleSave();
           if (!saved) return;
         } else {
-          const discard = window.confirm(
+          const discard = await askDialog(
             `Discard changes to "${tab.fileName}"?`,
+            { title: "Discard Changes", kind: "warning" },
           );
           if (!discard) return;
         }
@@ -356,8 +380,9 @@ export function App() {
   const handleCloseAllTabs = useCallback(async () => {
     const dirtyTabs = fileTabs.tabs.filter((t) => t.isDirty);
     if (dirtyTabs.length > 0) {
-      const shouldSave = window.confirm(
+      const shouldSave = await askDialog(
         `${dirtyTabs.length} file(s) have unsaved changes.\n\nSave all before closing?`,
+        { title: "Unsaved Changes", kind: "warning" },
       );
       if (shouldSave) {
         for (const tab of dirtyTabs) {
@@ -370,7 +395,10 @@ export function App() {
           }
         }
       } else {
-        const discard = window.confirm("Discard all unsaved changes?");
+        const discard = await askDialog("Discard all unsaved changes?", {
+          title: "Discard Changes",
+          kind: "warning",
+        });
         if (!discard) return;
       }
     }
@@ -686,14 +714,20 @@ export function App() {
             if (lastMtimeRef.current && currentMtime && currentMtime > lastMtimeRef.current) {
               lastMtimeRef.current = currentMtime;
               fileChangePromptOpen.current = true;
-              const reload = window.confirm(
-                `"${fileState.fileName}" has been modified outside Markd.\n\nReload from disk?`,
-              );
-              fileChangePromptOpen.current = false;
-              if (reload) {
-                const content = await readFileByPath(filePath);
-                fileTabsRef.current.hydrateTab(fileTabsRef.current.activeTabId, content);
-                fileStateRef.current.handleOpenByPath(filePath, content);
+              try {
+                const reload = await askDialog(
+                  `"${fileState.fileName}" has been modified outside Markd.\n\nReload from disk?`,
+                  { title: "File Changed on Disk", kind: "warning" },
+                );
+                if (reload) {
+                  const content = await readFileByPath(filePath);
+                  fileTabsRef.current.hydrateTab(fileTabsRef.current.activeTabId, content);
+                  fileStateRef.current.handleOpenByPath(filePath, content);
+                }
+              } finally {
+                // Reset in finally so a thrown dialog can't permanently wedge
+                // the watcher (it would otherwise never prompt again).
+                fileChangePromptOpen.current = false;
               }
             }
           } catch { /* file may have been deleted */ }
@@ -932,6 +966,7 @@ export function App() {
         />
       </div>
       <ContextMenu editor={editor} />
+      <ModalHost />
     </div>
   );
 }

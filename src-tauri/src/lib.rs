@@ -36,9 +36,45 @@ fn read_file(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|e| e.to_string())
 }
 
+/// Write `bytes` to `target` atomically: write a sibling temp file, fsync it,
+/// then rename it over the target. Rename is atomic within a volume, so a crash,
+/// power loss, or disk-full mid-write can never leave a truncated/empty document.
+/// Cross-volume targets (UNC / \\wsl.localhost mounts) return a rename error, in
+/// which case we fall back to a direct write (non-atomic but functional).
+fn write_atomic(target: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let dir = target
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let file_name = target
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("untitled");
+    let tmp = dir.join(format!(".{file_name}.markd-tmp"));
+
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+    }
+
+    match std::fs::rename(&tmp, target) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            // EXDEV (cross-volume) or other rename failure — fall back to a
+            // direct write, then best-effort clean up the temp file.
+            let res = std::fs::write(target, bytes);
+            let _ = std::fs::remove_file(&tmp);
+            res
+        }
+    }
+}
+
 #[tauri::command]
 fn write_file(path: String, content: String) -> Result<(), String> {
-    std::fs::write(&path, content).map_err(|e| e.to_string())
+    write_atomic(std::path::Path::new(&path), content.as_bytes()).map_err(|e| e.to_string())
 }
 
 #[derive(Serialize, Clone)]

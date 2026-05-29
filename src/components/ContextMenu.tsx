@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { Editor } from "@tiptap/react";
+import { promptModal } from "@/lib/modal";
 
 interface ContextMenuProps {
   editor: Editor | null;
@@ -62,8 +63,15 @@ const MENU_ITEMS: MenuEntry[] = [
   },
   {
     label: "Insert Image",
-    action: (e) => {
-      const url = prompt("Image URL:");
+    action: async (e) => {
+      // window.prompt is suppressed by WebView2 — use the in-app modal.
+      const url = await promptModal({
+        title: "Insert Image",
+        label: "Image URL or path",
+        placeholder: "https://…  or  ./image.png",
+        okLabel: "Insert",
+        validate: (v) => (v ? null : "Enter a URL or path"),
+      });
       if (url) e.chain().focus().setImage({ src: url }).run();
     },
   },

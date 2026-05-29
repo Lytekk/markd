@@ -14,7 +14,7 @@ function isMarkdownFile(name: string): boolean {
   return MD_EXTENSIONS.some((ext) => name.toLowerCase().endsWith(ext));
 }
 
-function isTauri(): boolean {
+export function isTauri(): boolean {
   // Tauri v2 exposes the IPC bridge as __TAURI_INTERNALS__ by default;
   // __TAURI__ only exists when withGlobalTauri is enabled in tauri.conf.json.
   return "__TAURI_INTERNALS__" in window || "__TAURI__" in window;
@@ -67,7 +67,6 @@ async function tauriSaveFileAs(
   suggestedName = "untitled.md",
 ): Promise<{ path: string; name: string } | null> {
   const { save } = await import("@tauri-apps/plugin-dialog");
-  const { writeTextFile } = await import("@tauri-apps/plugin-fs");
 
   const path = await save({
     defaultPath: suggestedName,
@@ -75,7 +74,10 @@ async function tauriSaveFileAs(
   });
 
   if (!path) return null;
-  await writeTextFile(path, content);
+  // Route through tauriSaveFile so the write goes via the atomic write_file
+  // command (temp + rename), with the same plugin fallback.
+  const ok = await tauriSaveFile(path, content);
+  if (!ok) return null;
   const name = path.split(/[/\\]/).pop() ?? suggestedName;
   return { path, name };
 }
