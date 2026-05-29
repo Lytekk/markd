@@ -5,6 +5,12 @@ interface CommandPaletteProps {
   open: boolean;
   commands: Command[];
   onClose: () => void;
+  /** Override the row content (e.g. tab rows with a dirty dot); defaults to label + hint. */
+  renderItem?: (command: Command, isSelected: boolean) => React.ReactNode;
+  /** Input placeholder. Defaults to the command-palette prompt. */
+  placeholder?: string;
+  /** Accessible dialog label. Defaults to "Command palette". */
+  label?: string;
 }
 
 /**
@@ -13,7 +19,14 @@ interface CommandPaletteProps {
  * by App.tsx so each action has one source of truth (the same handlers the
  * menubar and keyboard shortcuts call).
  */
-export function CommandPalette({ open, commands, onClose }: CommandPaletteProps) {
+export function CommandPalette({
+  open,
+  commands,
+  onClose,
+  renderItem,
+  placeholder = "Type a command…",
+  label = "Command palette",
+}: CommandPaletteProps) {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -74,14 +87,14 @@ export function CommandPalette({ open, commands, onClose }: CommandPaletteProps)
         className="markd-command-palette"
         role="dialog"
         aria-modal="true"
-        aria-label="Command palette"
+        aria-label={label}
         onMouseDown={(e) => e.stopPropagation()}
         onKeyDown={onKeyDown}
       >
         <input
           ref={inputRef}
           className="markd-command-input"
-          placeholder="Type a command…"
+          placeholder={placeholder}
           value={query}
           role="combobox"
           aria-expanded="true"
@@ -109,8 +122,14 @@ export function CommandPalette({ open, commands, onClose }: CommandPaletteProps)
                   run(command);
                 }}
               >
-                <span className="markd-command-label">{command.label}</span>
-                {command.hint && <span className="markd-command-hint">{command.hint}</span>}
+                {renderItem ? (
+                  renderItem(command, i === selected)
+                ) : (
+                  <>
+                    <span className="markd-command-label">{command.label}</span>
+                    {command.hint && <span className="markd-command-hint">{command.hint}</span>}
+                  </>
+                )}
               </li>
             ))
           )}

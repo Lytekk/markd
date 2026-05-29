@@ -1082,6 +1082,41 @@ body {
   text-align: center;
 }
 
+/* Tab quick-switch rows (Ctrl+Shift+E) — reuse .markd-command-item layout, add a
+   leading dirty dot + a dimmed trailing parent-dir for same-named files. */
+.markd-tab-switcher-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.markd-tab-switcher-main .markd-command-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.markd-tab-switcher-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: transparent;
+}
+.markd-tab-switcher-dot.dirty {
+  background: var(--primary-color, #4a90d9);
+}
+.markd-command-item.selected .markd-tab-switcher-dot.dirty {
+  background: #fff;
+}
+.markd-tab-switcher-dir {
+  font-size: 11px;
+  opacity: 0.55;
+  white-space: nowrap;
+}
+.markd-command-item.selected .markd-tab-switcher-dir {
+  opacity: 0.85;
+}
+
 /* Slash menu (/) — a caret-anchored popup (position set inline from clientRect). */
 .markd-slash-menu {
   position: fixed;

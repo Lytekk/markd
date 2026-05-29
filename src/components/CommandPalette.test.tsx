@@ -78,4 +78,41 @@ describe("CommandPalette", () => {
     fireEvent.change(screen.getByRole("combobox"), { target: { value: "zzzzz" } });
     expect(screen.getByText(/no matching commands/i)).toBeTruthy();
   });
+
+  it("uses a custom renderItem for row content when provided", () => {
+    const { commands } = makeCommands();
+    render(
+      <CommandPalette
+        open
+        commands={commands}
+        onClose={vi.fn()}
+        renderItem={(c) => <span>★ {c.label}</span>}
+      />,
+    );
+    expect(screen.getByText("★ New File")).toBeTruthy();
+  });
+
+  it("still runs the command on click when a custom renderItem is used", () => {
+    const { commands, runs } = makeCommands();
+    const onClose = vi.fn();
+    render(
+      <CommandPalette
+        open
+        commands={commands}
+        onClose={onClose}
+        renderItem={(c) => <span>{c.label}</span>}
+      />,
+    );
+    fireEvent.mouseDown(screen.getByText("Save"));
+    expect(runs.save).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("defaults the input placeholder but accepts an override", () => {
+    const { commands } = makeCommands();
+    const { rerender } = render(<CommandPalette open commands={commands} onClose={vi.fn()} />);
+    expect(screen.getByPlaceholderText("Type a command…")).toBeTruthy();
+    rerender(<CommandPalette open commands={commands} onClose={vi.fn()} placeholder="Search tabs…" />);
+    expect(screen.getByPlaceholderText("Search tabs…")).toBeTruthy();
+  });
 });

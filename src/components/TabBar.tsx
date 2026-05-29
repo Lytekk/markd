@@ -1,4 +1,5 @@
 import type { FileTab } from "@/hooks/use-file-tabs";
+import { tabDisplayInfo } from "@/lib/tab-display";
 
 interface TabBarProps {
   tabs: FileTab[];
@@ -17,20 +18,15 @@ export function TabBar({
 }: TabBarProps) {
   if (tabs.length <= 1 && !tabs[0]?.filePath && !tabs[0]?.isDirty) return null;
 
-  const nameCounts = new Map<string, number>();
-  for (const t of tabs) {
-    nameCounts.set(t.fileName, (nameCounts.get(t.fileName) ?? 0) + 1);
-  }
+  // Shared with the quick-switch overlay so both disambiguate same-named tabs
+  // identically (single source of truth — see src/lib/tab-display.ts).
+  const display = tabDisplayInfo(tabs);
 
   return (
     <div className="markd-tab-bar">
       <div className="markd-tab-list">
         {tabs.map((tab) => {
-          const isDuplicate =
-            (nameCounts.get(tab.fileName) ?? 0) > 1 && tab.filePath;
-          const parentDir = isDuplicate
-            ? tab.filePath!.replace(/\\/g, "/").split("/").slice(-2, -1)[0]
-            : null;
+          const parentDir = display.get(tab.id)?.parentDir ?? null;
 
           return (
             <div

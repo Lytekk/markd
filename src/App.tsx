@@ -14,6 +14,7 @@ import { SourceEditor } from "@/components/SourceEditor";
 import { ContextMenu } from "@/components/ContextMenu";
 import { ModalHost } from "@/components/ModalHost";
 import { CommandPalette } from "@/components/CommandPalette";
+import { TabSwitcher } from "@/components/TabSwitcher";
 import { useRecentFiles } from "@/hooks/use-recent-files";
 import { useFullWidth } from "@/hooks/use-full-width";
 import { useLineNumbers } from "@/hooks/use-line-numbers";
@@ -40,6 +41,7 @@ export function App() {
   const [findReplaceOpen, setFindReplaceOpen] = useState(false);
   const [findReplaceShowReplace, setFindReplaceShowReplace] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [tabSwitcherOpen, setTabSwitcherOpen] = useState(false);
   const lastSearchTermRef = useRef("");
   const [sourceMode, setSourceMode] = useState(false);
   const [sourceMarkdown, setSourceMarkdown] = useState("");
@@ -322,6 +324,15 @@ export function App() {
 
   const handleSwitchTab = useCallback(
     async (tabId: string) => {
+      // In source mode the live edits live in the SourceEditor textarea
+      // (`sourceMarkdown`), not the ProseMirror editor — commit them back first so
+      // switchTab's getMarkdown snapshot captures them instead of stale editor
+      // content (otherwise the departing tab silently loses the textarea edits).
+      if (sourceMode && editor) {
+        const { frontmatter, body } = splitFrontmatter(sourceMarkdown);
+        frontmatterRef.current = frontmatter;
+        editor.commands.setContent(body, false);
+      }
       const scrollEl = document.querySelector(".markd-editor-scroll") as HTMLElement | null;
       const departingScroll = scrollEl?.scrollTop ?? 0;
       const target = fileTabs.switchTab(tabId, departingScroll);
@@ -336,13 +347,24 @@ export function App() {
           } catch { /* file gone */ }
         }
         fileState.restoreState(target);
+        // restoreState synchronously repopulates the editor + frontmatterRef with
+        // the arriving tab; in source mode, re-derive the textarea from it so the
+        // SourceEditor shows the NEW tab's source, not the departing tab's.
+        if (sourceMode && editor) {
+          const md = joinFrontmatter(
+            frontmatterRef.current,
+            editor.storage.markdown.getMarkdown() as string,
+          );
+          setSourceMarkdown(md);
+          sourceEntryMdRef.current = md;
+        }
         requestAnimationFrame(() => {
           const el = document.querySelector(".markd-editor-scroll") as HTMLElement | null;
           if (el) el.scrollTop = target.scrollTop;
         });
       }
     },
-    [fileTabs.switchTab, fileTabs.hydrateTab, fileState.restoreState],
+    [sourceMode, sourceMarkdown, editor, fileTabs.switchTab, fileTabs.hydrateTab, fileState.restoreState],
   );
 
   const handleCloseTab = useCallback(
@@ -653,6 +675,16 @@ export function App() {
           case "k":
             e.preventDefault();
             void handleEditLink();
+            break;
+          case "e":
+            // Ctrl+Shift+E: quick-switch tabs. Bare Ctrl+E stays TipTap's inline
+            // code (Mod-e) — only the Shift variant opens the switcher, and PM has
+            // no Mod-Shift-e binding so there's no double-fire. No-op for 1 tab.
+            if (e.shiftKey) {
+              if (fileTabsRef.current.tabs.length <= 1) break;
+              e.preventDefault();
+              setTabSwitcherOpen((o) => !o);
+            }
             break;
           case "p":
             // Ctrl+Shift+P only — bare Ctrl+P stays the webview's native print.
@@ -1032,12 +1064,22 @@ export function App() {
       </div>
       <ContextMenu editor={editor} />
       <ModalHost />
+      <TabSwitcher
+        open={tabSwitcherOpen}
+        tabs={fileTabs.tabs}
+        getMru={fileTabs.getMru}
+        onSwitch={(id) => {
+          void handleSwitchTab(id);
+        }}
+        onClose={() => setTabSwitcherOpen(false)}
+      />
       <CommandPalette
         open={commandPaletteOpen}
         onClose={() => setCommandPaletteOpen(false)}
         commands={[
           { id: "new", label: "New File", hint: "Ctrl+N", keywords: "create blank", run: fileState.handleNew },
           { id: "new-tab", label: "New Tab", hint: "Ctrl+T", run: handleNewTab },
+          { id: "switch-tab", label: "Switch Tab…", hint: "Ctrl+Shift+E", keywords: "go to file quick open buffer change", run: () => setTabSwitcherOpen(true) },
           { id: "open", label: "Open File…", hint: "Ctrl+O", keywords: "load", run: fileState.handleOpen },
           { id: "open-folder", label: "Open Folder…", keywords: "directory workspace", run: fileState.handleOpenFolder },
           { id: "save", label: "Save", hint: "Ctrl+S", run: fileState.handleSave },

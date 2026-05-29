@@ -122,3 +122,31 @@ describe("useFileTabs — reopen closed tab", () => {
     expect(result.current.closedStack.some((t) => t.filePath === "/tmp/f-0.md")).toBe(false);
   });
 });
+
+describe("useFileTabs — MRU / quick-switch ordering", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("exposes getMru with the active tab most-recent first", () => {
+    const { result } = renderHook(() => useFileTabs());
+    const first = result.current.tabs[0]!.id;
+    expect(result.current.getMru()[0]).toBe(first);
+  });
+
+  it("moves a switched-to tab to the front of the MRU", () => {
+    const { result } = renderHook(() => useFileTabs());
+    act(() => { result.current.openInTab("a.md", "/tmp/a.md", "A"); });
+    act(() => { result.current.openInTab("b.md", "/tmp/b.md", "B"); });
+    const aId = result.current.tabs.find((t) => t.filePath === "/tmp/a.md")!.id;
+    act(() => { result.current.switchTab(aId); });
+    expect(result.current.getMru()[0]).toBe(aId);
+  });
+
+  it("prunes a closed (non-active) tab from the MRU list", () => {
+    const { result } = renderHook(() => useFileTabs());
+    act(() => { result.current.openInTab("a.md", "/tmp/a.md", "A"); });
+    const aId = result.current.tabs.find((t) => t.filePath === "/tmp/a.md")!.id;
+    act(() => { result.current.openInTab("b.md", "/tmp/b.md", "B"); });
+    act(() => { result.current.closeTab(aId); });
+    expect(result.current.getMru()).not.toContain(aId);
+  });
+});

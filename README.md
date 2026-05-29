@@ -48,6 +48,7 @@ Published publicly because it solves a real problem and a few people asked. If i
 | Ctrl+T | New tab |
 | Ctrl+Shift+T | Reopen last closed tab |
 | Ctrl+Tab / Ctrl+Shift+Tab | Cycle tabs |
+| Ctrl+Shift+E | Quick-switch tabs (fuzzy search) |
 | Ctrl+R | Reload active tab from disk |
 | Ctrl+Shift+R | Reload all tabs from disk |
 | Ctrl+/ | Toggle source mode |
@@ -57,6 +58,8 @@ Published publicly because it solves a real problem and a few people asked. If i
 | Ctrl+F3 | Find word at cursor |
 | F3 / Shift+F3 | Find next / previous |
 | Ctrl+Shift+X | Toggle strikethrough |
+| Ctrl+Shift+P | Command palette |
+| Ctrl+K | Add / edit link |
 | Alt+1 | Sidebar: Files |
 | Alt+2 | Sidebar: Outline |
 | Alt+Up/Down | Reorder section (in outline) |
@@ -65,7 +68,6 @@ Published publicly because it solves a real problem and a few people asked. If i
 
 ## Known Issues
 
-- **Focus mode doesn't dim non-cursor blocks yet.** Typewriter scroll works. Details + investigation notes in the project's internal TODO.
 - UNC paths from WSL (`\\wsl.localhost\...`) work for opening markdown files and for the asset protocol that serves relative images, but they can be slow or flaky. Keep files on a local drive if you hit issues.
 - Devtools are enabled in the current release binary. Disable by setting `features = []` on the `tauri` dependency in `src-tauri/Cargo.toml` before rebuilding.
 
