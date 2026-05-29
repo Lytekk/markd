@@ -3,25 +3,52 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import type { Editor } from "@tiptap/react";
 import { ContextMenu } from "./ContextMenu";
 
-const fakeEditor = {} as unknown as Editor;
+function makeEditor(inTable: boolean): Editor {
+  return { isActive: (name: string) => inTable && name === "table" } as unknown as Editor;
+}
+
+function openMenuInEditorArea() {
+  const scroll = document.createElement("div");
+  scroll.className = "markd-editor-scroll";
+  document.body.appendChild(scroll);
+  fireEvent.contextMenu(scroll);
+  return () => document.body.removeChild(scroll);
+}
 
 describe("ContextMenu", () => {
   it("opens on right-click inside the editor area and shows Insert Image", () => {
-    // The menu only opens for contextmenu events targeted inside .markd-editor-scroll.
-    const scroll = document.createElement("div");
-    scroll.className = "markd-editor-scroll";
-    document.body.appendChild(scroll);
+    render(<ContextMenu editor={makeEditor(false)} />);
+    const cleanup = openMenuInEditorArea();
     try {
-      render(<ContextMenu editor={fakeEditor} />);
-      fireEvent.contextMenu(scroll);
       expect(screen.getByText("Insert Image")).toBeTruthy();
     } finally {
-      document.body.removeChild(scroll);
+      cleanup();
+    }
+  });
+
+  it("hides table-editing items when the cursor is not in a table", () => {
+    render(<ContextMenu editor={makeEditor(false)} />);
+    const cleanup = openMenuInEditorArea();
+    try {
+      expect(screen.queryByText("Delete Table")).toBeNull();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("shows table-editing items when the cursor is in a table", () => {
+    render(<ContextMenu editor={makeEditor(true)} />);
+    const cleanup = openMenuInEditorArea();
+    try {
+      expect(screen.getByText("Delete Table")).toBeTruthy();
+      expect(screen.getByText("Add Row Above")).toBeTruthy();
+    } finally {
+      cleanup();
     }
   });
 
   it("does not open for right-clicks outside the editor area", () => {
-    render(<ContextMenu editor={fakeEditor} />);
+    render(<ContextMenu editor={makeEditor(false)} />);
     fireEvent.contextMenu(document.body);
     expect(screen.queryByText("Insert Image")).toBeNull();
   });
