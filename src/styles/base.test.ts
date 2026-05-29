@@ -65,4 +65,25 @@ describe("base.css layout", () => {
     expect(css).toMatch(/button:focus-visible/);
     expect(css).toMatch(/:focus-visible[^}]*\{[^}]*outline:\s*2px/);
   });
+
+  test("#write pre is positioned so the code toolbar can anchor to its corner", () => {
+    const body = ruleBody("#write pre");
+    expect(body, "missing `#write pre` rule").not.toBeNull();
+    expect(body).toMatch(/position:\s*relative/);
+  });
+
+  test("the code-block toolbar floats over the block and reveals on hover/focus", () => {
+    const bar = ruleBody(".markd-code-toolbar");
+    expect(bar, "missing `.markd-code-toolbar` rule").not.toBeNull();
+    expect(bar).toMatch(/position:\s*absolute/);
+
+    const copy = ruleBody(".markd-code-copy");
+    expect(copy, "missing `.markd-code-copy` rule").not.toBeNull();
+    expect(copy).toMatch(/cursor:\s*pointer/);
+    expect(copy).toMatch(/opacity:\s*0/); // hidden until the block is hovered/focused
+  });
+
+  test("the code toolbar is screen-only — hidden in print", () => {
+    expect(css).toMatch(/@media print[\s\S]*\.markd-code-toolbar[\s\S]*display:\s*none/);
+  });
 });

@@ -558,6 +558,7 @@ body {
 }
 
 #write pre {
+  position: relative; /* anchor for the absolutely-positioned code toolbar */
   background: var(--code-block-bg-color);
   border: 1px solid var(--code-block-border-color, var(--border-color));
   border-radius: 6px;
@@ -571,6 +572,64 @@ body {
   padding: 0;
   font-size: 0.85em;
   line-height: 1.6;
+}
+
+/* Code-block toolbar (language label + copy button). Injected as a ProseMirror
+   widget decoration — screen-only: never serialized to markdown, hidden in print.
+   Reveals on hover/focus to stay out of the way while reading. */
+.markd-code-toolbar {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  user-select: none;
+  z-index: 2;
+}
+
+.markd-code-lang {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted-color, #8b949e);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.markd-code-copy {
+  font-size: 0.72rem;
+  line-height: 1;
+  padding: 4px 9px;
+  border-radius: 5px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-color, #fff);
+  color: var(--text-color);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+#write pre:hover .markd-code-lang,
+#write pre:hover .markd-code-copy,
+.markd-code-copy:focus-visible {
+  opacity: 1;
+}
+
+.markd-code-copy:hover {
+  background: var(--hover-bg-color, rgba(127, 127, 127, 0.12));
+}
+
+.markd-code-copy.copied {
+  opacity: 1;
+  color: var(--success-color, #2ea043);
+  border-color: currentColor;
+}
+
+@media print {
+  .markd-code-toolbar {
+    display: none !important;
+  }
 }
 
 /* Syntax highlighting */
