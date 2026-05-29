@@ -167,10 +167,11 @@ export function Menubar(props: MenubarProps) {
           onSelect: onToggleFullWidth,
           checked: fullWidth,
         },
-        // Focus Mode hidden in v0.1.0 — typewriter-scroll half works but
-        // block dimming doesn't render. Re-enable once fixed. Handler and
-        // state (focusMode, onToggleFocusMode) stay wired so nothing else
-        // needs touching when we restore the menu entry.
+        // Focus Mode stays hidden: applyFocusClassesSync (Editor.tsx) sets inline
+        // block.style.opacity, but ProseMirror re-creates block DOM on each
+        // transaction and discards those inline styles — verified in-browser
+        // 2026-05-29 (data-focus-mode flips to "on" but blocks never dim). Needs
+        // a PM Decoration plugin, not inline styles. State/handler stay wired.
         "separator",
         {
           label: "Theme",
