@@ -9,6 +9,24 @@ interface OutlinePanelProps {
 
 const COLLAPSED_KEY = "markd-outline-collapsed";
 
+/**
+ * Resolve the active heading index from the scroll-spy candidate, forcing the
+ * first heading at the very top of the document and the last at the very
+ * bottom. Pure (no DOM) so the edge behavior is unit-tested independently of
+ * layout. `candidate` is the index chosen by the 40%-viewport-line rule.
+ */
+export function clampActiveHeading(
+  candidate: number,
+  count: number,
+  atTop: boolean,
+  atBottom: boolean,
+): number {
+  if (count === 0) return 0;
+  if (atTop) return 0;
+  if (atBottom) return count - 1;
+  return candidate;
+}
+
 export function OutlinePanel({ editor }: OutlinePanelProps) {
   const [headings, setHeadings] = useState<HeadingEntry[]>([]);
   const [activeHeadingIndex, setActiveHeadingIndex] = useState<number | null>(null);
@@ -83,7 +101,7 @@ export function OutlinePanel({ editor }: OutlinePanelProps) {
 
       const containerRect = scrollContainer.getBoundingClientRect();
       const containerTop = containerRect.top + containerRect.height * 0.4;
-      let active = 0;
+      let candidate = 0;
 
       for (let i = h.length - 1; i >= 0; i--) {
         const dom = editor.view.nodeDOM(h[i]!.pos);
@@ -91,13 +109,21 @@ export function OutlinePanel({ editor }: OutlinePanelProps) {
         if (el instanceof HTMLElement) {
           const rect = el.getBoundingClientRect();
           if (rect.top <= containerTop) {
-            active = i;
+            candidate = i;
             break;
           }
         }
       }
 
-      setActiveHeadingIndex(active);
+      // Force first/last at the scroll extremes: the 40%-line rule alone misses
+      // the first heading at the very top (lower clustered headings win) and the
+      // last heading at the very bottom (a short final section never crosses the
+      // line). Clamp so scroll-top highlights heading 0 and scroll-bottom the last.
+      const EDGE_EPS = 2;
+      const atTop = scrollContainer.scrollTop <= EDGE_EPS;
+      const atBottom =
+        scrollContainer.scrollTop + scrollContainer.clientHeight >= scrollContainer.scrollHeight - EDGE_EPS;
+      setActiveHeadingIndex(clampActiveHeading(candidate, h.length, atTop, atBottom));
     };
 
     const onScroll = () => {
