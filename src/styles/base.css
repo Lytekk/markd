@@ -947,6 +947,22 @@ body {
   color: var(--danger-color, #d9534f);
 }
 
+/* Keyboard focus visibility — the button resets strip the UA outline, leaving
+   keyboard/AT users with no focus indicator on the chrome. Restore a ring via
+   :focus-visible (mouse users are unaffected). #write is intentionally excluded
+   (it manages its own caret). */
+.markd-app button:focus-visible,
+.markd-app input:focus-visible,
+.markd-app textarea:focus-visible,
+.markd-app a:focus-visible,
+.markd-app [role="tab"]:focus-visible,
+.markd-app [role="menuitem"]:focus-visible,
+.markd-app [tabindex]:focus-visible {
+  outline: 2px solid var(--primary-color, #4a90d9);
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar {
   width: 8px;

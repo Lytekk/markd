@@ -60,4 +60,9 @@ describe("base.css layout", () => {
     expect(body, "Source view ignores Full Width").not.toBeNull();
     expect(body).toMatch(/padding-left:\s*60px/);
   });
+
+  test("keyboard focus rings are restored for chrome controls (button resets strip the UA outline)", () => {
+    expect(css).toMatch(/button:focus-visible/);
+    expect(css).toMatch(/:focus-visible[^}]*\{[^}]*outline:\s*2px/);
+  });
 });
