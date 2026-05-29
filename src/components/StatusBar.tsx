@@ -25,12 +25,14 @@ export function StatusBar({
   theme,
   lastSaved,
   sourceMode,
+  focusMode,
   fullWidth,
   lineNumbers,
   onThemeChange,
   onExportHtml,
   onExportPdf,
   onToggleSource,
+  onToggleFocusMode,
   onToggleFullWidth,
   onToggleLineNumbers,
   zoom,
@@ -67,7 +69,14 @@ export function StatusBar({
       <div className="right">
         <span>{stats.words} words</span>
         <span>{stats.chars} chars</span>
-        {/* Focus button hidden in v0.1.0 until block-dimming bug is fixed. See TODO.md. */}
+        <button
+          onClick={onToggleFocusMode}
+          style={btnStyle}
+          className={focusMode ? "status-btn-active" : ""}
+          title="Toggle Focus Mode"
+        >
+          Focus
+        </button>
         <button onClick={onToggleSource} style={btnStyle} title="Toggle Source (Ctrl+/)">
           {sourceMode ? "WYSIWYG" : "Source"}
         </button>

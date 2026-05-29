@@ -1049,6 +1049,7 @@ export function App() {
           { id: "full-width", label: "Toggle Full Width", keywords: "column wide narrow", run: toggleFullWidth },
           { id: "line-numbers", label: "Toggle Line Numbers", keywords: "gutter", run: toggleLineNumbers },
           { id: "sidebar", label: "Toggle Sidebar", hint: "Ctrl+\\", keywords: "files outline panel", run: () => setSidebarCollapsed((c) => !c) },
+          { id: "focus-mode", label: "Toggle Focus Mode", keywords: "zen distraction-free dim", run: () => setFocusMode((f) => !f) },
           { id: "export-html", label: "Export as HTML…", keywords: "save download", run: handleExportHtml },
           { id: "export-pdf", label: "Export as PDF…", keywords: "print save download", run: exportAsPdf },
           { id: "zoom-in", label: "Zoom In", hint: "Ctrl+=", run: zoomIn },
