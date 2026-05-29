@@ -23,7 +23,8 @@ import { TabBar } from "@/components/TabBar";
 import { exportAsHtml, exportAsPdf, readFileByPath, saveToFile } from "@/lib/file-system";
 import { shouldCheckForUpdate, makeUpdateCheckRecord } from "@/lib/updater";
 import { askDialog } from "@/lib/dialogs";
-import { confirmModal } from "@/lib/modal";
+import { confirmModal, promptModal } from "@/lib/modal";
+import { normalizeUrl } from "@/lib/links";
 import { splitFrontmatter, joinFrontmatter } from "@/lib/frontmatter";
 
 function isTauri(): boolean {
@@ -456,6 +457,41 @@ export function App() {
     [fileTabs.tabs, fileTabs.activeTabId, handleSwitchTab],
   );
 
+  // Ctrl+K: add / edit / remove a link on the selection (or insert a linked URL).
+  const handleEditLink = useCallback(async () => {
+    if (!editor) return;
+    const prev = editor.getAttributes("link").href as string | undefined;
+    const input = await promptModal({
+      title: prev ? "Edit Link" : "Add Link",
+      label: "URL",
+      defaultValue: prev ?? "",
+      placeholder: "https://…  (leave empty to remove)",
+      okLabel: prev ? "Update" : "Add",
+    });
+    if (input === null) return; // cancelled
+    const url = normalizeUrl(input);
+    if (!url) {
+      editor.chain().focus().extendMarkRange("link").unsetLink().run();
+      return;
+    }
+    const { from, to } = editor.state.selection;
+    if (from === to && !prev) {
+      // Nothing selected and not already on a link: drop the URL in as its own
+      // linked text so the user isn't left with an invisible empty-range mark.
+      editor
+        .chain()
+        .focus()
+        .insertContent({
+          type: "text",
+          text: input.trim(),
+          marks: [{ type: "link", attrs: { href: url } }],
+        })
+        .run();
+    } else {
+      editor.chain().focus().extendMarkRange("link").setLink({ href: url }).run();
+    }
+  }, [editor]);
+
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -604,6 +640,10 @@ export function App() {
             e.preventDefault();
             resetZoom();
             break;
+          case "k":
+            e.preventDefault();
+            void handleEditLink();
+            break;
           case "p":
             // Ctrl+Shift+P only — bare Ctrl+P stays the webview's native print.
             if (e.shiftKey) {
@@ -657,6 +697,7 @@ export function App() {
     zoomIn,
     zoomOut,
     resetZoom,
+    handleEditLink,
   ]);
 
   // Ctrl+MouseWheel zoom
@@ -996,6 +1037,7 @@ export function App() {
           { id: "close-all", label: "Close All Tabs", hint: "Ctrl+Shift+W", run: handleCloseAllTabs },
           { id: "find", label: "Find", hint: "Ctrl+F", keywords: "search", run: () => { setFindReplaceShowReplace(false); setFindReplaceOpen(true); window.dispatchEvent(new Event("markd:find-focus")); } },
           { id: "replace", label: "Find and Replace", hint: "Ctrl+H", keywords: "search substitute", run: () => { setFindReplaceShowReplace(true); setFindReplaceOpen(true); } },
+          { id: "link", label: "Add / Edit Link", hint: "Ctrl+K", keywords: "url href hyperlink anchor", run: handleEditLink },
           { id: "toggle-source", label: "Toggle Source / Rendered View", hint: "Ctrl+/", keywords: "markdown raw code", run: handleToggleSource },
           { id: "toggle-theme", label: "Toggle Theme (Day / Night)", keywords: "dark light appearance", run: handleThemeToggle },
           { id: "full-width", label: "Toggle Full Width", keywords: "column wide narrow", run: toggleFullWidth },

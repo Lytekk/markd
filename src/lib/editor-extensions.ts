@@ -8,6 +8,7 @@ import TableHeader from "@tiptap/extension-table-header";
 import TaskList from "@tiptap/extension-task-list";
 import TaskItem from "@tiptap/extension-task-item";
 import Placeholder from "@tiptap/extension-placeholder";
+import Link from "@tiptap/extension-link";
 import { common, createLowlight } from "lowlight";
 import { SearchAndReplace } from "@/lib/search-and-replace";
 import { SectionCommands } from "@/lib/section-commands";
@@ -56,6 +57,14 @@ export function getExtensions(opts: ExtensionOptions) {
     }),
     Placeholder.configure({
       placeholder: "Start writing…",
+    }),
+    Link.configure({
+      // Don't navigate the webview on click (that would leave the app). Opening
+      // in the system browser is a separate, capability-gated follow-up.
+      openOnClick: false,
+      autolink: true,
+      linkOnPaste: true,
+      HTMLAttributes: { rel: "noopener noreferrer nofollow", target: "_blank" },
     }),
     SearchAndReplace,
     ImagePasteDrop,
