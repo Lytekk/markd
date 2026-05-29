@@ -22,6 +22,7 @@ import { TabBar } from "@/components/TabBar";
 import { exportAsHtml, exportAsPdf, readFileByPath, saveToFile } from "@/lib/file-system";
 import { shouldCheckForUpdate, makeUpdateCheckRecord } from "@/lib/updater";
 import { askDialog } from "@/lib/dialogs";
+import { confirmModal } from "@/lib/modal";
 import { splitFrontmatter, joinFrontmatter } from "@/lib/frontmatter";
 
 function isTauri(): boolean {
@@ -341,19 +342,20 @@ export function App() {
     async (tabId: string) => {
       const tab = fileTabs.tabs.find((t) => t.id === tabId);
       if (tab && tab.isDirty) {
-        const shouldSave = await askDialog(
-          `"${tab.fileName}" has unsaved changes.\n\nSave before closing?`,
-          { title: "Unsaved Changes", kind: "warning" },
-        );
-        if (shouldSave) {
+        const choice = await confirmModal({
+          title: "Unsaved Changes",
+          message: `"${tab.fileName}" has unsaved changes.`,
+          buttons: [
+            { label: "Cancel", value: "cancel" },
+            { label: "Don't Save", value: "discard", variant: "danger" },
+            { label: "Save", value: "save", variant: "primary" },
+          ],
+        });
+        if (choice === "save") {
           const saved = await fileState.handleSave();
           if (!saved) return;
-        } else {
-          const discard = await askDialog(
-            `Discard changes to "${tab.fileName}"?`,
-            { title: "Discard Changes", kind: "warning" },
-          );
-          if (!discard) return;
+        } else if (choice !== "discard") {
+          return; // Cancel or dismissed — abort the close.
         }
       }
       const { switchTo } = fileTabs.closeTab(tabId);
@@ -380,11 +382,16 @@ export function App() {
   const handleCloseAllTabs = useCallback(async () => {
     const dirtyTabs = fileTabs.tabs.filter((t) => t.isDirty);
     if (dirtyTabs.length > 0) {
-      const shouldSave = await askDialog(
-        `${dirtyTabs.length} file(s) have unsaved changes.\n\nSave all before closing?`,
-        { title: "Unsaved Changes", kind: "warning" },
-      );
-      if (shouldSave) {
+      const choice = await confirmModal({
+        title: "Unsaved Changes",
+        message: `${dirtyTabs.length} file(s) have unsaved changes.`,
+        buttons: [
+          { label: "Cancel", value: "cancel" },
+          { label: "Don't Save", value: "discard", variant: "danger" },
+          { label: "Save All", value: "save", variant: "primary" },
+        ],
+      });
+      if (choice === "save") {
         for (const tab of dirtyTabs) {
           if (!tab.filePath) continue;
           if (tab.id === fileTabs.activeTabId) {
@@ -394,12 +401,8 @@ export function App() {
             await saveToFile(tab.filePath, tab.content);
           }
         }
-      } else {
-        const discard = await askDialog("Discard all unsaved changes?", {
-          title: "Discard Changes",
-          kind: "warning",
-        });
-        if (!discard) return;
+      } else if (choice !== "discard") {
+        return; // Cancel or dismissed — abort the close.
       }
     }
     const { switchTo } = fileTabs.closeAllTabs();
