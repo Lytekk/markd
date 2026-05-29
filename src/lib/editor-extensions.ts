@@ -15,6 +15,7 @@ import { SectionCommands } from "@/lib/section-commands";
 import { ImagePasteDrop } from "@/lib/image-paste-drop";
 import { ResolvedImage } from "@/lib/resolved-image";
 import { CodeBlockEnhance } from "@/lib/code-block-enhance";
+import { ExternalLinkOpen } from "@/lib/external-link-open";
 
 const lowlight = createLowlight(common);
 
@@ -71,5 +72,6 @@ export function getExtensions(opts: ExtensionOptions) {
     SectionCommands,
     StrikeShortcut,
     CodeBlockEnhance,
+    ExternalLinkOpen,
   ];
 }
