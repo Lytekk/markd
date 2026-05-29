@@ -7,7 +7,7 @@ import { useTheme } from "@/hooks/use-theme";
 import { Editor } from "@/components/Editor";
 import { Toolbar } from "@/components/Toolbar";
 import { Menubar } from "@/components/Menubar";
-import { Sidebar } from "@/components/Sidebar";
+import { Sidebar, type FileTreeAction } from "@/components/Sidebar";
 import { StatusBar } from "@/components/StatusBar";
 import { FindReplace } from "@/components/FindReplace";
 import { SourceEditor } from "@/components/SourceEditor";
@@ -26,7 +26,8 @@ import { useLineNumbers } from "@/hooks/use-line-numbers";
 import { useFileTabs } from "@/hooks/use-file-tabs";
 import { useZoom } from "@/hooks/use-zoom";
 import { TabBar } from "@/components/TabBar";
-import { exportAsHtml, exportAsPdf, readFileByPath, saveToFile } from "@/lib/file-system";
+import { createFile, createFolder, exportAsHtml, exportAsPdf, readFileByPath, renamePath, saveToFile, trashPath } from "@/lib/file-system";
+import { ensureMdExtension, joinPath, parentPath, targetDirForEntry, validateName } from "@/lib/file-tree-ops";
 import { shouldCheckForUpdate, makeUpdateCheckRecord } from "@/lib/updater";
 import { askDialog } from "@/lib/dialogs";
 import { confirmModal, promptModal } from "@/lib/modal";
@@ -995,6 +996,101 @@ export function App() {
     [fileState.handleOpenByPath, fileTabs.tabs, fileTabs.openInTab, handleSwitchTab],
   );
 
+  // File-tree CRUD from the sidebar context menu. The data-safety rule: when the
+  // ACTIVE file is renamed/trashed, update useFileState's path (or detach it) so
+  // the 30s autosave can't write to / resurrect the old path, and keep the open
+  // tab's label in sync. All four ops go through Rust (file-system.ts).
+  const handleFileAction = useCallback(
+    async (action: FileTreeAction, entry: { kind: string; name: string; path: string } | null) => {
+      const root = fileState.dirRoot;
+      if (!root) return;
+      const showError = (msg: string) =>
+        confirmModal({
+          title: "File operation failed",
+          message: msg,
+          buttons: [{ label: "OK", value: "ok" }],
+          defaultValue: "ok",
+        });
+      try {
+        if (action === "new-file" || action === "new-folder") {
+          const dir = targetDirForEntry(
+            entry ? { path: entry.path, isDirectory: entry.kind === "directory" } : null,
+            root,
+          );
+          const isFile = action === "new-file";
+          const name = await promptModal({
+            title: isFile ? "New file" : "New folder",
+            label: "Name",
+            placeholder: isFile ? "notes.md" : "folder",
+            okLabel: "Create",
+            validate: validateName,
+          });
+          if (name == null) return;
+          const finalName = isFile ? ensureMdExtension(name.trim()) : name.trim();
+          const targetPath = joinPath(dir, finalName);
+          if (isFile) {
+            await createFile(targetPath);
+            await fileState.refreshTree();
+            await handleFileSelectWithTabs({ kind: "file", name: finalName, path: targetPath });
+          } else {
+            await createFolder(targetPath);
+            await fileState.refreshTree();
+          }
+        } else if (action === "rename" && entry) {
+          const next = await promptModal({
+            title: `Rename "${entry.name}"`,
+            label: "New name",
+            defaultValue: entry.name,
+            okLabel: "Rename",
+            validate: validateName,
+          });
+          if (next == null || next.trim() === entry.name) return;
+          const finalName = entry.kind === "file" ? ensureMdExtension(next.trim()) : next.trim();
+          const newPath = joinPath(parentPath(entry.path), finalName);
+          await renamePath(entry.path, newPath);
+          if (fileState.filePath === entry.path) {
+            fileState.updateActiveFilePath(newPath, finalName);
+            fileTabs.updateTabPath(fileTabs.activeTabId, newPath, finalName);
+          } else {
+            const t = fileTabs.tabs.find((tab) => tab.filePath === entry.path);
+            if (t) fileTabs.updateTabPath(t.id, newPath, finalName);
+          }
+          await fileState.refreshTree();
+        } else if (action === "delete" && entry) {
+          const choice = await confirmModal({
+            title: "Delete",
+            message: `Move "${entry.name}" to the recycle bin?`,
+            buttons: [
+              { label: "Delete", value: "delete", variant: "danger" },
+              { label: "Cancel", value: "cancel" },
+            ],
+            defaultValue: "cancel",
+          });
+          if (choice !== "delete") return;
+          await trashPath(entry.path);
+          const fp = fileState.filePath;
+          const insideTrashed =
+            !!fp && (fp === entry.path || fp.startsWith(entry.path + "/") || fp.startsWith(entry.path + "\\"));
+          if (insideTrashed) fileState.detachActiveFile();
+          await fileState.refreshTree();
+        }
+      } catch (e) {
+        await showError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [
+      fileState.dirRoot,
+      fileState.filePath,
+      fileState.refreshTree,
+      fileState.updateActiveFilePath,
+      fileState.detachActiveFile,
+      fileTabs.tabs,
+      fileTabs.updateTabPath,
+      fileTabs.activeTabId,
+      handleFileSelectWithTabs,
+    ],
+  );
+
   const handleCloseFindReplace = useCallback(() => {
     setFindReplaceOpen(false);
     editor?.commands.clearDecorations();
@@ -1016,6 +1112,8 @@ export function App() {
         onOpenFolder={fileState.handleOpenFolder}
         onToggle={() => setSidebarCollapsed((c) => !c)}
         onRecentFileSelect={handleRecentFileSelect}
+        canEditTree={!!fileState.dirRoot}
+        onFileAction={handleFileAction}
       />
       <div className="markd-editor-area">
         <TabBar

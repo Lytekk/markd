@@ -101,6 +101,48 @@ fn read_dir(path: String) -> Result<Vec<DirEntry>, String> {
     Ok(entries)
 }
 
+/// Create an empty file. Fails if it already exists (never clobber), creating
+/// any missing parent directories. Like read_file/write_file this uses std::fs
+/// directly and so bypasses the fs-plugin ACL — no capability entry needed.
+#[tauri::command]
+fn create_file(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if p.exists() {
+        return Err("A file with that name already exists".to_string());
+    }
+    if let Some(parent) = p.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, "").map_err(|e| e.to_string())
+}
+
+/// Create a directory (and any missing parents). Fails if it already exists.
+#[tauri::command]
+fn create_folder(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if p.exists() {
+        return Err("A folder with that name already exists".to_string());
+    }
+    std::fs::create_dir_all(&path).map_err(|e| e.to_string())
+}
+
+/// Rename/move a path. Fails if the destination already exists so a rename can
+/// never silently overwrite another file.
+#[tauri::command]
+fn rename_path(from: String, to: String) -> Result<(), String> {
+    if std::path::Path::new(&to).exists() {
+        return Err("A file or folder with that name already exists".to_string());
+    }
+    std::fs::rename(&from, &to).map_err(|e| e.to_string())
+}
+
+/// Move a path to the OS recycle bin/trash (recoverable), not a permanent
+/// delete. Uses the `trash` crate, which is cross-platform.
+#[tauri::command]
+fn trash_path(path: String) -> Result<(), String> {
+    trash::delete(&path).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -126,7 +168,16 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![get_opened_file, read_file, write_file, read_dir])
+        .invoke_handler(tauri::generate_handler![
+            get_opened_file,
+            read_file,
+            write_file,
+            read_dir,
+            create_file,
+            create_folder,
+            rename_path,
+            trash_path
+        ])
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(

@@ -1,10 +1,12 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState, type MouseEvent as ReactMouseEvent } from "react";
 import type { Editor } from "@tiptap/react";
 import type { FileEntry } from "@/lib/file-system";
 import type { RecentFile } from "@/hooks/use-recent-files";
 import { OutlinePanel } from "@/components/OutlinePanel";
 
 type SidebarTab = "files" | "outline";
+
+export type FileTreeAction = "new-file" | "new-folder" | "rename" | "delete";
 
 interface SidebarProps {
   tree: FileEntry[];
@@ -20,6 +22,9 @@ interface SidebarProps {
   onOpenFolder: () => void;
   onToggle: () => void;
   onRecentFileSelect: (file: RecentFile) => void;
+  /** True when the tree is editable (a folder is open in a Tauri build). */
+  canEditTree?: boolean;
+  onFileAction?: (action: FileTreeAction, entry: FileEntry | null) => void;
 }
 
 export function Sidebar({
@@ -36,7 +41,41 @@ export function Sidebar({
   onOpenFolder,
   onToggle,
   onRecentFileSelect,
+  canEditTree,
+  onFileAction,
 }: SidebarProps) {
+  const [treeMenu, setTreeMenu] = useState<{ x: number; y: number; entry: FileEntry | null } | null>(null);
+  const openTreeMenu = useCallback(
+    (e: ReactMouseEvent, entry: FileEntry | null) => {
+      if (!canEditTree) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setTreeMenu({ x: e.clientX, y: e.clientY, entry });
+    },
+    [canEditTree],
+  );
+  const runTreeAction = useCallback(
+    (action: FileTreeAction) => {
+      const entry = treeMenu?.entry ?? null;
+      setTreeMenu(null);
+      onFileAction?.(action, entry);
+    },
+    [treeMenu, onFileAction],
+  );
+  useEffect(() => {
+    if (!treeMenu) return;
+    const dismiss = () => setTreeMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setTreeMenu(null);
+    };
+    document.addEventListener("click", dismiss);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("click", dismiss);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [treeMenu]);
+
   return (
     <aside className={`markd-sidebar ${collapsed ? "collapsed" : ""}`}>
       <div className="markd-sidebar-header">
@@ -79,7 +118,7 @@ export function Sidebar({
       )}
 
       {activeTab === "files" ? (
-        <div className="markd-file-tree">
+        <div className="markd-file-tree" onContextMenu={(e) => openTreeMenu(e, null)}>
           {tree.length === 0 ? (
             recentFiles.length > 0 ? (
               <RecentFilesList files={recentFiles} onSelect={onRecentFileSelect} />
@@ -93,12 +132,38 @@ export function Sidebar({
               entries={tree}
               activeFile={activeFile}
               onFileSelect={onFileSelect}
+              onContext={openTreeMenu}
             />
           )}
         </div>
       ) : (
         <div className="markd-file-tree">
           <OutlinePanel editor={editor} />
+        </div>
+      )}
+      {treeMenu && (
+        <div
+          className="markd-context-menu"
+          style={{ left: treeMenu.x, top: treeMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button className="markd-context-item" onClick={() => runTreeAction("new-file")}>
+            New File…
+          </button>
+          <button className="markd-context-item" onClick={() => runTreeAction("new-folder")}>
+            New Folder…
+          </button>
+          {treeMenu.entry && (
+            <>
+              <div className="markd-context-separator" />
+              <button className="markd-context-item" onClick={() => runTreeAction("rename")}>
+                Rename…
+              </button>
+              <button className="markd-context-item" onClick={() => runTreeAction("delete")}>
+                Delete
+              </button>
+            </>
+          )}
         </div>
       )}
     </aside>
@@ -154,10 +219,12 @@ function FileTree({
   entries,
   activeFile,
   onFileSelect,
+  onContext,
 }: {
   entries: FileEntry[];
   activeFile: string;
   onFileSelect: (entry: FileEntry) => void;
+  onContext?: (e: ReactMouseEvent, entry: FileEntry) => void;
 }) {
   return (
     <>
@@ -167,6 +234,7 @@ function FileTree({
           entry={entry}
           activeFile={activeFile}
           onFileSelect={onFileSelect}
+          onContext={onContext}
         />
       ))}
     </>
@@ -177,10 +245,12 @@ function FileTreeItem({
   entry,
   activeFile,
   onFileSelect,
+  onContext,
 }: {
   entry: FileEntry;
   activeFile: string;
   onFileSelect: (entry: FileEntry) => void;
+  onContext?: (e: ReactMouseEvent, entry: FileEntry) => void;
 }) {
   const [expanded, setExpanded] = useState(true);
 
@@ -199,6 +269,7 @@ function FileTreeItem({
       <div
         className={`markd-file-item ${isActive ? "active" : ""}`}
         onClick={handleClick}
+        onContextMenu={(e) => onContext?.(e, entry)}
         style={{ paddingLeft: 16 + entry.depth * 16 }}
       >
         <span className="icon">
@@ -216,6 +287,7 @@ function FileTreeItem({
           entries={entry.children}
           activeFile={activeFile}
           onFileSelect={onFileSelect}
+          onContext={onContext}
         />
       )}
     </>

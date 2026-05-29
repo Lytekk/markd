@@ -163,6 +163,13 @@ export function useFileTabs() {
     setActiveTabId(id);
   }, []);
   const getMru = useCallback(() => mruRef.current.slice(), []);
+
+  // Update a tab's path + name after its file was renamed/moved on disk (the
+  // active file's path is owned by useFileState; this keeps the snapshot tabs
+  // and the TabBar label in sync).
+  const updateTabPath = useCallback((id: string, newPath: string, newName: string) => {
+    setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, filePath: newPath, fileName: newName } : t)));
+  }, []);
   useEffect(() => {
     const ids = new Set(tabs.map((t) => t.id));
     mruRef.current = mruRef.current.filter((id) => ids.has(id));
@@ -445,6 +452,7 @@ export function useFileTabs() {
     activeTab,
     activeTabId,
     getMru,
+    updateTabPath,
     switchTab,
     openInTab,
     newTab,

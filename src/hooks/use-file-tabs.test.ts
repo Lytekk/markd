@@ -150,3 +150,27 @@ describe("useFileTabs — MRU / quick-switch ordering", () => {
     expect(result.current.getMru()).not.toContain(aId);
   });
 });
+
+describe("useFileTabs — updateTabPath (file renamed/moved on disk)", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("updates the target tab's path and name in place", () => {
+    const { result } = renderHook(() => useFileTabs());
+    act(() => { result.current.openInTab("a.md", "/tmp/a.md", "A"); });
+    const id = result.current.tabs.find((t) => t.filePath === "/tmp/a.md")!.id;
+    act(() => { result.current.updateTabPath(id, "/tmp/renamed.md", "renamed.md"); });
+    const tab = result.current.tabs.find((t) => t.id === id)!;
+    expect(tab.filePath).toBe("/tmp/renamed.md");
+    expect(tab.fileName).toBe("renamed.md");
+  });
+
+  it("leaves other tabs untouched", () => {
+    const { result } = renderHook(() => useFileTabs());
+    act(() => { result.current.openInTab("a.md", "/tmp/a.md", "A"); });
+    act(() => { result.current.openInTab("b.md", "/tmp/b.md", "B"); });
+    const aId = result.current.tabs.find((t) => t.filePath === "/tmp/a.md")!.id;
+    act(() => { result.current.updateTabPath(aId, "/tmp/a2.md", "a2.md"); });
+    const b = result.current.tabs.find((t) => t.filePath === "/tmp/b.md");
+    expect(b!.fileName).toBe("b.md");
+  });
+});
