@@ -1117,6 +1117,33 @@ body {
   opacity: 0.85;
 }
 
+/* Snippet picker rows (Ctrl+Space) — two lines: label + trigger hint on top,
+   a dimmed one-line body preview below. */
+.markd-snippet-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.markd-snippet-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+}
+.markd-snippet-preview {
+  font-size: 11px;
+  opacity: 0.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--mono-font, ui-monospace, monospace);
+}
+.markd-command-item.selected .markd-snippet-preview {
+  opacity: 0.8;
+}
+
 /* Slash menu (/) — a caret-anchored popup (position set inline from clientRect). */
 .markd-slash-menu {
   position: fixed;

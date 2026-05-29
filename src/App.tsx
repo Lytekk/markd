@@ -15,6 +15,9 @@ import { ContextMenu } from "@/components/ContextMenu";
 import { ModalHost } from "@/components/ModalHost";
 import { CommandPalette } from "@/components/CommandPalette";
 import { TabSwitcher } from "@/components/TabSwitcher";
+import { SnippetPicker } from "@/components/SnippetPicker";
+import { loadSnippets, resolveTokens } from "@/lib/snippets";
+import { insertSnippetIntoEditor } from "@/lib/snippet-insert";
 import { useRecentFiles } from "@/hooks/use-recent-files";
 import { useFullWidth } from "@/hooks/use-full-width";
 import { useLineNumbers } from "@/hooks/use-line-numbers";
@@ -42,6 +45,10 @@ export function App() {
   const [findReplaceShowReplace, setFindReplaceShowReplace] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [tabSwitcherOpen, setTabSwitcherOpen] = useState(false);
+  const [snippetPickerOpen, setSnippetPickerOpen] = useState(false);
+  const [snippets] = useState(() => loadSnippets());
+  // Source-mode caret captured at Ctrl+Space (before the picker steals focus).
+  const sourceCaretRef = useRef<{ start: number; end: number } | null>(null);
   const lastSearchTermRef = useRef("");
   const [sourceMode, setSourceMode] = useState(false);
   const [sourceMarkdown, setSourceMarkdown] = useState("");
@@ -277,6 +284,40 @@ export function App() {
       fileState.markDirty();
     },
     [fileState.markDirty],
+  );
+
+  // Insert a snippet body at the caret. Rendered mode routes through the
+  // caret-safe snippet-insert helper; source mode splices the raw text into the
+  // textarea at the captured (or live, blur-retained) caret and restores it.
+  const insertSnippet = useCallback(
+    (body: string) => {
+      if (sourceMode) {
+        const live = document.querySelector(".markd-source-textarea") as HTMLTextAreaElement | null;
+        const sel =
+          sourceCaretRef.current ??
+          (live
+            ? { start: live.selectionStart, end: live.selectionEnd }
+            : { start: sourceMarkdown.length, end: sourceMarkdown.length });
+        const resolved = resolveTokens(body);
+        const caretIdx = resolved.indexOf("$1");
+        const text = caretIdx >= 0 ? resolved.slice(0, caretIdx) + resolved.slice(caretIdx + 2) : resolved;
+        const next = sourceMarkdown.slice(0, sel.start) + text + sourceMarkdown.slice(sel.end);
+        const caretPos = sel.start + (caretIdx >= 0 ? caretIdx : text.length);
+        setSourceMarkdown(next);
+        fileState.markDirty();
+        requestAnimationFrame(() => {
+          const t = document.querySelector(".markd-source-textarea") as HTMLTextAreaElement | null;
+          if (t) {
+            t.focus();
+            t.selectionStart = t.selectionEnd = caretPos;
+          }
+        });
+      } else if (editor) {
+        insertSnippetIntoEditor(editor, body);
+      }
+      sourceCaretRef.current = null;
+    },
+    [sourceMode, sourceMarkdown, editor, fileState.markDirty],
   );
 
   // Window title
@@ -671,6 +712,18 @@ export function App() {
           case "0":
             e.preventDefault();
             resetZoom();
+            break;
+          case " ":
+            // Ctrl+Space: snippet picker. Guard IME composition (Ctrl+Space also
+            // toggles some input methods) so we don't fight it. Capture the source
+            // textarea caret now, before the picker steals focus.
+            if (e.isComposing) break;
+            e.preventDefault();
+            {
+              const ta = document.querySelector(".markd-source-textarea") as HTMLTextAreaElement | null;
+              sourceCaretRef.current = ta ? { start: ta.selectionStart, end: ta.selectionEnd } : null;
+            }
+            setSnippetPickerOpen((o) => !o);
             break;
           case "k":
             e.preventDefault();
@@ -1073,6 +1126,12 @@ export function App() {
         }}
         onClose={() => setTabSwitcherOpen(false)}
       />
+      <SnippetPicker
+        open={snippetPickerOpen}
+        snippets={snippets}
+        onInsert={insertSnippet}
+        onClose={() => setSnippetPickerOpen(false)}
+      />
       <CommandPalette
         open={commandPaletteOpen}
         onClose={() => setCommandPaletteOpen(false)}
@@ -1080,6 +1139,7 @@ export function App() {
           { id: "new", label: "New File", hint: "Ctrl+N", keywords: "create blank", run: fileState.handleNew },
           { id: "new-tab", label: "New Tab", hint: "Ctrl+T", run: handleNewTab },
           { id: "switch-tab", label: "Switch Tab…", hint: "Ctrl+Shift+E", keywords: "go to file quick open buffer change", run: () => setTabSwitcherOpen(true) },
+          { id: "insert-snippet", label: "Insert Snippet…", hint: "Ctrl+Space", keywords: "template shortcut macro abbreviation typed", run: () => setSnippetPickerOpen(true) },
           { id: "open", label: "Open File…", hint: "Ctrl+O", keywords: "load", run: fileState.handleOpen },
           { id: "open-folder", label: "Open Folder…", keywords: "directory workspace", run: fileState.handleOpenFolder },
           { id: "save", label: "Save", hint: "Ctrl+S", run: fileState.handleSave },
