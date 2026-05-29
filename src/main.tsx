@@ -5,6 +5,8 @@ import "./styles/base.css";
 import "./styles/themes/day.css";
 import "./styles/themes/night.css";
 import "./styles/mermaid.css";
+import "./styles/math.css";
+import "katex/dist/katex.min.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

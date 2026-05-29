@@ -10,6 +10,7 @@
 import { Extension, type Editor, type Range } from "@tiptap/core";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import Suggestion from "@tiptap/suggestion";
+import { promptModal } from "./modal";
 
 export interface SlashItem {
   title: string;
@@ -30,6 +31,26 @@ export const SLASH_ITEMS: SlashItem[] = [
   { title: "Code Block", keywords: "fenced pre", run: (e, r) => e.chain().focus().deleteRange(r).toggleCodeBlock().run() },
   { title: "Table", keywords: "grid", run: (e, r) => e.chain().focus().deleteRange(r).insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run() },
   { title: "Divider", keywords: "hr horizontal rule separator", run: (e, r) => e.chain().focus().deleteRange(r).setHorizontalRule().run() },
+  {
+    title: "Math Block",
+    keywords: "latex katex equation formula tex display",
+    run: (e, r) => {
+      e.chain().focus().deleteRange(r).run();
+      void promptModal({ title: "Insert math block", label: "LaTeX", placeholder: "\\int_0^1 x^2\\,dx", okLabel: "Insert" }).then((latex) => {
+        if (latex != null && latex.trim()) e.chain().focus().insertContent({ type: "blockMath", attrs: { latex: latex.trim() } }).run();
+      });
+    },
+  },
+  {
+    title: "Inline Math",
+    keywords: "latex katex equation formula tex",
+    run: (e, r) => {
+      e.chain().focus().deleteRange(r).run();
+      void promptModal({ title: "Insert inline math", label: "LaTeX", placeholder: "e^{i\\pi}+1=0", okLabel: "Insert" }).then((latex) => {
+        if (latex != null && latex.trim()) e.chain().focus().insertContent({ type: "inlineMath", attrs: { latex: latex.trim() } }).run();
+      });
+    },
+  },
 ];
 
 /** Substring match over title + keywords. Empty query → all items. */

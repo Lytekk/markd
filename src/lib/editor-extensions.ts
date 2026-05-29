@@ -19,6 +19,7 @@ import { ExternalLinkOpen } from "@/lib/external-link-open";
 import { SlashMenu } from "@/lib/slash-menu";
 import { FocusMode } from "@/lib/focus-mode";
 import { MermaidPreview } from "@/lib/mermaid-preview";
+import { InlineMath, BlockMath } from "@/lib/math";
 
 const lowlight = createLowlight(common);
 
@@ -79,5 +80,7 @@ export function getExtensions(opts: ExtensionOptions) {
     SlashMenu,
     FocusMode,
     MermaidPreview,
+    InlineMath,
+    BlockMath,
   ];
 }

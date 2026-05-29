@@ -25,6 +25,14 @@ describe("filterSlashItems", () => {
   it("returns an empty list when nothing matches", () => {
     expect(filterSlashItems("zzzz")).toEqual([]);
   });
+
+  it("offers math insertion (block + inline), reachable by latex/katex keywords", () => {
+    const byMath = filterSlashItems("math").map((i) => i.title);
+    expect(byMath).toContain("Math Block");
+    expect(byMath).toContain("Inline Math");
+    expect(filterSlashItems("latex").map((i) => i.title)).toContain("Math Block");
+    expect(filterSlashItems("katex").map((i) => i.title)).toContain("Inline Math");
+  });
 });
 
 describe("buildSlashRows", () => {

@@ -1,0 +1,30 @@
+/* KaTeX math nodes. KaTeX ships its own katex.min.css (imported in main.tsx);
+   these rules only style the wrapper the NodeView creates. Kept out of base.css
+   for component isolation (same reason as mermaid.css). */
+.markd-math-block {
+  display: block;
+  text-align: center;
+  margin: 0.8em 0;
+  overflow-x: auto;
+}
+.markd-math-inline {
+  /* inline flow; KaTeX sizes itself */
+}
+.markd-math-inline .katex,
+.markd-math-block .katex {
+  font-size: 1.05em;
+}
+/* KaTeX's own error color when throwOnError:false renders a bad formula, plus
+   our belt-and-suspenders error span. */
+.markd-math-error,
+.katex .katex-error {
+  color: var(--code-keyword, #d73a49);
+  font-family: var(--monospace);
+  font-size: 0.9em;
+}
+/* Selection affordance for the atom nodes (click selects the whole node). */
+.markd-math-inline.ProseMirror-selectednode,
+.markd-math-block.ProseMirror-selectednode {
+  outline: 2px solid var(--primary-color, #4361ee);
+  border-radius: 4px;
+}
