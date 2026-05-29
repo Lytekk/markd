@@ -103,4 +103,14 @@ describe("base.css layout", () => {
     expect(selected, "missing `.markd-command-item.selected` rule").not.toBeNull();
     expect(selected).toMatch(/background:/);
   });
+
+  test("the slash menu is a caret-anchored popup with a highlighted selection", () => {
+    const menu = ruleBody(".markd-slash-menu");
+    expect(menu, "missing `.markd-slash-menu` rule").not.toBeNull();
+    expect(menu).toMatch(/position:\s*fixed/);
+
+    const selected = ruleBody(".markd-slash-item.selected");
+    expect(selected, "missing `.markd-slash-item.selected` rule").not.toBeNull();
+    expect(selected).toMatch(/background:/);
+  });
 });

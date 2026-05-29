@@ -16,6 +16,7 @@ import { ImagePasteDrop } from "@/lib/image-paste-drop";
 import { ResolvedImage } from "@/lib/resolved-image";
 import { CodeBlockEnhance } from "@/lib/code-block-enhance";
 import { ExternalLinkOpen } from "@/lib/external-link-open";
+import { SlashMenu } from "@/lib/slash-menu";
 
 const lowlight = createLowlight(common);
 
@@ -73,5 +74,6 @@ export function getExtensions(opts: ExtensionOptions) {
     StrikeShortcut,
     CodeBlockEnhance,
     ExternalLinkOpen,
+    SlashMenu,
   ];
 }

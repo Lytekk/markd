@@ -1082,6 +1082,50 @@ body {
   text-align: center;
 }
 
+/* Slash menu (/) — a caret-anchored popup (position set inline from clientRect). */
+.markd-slash-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 200px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--bg-color, #fff);
+  color: var(--text-color);
+  border: 1px solid var(--border-color, rgba(0, 0, 0, 0.12));
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22);
+}
+
+.markd-slash-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text-color);
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.markd-slash-item.selected,
+.markd-slash-item:hover {
+  background: var(--primary-color, #4a90d9);
+  color: #fff;
+}
+
+.markd-slash-empty {
+  padding: 10px;
+  font-size: 13px;
+  opacity: 0.6;
+}
+
 /* Keyboard focus visibility — the button resets strip the UA outline, leaving
    keyboard/AT users with no focus indicator on the chrome. Restore a ring via
    :focus-visible (mouse users are unaffected). #write is intentionally excluded
