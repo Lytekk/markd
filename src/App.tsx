@@ -345,10 +345,11 @@ export function App() {
         const choice = await confirmModal({
           title: "Unsaved Changes",
           message: `"${tab.fileName}" has unsaved changes.`,
+          defaultValue: "cancel",
           buttons: [
-            { label: "Cancel", value: "cancel" },
-            { label: "Don't Save", value: "discard", variant: "danger" },
             { label: "Save", value: "save", variant: "primary" },
+            { label: "Don't Save", value: "discard", variant: "danger" },
+            { label: "Cancel", value: "cancel" },
           ],
         });
         if (choice === "save") {
@@ -385,10 +386,11 @@ export function App() {
       const choice = await confirmModal({
         title: "Unsaved Changes",
         message: `${dirtyTabs.length} file(s) have unsaved changes.`,
+        defaultValue: "cancel",
         buttons: [
-          { label: "Cancel", value: "cancel" },
-          { label: "Don't Save", value: "discard", variant: "danger" },
           { label: "Save All", value: "save", variant: "primary" },
+          { label: "Don't Save", value: "discard", variant: "danger" },
+          { label: "Cancel", value: "cancel" },
         ],
       });
       if (choice === "save") {

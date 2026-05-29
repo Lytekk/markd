@@ -11,6 +11,7 @@ export function ModalHost() {
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const defaultBtnRef = useRef<HTMLButtonElement>(null);
 
   useEffect(
     () =>
@@ -23,10 +24,12 @@ export function ModalHost() {
   );
 
   useEffect(() => {
-    if (req?.kind === "prompt") {
-      const id = requestAnimationFrame(() => inputRef.current?.select());
-      return () => cancelAnimationFrame(id);
-    }
+    if (!req) return;
+    const id = requestAnimationFrame(() => {
+      if (req.kind === "prompt") inputRef.current?.select();
+      else defaultBtnRef.current?.focus(); // focus the safe-default button
+    });
+    return () => cancelAnimationFrame(id);
   }, [req]);
 
   const close = useCallback(
@@ -66,6 +69,14 @@ export function ModalHost() {
           if (e.key === "Escape") {
             e.preventDefault();
             close(null);
+          } else if (
+            e.key === "Enter" &&
+            req.kind === "confirm" &&
+            req.defaultValue != null
+          ) {
+            // Enter activates the safe default (e.g. Cancel), not a destructive button.
+            e.preventDefault();
+            close(req.defaultValue);
           }
         }}
       >
@@ -107,6 +118,7 @@ export function ModalHost() {
               {req.buttons.map((b) => (
                 <button
                   key={b.value}
+                  ref={b.value === req.defaultValue ? defaultBtnRef : undefined}
                   className={`markd-modal-btn ${b.variant ?? ""}`}
                   onClick={() => close(b.value)}
                 >

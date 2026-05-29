@@ -32,6 +32,8 @@ export type ModalRequest =
       title: string;
       message: string;
       buttons: ModalButton[];
+      /** Button value triggered by Enter and given initial focus (the safe default). */
+      defaultValue?: string;
       resolve: (value: string | null) => void;
     };
 
@@ -80,6 +82,7 @@ export function confirmModal(opts: {
   title: string;
   message: string;
   buttons: ModalButton[];
+  defaultValue?: string;
 }): Promise<string | null> {
   return new Promise((resolve) => {
     if (!listener) {
@@ -92,6 +95,7 @@ export function confirmModal(opts: {
       title: opts.title,
       message: opts.message,
       buttons: opts.buttons,
+      defaultValue: opts.defaultValue,
       resolve,
     });
   });

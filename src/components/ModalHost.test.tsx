@@ -46,4 +46,21 @@ describe("ModalHost", () => {
     fireEvent.click(screen.getByText("Don't Save"));
     await expect(p).resolves.toBe("discard");
   });
+
+  it("a confirm dialog resolves its defaultValue on Enter (safe default)", async () => {
+    render(<ModalHost />);
+    const p = confirmModal({
+      title: "Unsaved Changes",
+      message: "has unsaved changes",
+      defaultValue: "cancel",
+      buttons: [
+        { label: "Save", value: "save", variant: "primary" },
+        { label: "Don't Save", value: "discard", variant: "danger" },
+        { label: "Cancel", value: "cancel" },
+      ],
+    });
+    await screen.findByText("has unsaved changes");
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Enter" });
+    await expect(p).resolves.toBe("cancel");
+  });
 });
