@@ -39,6 +39,7 @@ interface MenubarProps {
   onToggleFocusMode: () => void;
   onToggleFullWidth: () => void;
   onThemeSelect: (id: string) => void;
+  onCheckForUpdates: () => void;
   onNewTab: () => void;
   onCloseTab: () => void;
   onNextTab: () => void;
@@ -74,6 +75,7 @@ export function Menubar(props: MenubarProps) {
     onToggleSource,
     onToggleFullWidth,
     onThemeSelect,
+    onCheckForUpdates,
     onNewTab,
     onCloseTab,
     onNextTab,
@@ -182,6 +184,8 @@ export function Menubar(props: MenubarProps) {
     {
       label: "Help",
       items: [
+        { label: "Check for Updates…", onSelect: onCheckForUpdates },
+        "separator",
         {
           label: "About Markd",
           onSelect: () =>

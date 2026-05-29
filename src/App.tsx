@@ -19,6 +19,7 @@ import { useFileTabs } from "@/hooks/use-file-tabs";
 import { useZoom } from "@/hooks/use-zoom";
 import { TabBar } from "@/components/TabBar";
 import { exportAsHtml, exportAsPdf, readFileByPath, saveToFile } from "@/lib/file-system";
+import { shouldCheckForUpdate, makeUpdateCheckRecord } from "@/lib/updater";
 
 function isTauri(): boolean {
   // Tauri v2 exposes the IPC bridge as __TAURI_INTERNALS__ by default;
@@ -706,42 +707,74 @@ export function App() {
     };
   }, [fileState.filePath, fileState.fileName]);
 
-  // Auto-update check (startup-only, debounced to 1 hour)
-  useEffect(() => {
-    if (!isTauri()) return;
-    let cancelled = false;
-
-    (async () => {
-      const lastCheck = localStorage.getItem("markd-update-check");
-      if (lastCheck) {
-        const parsed = JSON.parse(lastCheck);
-        const sameVersion = parsed.v === __APP_VERSION__;
-        if (sameVersion && Date.now() - parsed.t < 3600000) return;
+  // Check for updates. `manual` surfaces "you're up to date" and errors via a
+  // dialog; the startup check stays quiet on no-update but NEVER swallows a
+  // thrown check() silently — a swallowed error hid a broken updater (a build
+  // compiled without the updater capability) for 21 days.
+  const checkForUpdates = useCallback(async (manual: boolean) => {
+    if (!isTauri()) {
+      if (manual) {
+        const { message } = await import("@tauri-apps/plugin-dialog");
+        await message("Updates are only available in the desktop app.", {
+          title: "Check for Updates",
+          kind: "info",
+        });
       }
+      return;
+    }
+    if (
+      !manual &&
+      !shouldCheckForUpdate(
+        localStorage.getItem("markd-update-check"),
+        __APP_VERSION__,
+        Date.now(),
+      )
+    ) {
+      return;
+    }
 
+    try {
       const { check } = await import("@tauri-apps/plugin-updater");
       const { ask, message } = await import("@tauri-apps/plugin-dialog");
-      if (cancelled) return;
-
       const update = await check();
-      localStorage.setItem("markd-update-check", JSON.stringify({ t: Date.now(), v: __APP_VERSION__ }));
-      if (!update) return;
+      // Record only AFTER a successful check, so a thrown check() keeps
+      // retrying rather than being debounced away with a stale marker.
+      localStorage.setItem(
+        "markd-update-check",
+        makeUpdateCheckRecord(__APP_VERSION__, Date.now()),
+      );
+      if (!update) {
+        if (manual) {
+          await message(`You're on the latest version — Markd ${__APP_VERSION__}.`, {
+            title: "No Updates Available",
+            kind: "info",
+          });
+        }
+        return;
+      }
 
       const shouldUpdate = await ask(
         `Markd ${update.version} is available.\nThe app will close to install and reopen automatically.`,
         { title: "Update Available", kind: "info" },
       );
       if (!shouldUpdate) return;
-
-      try {
-        await update.downloadAndInstall();
-      } catch (err) {
-        await message(`Update failed: ${err}`, { title: "Update Error", kind: "error" });
+      await update.downloadAndInstall();
+    } catch (err) {
+      console.error("Update check failed:", err);
+      if (manual) {
+        const { message } = await import("@tauri-apps/plugin-dialog");
+        await message(`Update check failed:\n${err}`, {
+          title: "Update Error",
+          kind: "error",
+        });
       }
-    })().catch(console.error);
-
-    return () => { cancelled = true; };
+    }
   }, []);
+
+  // Auto-update check on startup (debounced to 1 hour).
+  useEffect(() => {
+    void checkForUpdates(false);
+  }, [checkForUpdates]);
 
   const handleFileSelectWithTabs = useCallback(
     async (entry: { kind: string; name: string; path: string }) => {
@@ -836,6 +869,7 @@ export function App() {
           onToggleFocusMode={() => setFocusMode((f) => !f)}
           onToggleFullWidth={toggleFullWidth}
           onThemeSelect={(id) => switchTheme(id as typeof activeTheme)}
+          onCheckForUpdates={() => checkForUpdates(true)}
           onNewTab={handleNewTab}
           onCloseTab={() => handleCloseTab(fileTabs.activeTabId)}
           onNextTab={() => cycleTab(1)}

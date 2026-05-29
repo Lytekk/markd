@@ -992,7 +992,9 @@ body {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: max(0px, calc(50% - var(--editor-max-width, 860px) / 2));
+  /* Align the gutter to the new padding-centered text column (text starts at
+     max(60px, (100% - column)/2); numbers occupy the ~60px just left of it). */
+  left: calc(max(60px, (100% - var(--editor-max-width, 860px)) / 2) - 60px);
   width: 48px;
   overflow: hidden;
   padding: 30px 0 100px 0;
@@ -1018,10 +1020,16 @@ body {
 
 .markd-source-textarea {
   flex: 1;
-  max-width: var(--editor-max-width, 860px);
-  margin: 0 auto;
-  padding: 30px 60px 100px;
-  transition: max-width 0.25s ease;
+  width: 100%;
+  margin: 0;
+  /* The 860px reading column is created by adaptive horizontal padding rather
+     than a max-width clamp, so the textarea spans the full area and its
+     vertical scrollbar sits at the window edge — matching rendered mode
+     (.markd-editor-scroll). Full Width collapses the padding below. */
+  padding: 30px max(60px, calc((100% - var(--editor-max-width, 860px)) / 2)) 100px;
+  transition: padding 0.25s ease;
+  overflow-y: auto;
+  box-sizing: border-box;
   background: transparent;
   border: none;
   outline: none;
@@ -1033,7 +1041,17 @@ body {
   tab-size: 2;
   white-space: pre-wrap;
   word-wrap: break-word;
-  width: 100%;
+}
+
+/* Source view honors Full Width like #write: collapse the centering padding to
+   a fixed gutter so the column expands to fill the editor area. */
+[data-full-width="true"] .markd-source-textarea {
+  padding-left: 60px;
+  padding-right: 60px;
+}
+
+[data-full-width="true"] .markd-line-gutter {
+  left: 0;
 }
 
 /* Rendered mode line numbers (CSS counters on #write blocks) */
