@@ -1144,6 +1144,138 @@ body {
   opacity: 0.8;
 }
 
+/* Snippet manager modal — reuses .markd-modal-backdrop + .markd-modal-btn. */
+.markd-snippet-manager {
+  background: var(--bg-color, #fff);
+  color: var(--text-color);
+  border: 1px solid var(--border-color, rgba(0, 0, 0, 0.12));
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  width: min(560px, calc(100vw - 64px));
+  max-height: min(80vh, 720px);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.markd-snippet-manager-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.markd-snippet-manager-head h2 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+}
+.markd-modal-close {
+  border: none;
+  background: transparent;
+  color: var(--text-muted, var(--text-color));
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.markd-snippet-manager-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.markd-snippet-manager-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 8px;
+  border-radius: 6px;
+}
+.markd-snippet-manager-item:hover {
+  background: var(--hover-bg, rgba(127, 127, 127, 0.1));
+}
+.markd-snippet-manager-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.markd-snippet-manager-trigger {
+  font-size: 11px;
+  opacity: 0.6;
+  font-family: var(--mono-font, ui-monospace, monospace);
+}
+.markd-snippet-manager-actions {
+  display: flex;
+  gap: 6px;
+}
+.markd-snippet-manager-actions button {
+  font-size: 12px;
+  padding: 3px 8px;
+  border: 1px solid var(--border-color, rgba(0, 0, 0, 0.15));
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-color);
+  cursor: pointer;
+}
+.markd-snippet-manager-actions button:hover {
+  background: var(--hover-bg, rgba(127, 127, 127, 0.12));
+}
+.markd-snippet-manager-empty {
+  padding: 12px 8px;
+  font-size: 13px;
+  opacity: 0.6;
+}
+.markd-snippet-manager-foot {
+  display: flex;
+  gap: 8px;
+  border-top: 1px solid var(--border-color, rgba(0, 0, 0, 0.1));
+  padding-top: 12px;
+}
+.markd-snippet-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-top: 1px solid var(--border-color, rgba(0, 0, 0, 0.1));
+  padding-top: 12px;
+}
+.markd-snippet-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted, var(--text-color));
+}
+.markd-snippet-field input,
+.markd-snippet-field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text-color);
+  background: var(--input-bg, rgba(127, 127, 127, 0.08));
+  border: 1px solid var(--border-color, rgba(0, 0, 0, 0.15));
+  border-radius: 6px;
+  outline: none;
+}
+.markd-snippet-field textarea {
+  font-family: var(--mono-font, ui-monospace, monospace);
+  resize: vertical;
+}
+.markd-snippet-field input:focus,
+.markd-snippet-field textarea:focus {
+  border-color: var(--primary-color, #4a90d9);
+}
+.markd-snippet-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 /* Slash menu (/) — a caret-anchored popup (position set inline from clientRect). */
 .markd-slash-menu {
   position: fixed;

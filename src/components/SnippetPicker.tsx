@@ -14,20 +14,29 @@ interface SnippetPickerProps {
   snippets: Snippet[];
   onInsert: (body: string) => void;
   onClose: () => void;
+  /** Optional: appends a "Manage snippets…" row that opens the manager. */
+  onManage?: () => void;
 }
 
-export function SnippetPicker({ open, snippets, onInsert, onClose }: SnippetPickerProps) {
-  const commands: Command[] = useMemo(
-    () =>
-      snippets.map((s) => ({
-        id: s.id,
-        label: s.label,
-        keywords: s.trigger, // searchable by trigger; not shown in the label
-        hint: s.trigger,
-        run: () => onInsert(s.body),
-      })),
-    [snippets, onInsert],
-  );
+export function SnippetPicker({ open, snippets, onInsert, onClose, onManage }: SnippetPickerProps) {
+  const commands: Command[] = useMemo(() => {
+    const rows: Command[] = snippets.map((s) => ({
+      id: s.id,
+      label: s.label,
+      keywords: s.trigger, // searchable by trigger; not shown in the label
+      hint: s.trigger,
+      run: () => onInsert(s.body),
+    }));
+    if (onManage) {
+      rows.push({
+        id: "__manage",
+        label: "⚙ Manage snippets…",
+        keywords: "customize edit add delete new manager",
+        run: onManage,
+      });
+    }
+    return rows;
+  }, [snippets, onInsert, onManage]);
 
   const previewById = useMemo(
     () => new Map(snippets.map((s) => [s.id, s.body])),

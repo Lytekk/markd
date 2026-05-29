@@ -16,8 +16,10 @@ import { ModalHost } from "@/components/ModalHost";
 import { CommandPalette } from "@/components/CommandPalette";
 import { TabSwitcher } from "@/components/TabSwitcher";
 import { SnippetPicker } from "@/components/SnippetPicker";
-import { loadSnippets, resolveTokens } from "@/lib/snippets";
+import { SnippetManager } from "@/components/SnippetManager";
+import { resolveTokens } from "@/lib/snippets";
 import { insertSnippetIntoEditor } from "@/lib/snippet-insert";
+import { useSnippets } from "@/hooks/use-snippets";
 import { useRecentFiles } from "@/hooks/use-recent-files";
 import { useFullWidth } from "@/hooks/use-full-width";
 import { useLineNumbers } from "@/hooks/use-line-numbers";
@@ -46,7 +48,8 @@ export function App() {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [tabSwitcherOpen, setTabSwitcherOpen] = useState(false);
   const [snippetPickerOpen, setSnippetPickerOpen] = useState(false);
-  const [snippets] = useState(() => loadSnippets());
+  const [snippetManagerOpen, setSnippetManagerOpen] = useState(false);
+  const { snippets, addSnippet, updateSnippet, deleteSnippet, resetSnippets } = useSnippets();
   // Source-mode caret captured at Ctrl+Space (before the picker steals focus).
   const sourceCaretRef = useRef<{ start: number; end: number } | null>(null);
   const lastSearchTermRef = useRef("");
@@ -1130,7 +1133,20 @@ export function App() {
         open={snippetPickerOpen}
         snippets={snippets}
         onInsert={insertSnippet}
+        onManage={() => {
+          setSnippetPickerOpen(false);
+          setSnippetManagerOpen(true);
+        }}
         onClose={() => setSnippetPickerOpen(false)}
+      />
+      <SnippetManager
+        open={snippetManagerOpen}
+        snippets={snippets}
+        onAdd={addSnippet}
+        onUpdate={updateSnippet}
+        onDelete={deleteSnippet}
+        onReset={resetSnippets}
+        onClose={() => setSnippetManagerOpen(false)}
       />
       <CommandPalette
         open={commandPaletteOpen}
@@ -1140,6 +1156,7 @@ export function App() {
           { id: "new-tab", label: "New Tab", hint: "Ctrl+T", run: handleNewTab },
           { id: "switch-tab", label: "Switch Tab…", hint: "Ctrl+Shift+E", keywords: "go to file quick open buffer change", run: () => setTabSwitcherOpen(true) },
           { id: "insert-snippet", label: "Insert Snippet…", hint: "Ctrl+Space", keywords: "template shortcut macro abbreviation typed", run: () => setSnippetPickerOpen(true) },
+          { id: "manage-snippets", label: "Manage Snippets…", keywords: "customize edit add delete snippet template shortcut", run: () => setSnippetManagerOpen(true) },
           { id: "open", label: "Open File…", hint: "Ctrl+O", keywords: "load", run: fileState.handleOpen },
           { id: "open-folder", label: "Open Folder…", keywords: "directory workspace", run: fileState.handleOpenFolder },
           { id: "save", label: "Save", hint: "Ctrl+S", run: fileState.handleSave },
