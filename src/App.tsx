@@ -78,6 +78,10 @@ export function App() {
       fileState.markDirty();
     },
     editorProps: {
+      // Keep the caret line comfortably off the viewport edges (a bit of scroll
+      // room — thin lines especially) instead of jamming against top/bottom.
+      scrollThreshold: 120,
+      scrollMargin: 120,
       attributes: {
         id: "write",
       },
