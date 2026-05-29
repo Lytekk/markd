@@ -6,7 +6,7 @@ Built on [Tauri 2](https://v2.tauri.app/) (Rust) + [TipTap 2](https://tiptap.dev
 
 ## Status
 
-**Built for internal use at [INCATO](https://incato.com). Best-effort, no SLA, no warranty.**
+**A personal project, built for daily writing and shared publicly. Best-effort — no SLA, no warranty.**
 
 Published publicly because it solves a real problem and a few people asked. If it works for you, great. If not, patches welcome — see below.
 

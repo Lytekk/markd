@@ -62,7 +62,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/INCATO-ai/markd/releases/latest/download/latest.json"
+        "https://github.com/Lytekk/markd/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFFMzBFMzk5MTZENzZFODMKUldTRGJ0Y1dtZU13SGpjcWR2SzhqQTV2RnhlNmxGK3NsWlgrWUhOaWI0V016cFVTVThyaTRlMGIK"
     }
