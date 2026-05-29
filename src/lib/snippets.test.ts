@@ -6,6 +6,7 @@ import {
   validateSnippet,
   loadSnippets,
   saveSnippets,
+  spliceSnippetText,
 } from "./snippets";
 
 describe("resolveTokens", () => {
@@ -96,5 +97,37 @@ describe("loadSnippets / saveSnippets", () => {
   it("drops malformed entries", () => {
     localStorage.setItem(SNIPPETS_KEY, JSON.stringify({ v: 1, snippets: [{ id: "ok", trigger: "t", label: "L", body: "b" }, { nope: true }] }));
     expect(loadSnippets()).toEqual([{ id: "ok", trigger: "t", label: "L", body: "b" }]);
+  });
+});
+
+describe("spliceSnippetText (source-mode insertion)", () => {
+  const now = new Date(2026, 4, 29, 14, 5);
+
+  it("inserts at a collapsed caret and places the caret after the text when no $1", () => {
+    const { text, caret } = spliceSnippetText("ab", 1, 1, "X");
+    expect(text).toBe("aXb");
+    expect(caret).toBe(2); // after the inserted "X"
+  });
+
+  it("consumes the first $1 and reports its offset as the caret", () => {
+    const { text, caret } = spliceSnippetText("ab", 1, 1, "<<$1>>");
+    expect(text).toBe("a<<>>b"); // $1 removed
+    expect(caret).toBe(1 + 2); // selStart + index of $1 within the inserted text
+  });
+
+  it("replaces a selection range", () => {
+    const { text } = spliceSnippetText("a SELECT b", 2, 8, "X");
+    expect(text).toBe("a X b");
+  });
+
+  it("resolves dynamic tokens before splicing", () => {
+    const { text } = spliceSnippetText("", 0, 0, "{{date}}", now);
+    expect(text).toBe("2026-05-29");
+  });
+
+  it("clamps cleanly at the end of the source", () => {
+    const { text, caret } = spliceSnippetText("ab", 2, 2, "Z");
+    expect(text).toBe("abZ");
+    expect(caret).toBe(3);
   });
 });

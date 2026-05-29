@@ -17,7 +17,7 @@ import { CommandPalette } from "@/components/CommandPalette";
 import { TabSwitcher } from "@/components/TabSwitcher";
 import { SnippetPicker } from "@/components/SnippetPicker";
 import { SnippetManager } from "@/components/SnippetManager";
-import { resolveTokens } from "@/lib/snippets";
+import { spliceSnippetText } from "@/lib/snippets";
 import { insertSnippetIntoEditor } from "@/lib/snippet-insert";
 import { useSnippets } from "@/hooks/use-snippets";
 import { useRecentFiles } from "@/hooks/use-recent-files";
@@ -301,11 +301,7 @@ export function App() {
           (live
             ? { start: live.selectionStart, end: live.selectionEnd }
             : { start: sourceMarkdown.length, end: sourceMarkdown.length });
-        const resolved = resolveTokens(body);
-        const caretIdx = resolved.indexOf("$1");
-        const text = caretIdx >= 0 ? resolved.slice(0, caretIdx) + resolved.slice(caretIdx + 2) : resolved;
-        const next = sourceMarkdown.slice(0, sel.start) + text + sourceMarkdown.slice(sel.end);
-        const caretPos = sel.start + (caretIdx >= 0 ? caretIdx : text.length);
+        const { text: next, caret: caretPos } = spliceSnippetText(sourceMarkdown, sel.start, sel.end, body);
         setSourceMarkdown(next);
         fileState.markDirty();
         requestAnimationFrame(() => {

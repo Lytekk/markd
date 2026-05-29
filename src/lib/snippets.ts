@@ -57,6 +57,28 @@ export function resolveTokens(body: string, now: Date = new Date()): string {
     .replace(/\{\{time\}\}/g, time);
 }
 
+
+/**
+ * Source-mode insertion: splice a snippet `body` into raw text at the selection
+ * [selStart, selEnd), resolving tokens and consuming the first `$1` to compute
+ * the resulting caret offset. Pure string math so the source-mode path is
+ * testable independently of the textarea DOM glue in App.tsx.
+ */
+export function spliceSnippetText(
+  source: string,
+  selStart: number,
+  selEnd: number,
+  body: string,
+  now?: Date,
+): { text: string; caret: number } {
+  const resolved = resolveTokens(body, now);
+  const idx = resolved.indexOf("$1");
+  const insert = idx >= 0 ? resolved.slice(0, idx) + resolved.slice(idx + 2) : resolved;
+  const text = source.slice(0, selStart) + insert + source.slice(selEnd);
+  const caret = selStart + (idx >= 0 ? idx : insert.length);
+  return { text, caret };
+}
+
 /** Returns an error message, or null if the snippet is valid. Body may be empty. */
 export function validateSnippet(s: { trigger: string; label: string; body: string }): string | null {
   if (!s.trigger.trim()) return "Trigger is required.";
