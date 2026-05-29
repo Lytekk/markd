@@ -37,6 +37,8 @@ interface RenderOpts {
   /** Injectable loader (defaults to the lazy dynamic import). Tests stub this. */
   load?: () => Promise<MermaidLike | { default: MermaidLike }>;
   theme?: string;
+  /** mermaid `themeVariables` (used with theme "base") to match the app palette. */
+  themeVariables?: Record<string, string>;
 }
 
 /** All `\`\`\`mermaid` code blocks in the document, with source + position. */
@@ -65,7 +67,12 @@ export async function renderMermaid(
     const load = opts.load ?? (() => import("mermaid"));
     const mod = await load();
     const m = ("default" in mod ? mod.default : mod) as MermaidLike;
-    m.initialize({ startOnLoad: false, securityLevel: "strict", theme: opts.theme ?? "default" });
+    m.initialize({
+      startOnLoad: false,
+      securityLevel: "strict",
+      theme: opts.theme ?? "default",
+      ...(opts.themeVariables ? { themeVariables: opts.themeVariables } : {}),
+    });
     const { svg } = await m.render(id, source);
     return { status: "done", svg };
   } catch (e) {
@@ -142,15 +149,66 @@ export function rememberRender(
   }
 }
 
-function requestRender(source: string, view: EditorView, theme: string): void {
-  if (cache.has(source) || pending.has(source)) return;
-  pending.add(source);
-  void renderMermaid(source, `markd-mermaid-${renderCounter++}`, { theme }).then((res) => {
-    pending.delete(source);
-    rememberRender(cache, source, res);
-    // Empty transaction → view update → props.decorations recomputes and picks
-    // up the now-cached SVG. No docChanged, so dirty-tracking ignores it. The
-    // recompute finds cache.has(source) → no re-request → terminates.
+interface MermaidThemeConfig {
+  /** "day" | "night" — also the cache-key prefix so each theme caches its own SVG. */
+  id: string;
+  theme: string;
+  themeVariables: Record<string, string>;
+}
+
+/**
+ * Build mermaid `themeVariables` from the app's own CSS custom properties so the
+ * diagram matches the active theme AND is always legible: lines + text use
+ * `--text-color` (dark on day, light on night) and node fills contrast on the
+ * surface. Falls back to sensible values when the DOM/vars are unavailable.
+ */
+function readMermaidThemeConfig(): MermaidThemeConfig {
+  const root = typeof document !== "undefined" ? document.documentElement : null;
+  const isNight = root?.getAttribute("data-theme") === "night";
+  const cs = root && typeof getComputedStyle !== "undefined" ? getComputedStyle(root) : null;
+  const v = (name: string, fallback: string) => cs?.getPropertyValue(name).trim() || fallback;
+  const text = v("--text-color", isNight ? "#e6e6e6" : "#1a1a2e");
+  const surface = v("--code-block-bg-color", isNight ? "#1e1e2e" : "#f3f4f6");
+  const accent = v("--primary-color", "#4361ee");
+  const nodeFill = isNight ? v("--code-bg-color", "#2a2a3c") : "#ffffff";
+  const altFill = isNight ? "#33334a" : "#eef0f2";
+  return {
+    id: isNight ? "night" : "day",
+    theme: "base",
+    themeVariables: {
+      darkMode: String(isNight),
+      background: surface,
+      primaryColor: nodeFill,
+      primaryTextColor: text,
+      primaryBorderColor: accent,
+      lineColor: text,
+      textColor: text,
+      secondaryColor: altFill,
+      tertiaryColor: surface,
+      fontFamily: v("--font-family", "sans-serif"),
+    },
+  };
+}
+
+/** Cache key — theme-prefixed so day and night cache distinct SVGs (and a theme
+    flip re-renders rather than showing the other theme's colors). */
+function cacheKey(themeId: string, source: string): string {
+  return `${themeId}::${source}`;
+}
+
+function requestRender(source: string, view: EditorView, config: MermaidThemeConfig): void {
+  const key = cacheKey(config.id, source);
+  if (cache.has(key) || pending.has(key)) return;
+  pending.add(key);
+  void renderMermaid(source, `markd-mermaid-${renderCounter++}`, {
+    theme: config.theme,
+    themeVariables: config.themeVariables,
+  }).then((res) => {
+    pending.delete(key);
+    rememberRender(cache, key, res);
+    // Empty transaction → props.decorations recomputes; the widget key encodes
+    // theme + status so it changes pending→done and PM rebuilds the widget
+    // (a stable key reuses the stale "Rendering…" DOM). cache.has(key) → ends.
     if (!view.isDestroyed) view.dispatch(view.state.tr);
   });
 }
@@ -159,9 +217,9 @@ function requestRender(source: string, view: EditorView, theme: string): void {
     view lifecycle (initial + every update) so a render reliably starts — we
     can't rely on props.decorations, which may run before the plugin view has
     captured the EditorView (the "stuck on Rendering…" bug). */
-function kickMermaidRenders(view: EditorView, theme: string): void {
+function kickMermaidRenders(view: EditorView, config: MermaidThemeConfig): void {
   for (const b of findMermaidBlocks(view.state.doc)) {
-    requestRender(b.source, view, theme);
+    requestRender(b.source, view, config);
   }
 }
 
@@ -170,8 +228,8 @@ function kickMermaidRenders(view: EditorView, theme: string): void {
     the stale placeholder DOM and never re-render (prosemirror-view compares
     spec.key) — which is why a diagram previously only appeared after a source
     toggle forced a full re-parse. */
-function statusTag(c: Map<string, MermaidRender>, source: string): string {
-  const r = c.get(source);
+function statusTag(c: Map<string, MermaidRender>, themeId: string, source: string): string {
+  const r = c.get(cacheKey(themeId, source));
   return r ? r.status : "pending";
 }
 
@@ -179,12 +237,13 @@ function statusTag(c: Map<string, MermaidRender>, source: string): string {
     `c` defaults to the shared render cache; tests inject their own. */
 export function buildMermaidDecorations(
   doc: PmNode,
+  themeId = "day",
   c: Map<string, MermaidRender> = cache,
 ): DecorationSet {
   const decorations = findMermaidBlocks(doc).map((b) =>
-    Decoration.widget(b.pos + b.nodeSize, () => createMermaidPreview(c.get(b.source)), {
+    Decoration.widget(b.pos + b.nodeSize, () => createMermaidPreview(c.get(cacheKey(themeId, b.source))), {
       side: 1,
-      key: `mermaid-${b.pos}-${statusTag(c, b.source)}`,
+      key: `mermaid-${b.pos}-${themeId}-${statusTag(c, themeId, b.source)}`,
       ignoreSelection: true,
     }),
   );
@@ -195,10 +254,6 @@ export const MermaidPreview = Extension.create({
   name: "mermaidPreview",
 
   addProseMirrorPlugins() {
-    const currentTheme = () =>
-      typeof document !== "undefined" && document.documentElement.getAttribute("data-theme") === "night"
-        ? "dark"
-        : "default";
     return [
       new Plugin({
         key: mermaidKey,
@@ -206,17 +261,34 @@ export const MermaidPreview = Extension.create({
           // Kick renders for the initial document. props.decorations may already
           // have run before any view was captured, so the plugin-view lifecycle
           // is the reliable place to start the async render.
-          kickMermaidRenders(editorView, currentTheme());
+          kickMermaidRenders(editorView, readMermaidThemeConfig());
+          // Re-render when the app theme flips (data-theme on <html>): an empty
+          // transaction recomputes decorations under the new theme id (cache
+          // miss -> kick render in the new palette -> recolored SVG).
+          let themeObserver: MutationObserver | null = null;
+          if (typeof MutationObserver !== "undefined" && typeof document !== "undefined") {
+            themeObserver = new MutationObserver(() => {
+              if (!editorView.isDestroyed) editorView.dispatch(editorView.state.tr);
+            });
+            themeObserver.observe(document.documentElement, {
+              attributes: true,
+              attributeFilter: ["data-theme"],
+            });
+          }
           return {
             update(view) {
-              // Content loaded after init (setContent), edits, and the empty-tx
-              // redraw all reach here; requestRender self-guards on cache/pending.
-              kickMermaidRenders(view, currentTheme());
+              // Content loaded after init (setContent), edits, the theme-flip tx,
+              // and the post-resolve redraw all reach here; requestRender
+              // self-guards on cache/pending.
+              kickMermaidRenders(view, readMermaidThemeConfig());
+            },
+            destroy() {
+              themeObserver?.disconnect();
             },
           };
         },
         props: {
-          decorations: (state) => buildMermaidDecorations(state.doc),
+          decorations: (state) => buildMermaidDecorations(state.doc, readMermaidThemeConfig().id),
         },
       }),
     ];

@@ -81,12 +81,22 @@ describe("buildMermaidDecorations (widget key encodes cache status)", () => {
   it("changes the widget key when a diagram goes from pending to done", () => {
     const doc = createTestDoc([{ type: "code", text: "graph TD\n A-->B", language: "mermaid" }]);
     const c = new Map<string, MermaidRender>();
-    const pendingKey = widgetKey(buildMermaidDecorations(doc, c));
-    c.set("graph TD\n A-->B", { status: "done", svg: "<svg/>" });
-    const doneKey = widgetKey(buildMermaidDecorations(doc, c));
+    const pendingKey = widgetKey(buildMermaidDecorations(doc, "day", c));
+    c.set("day::graph TD\n A-->B", { status: "done", svg: "<svg/>" }); // theme-prefixed key
+    const doneKey = widgetKey(buildMermaidDecorations(doc, "day", c));
     expect(pendingKey).not.toBe(doneKey);
     expect(doneKey).toContain("done");
     expect(pendingKey).toContain("pending");
+  });
+
+  it("caches per theme — a different theme id is a cache miss (pending)", () => {
+    const doc = createTestDoc([{ type: "code", text: "graph TD\n A-->B", language: "mermaid" }]);
+    const c = new Map<string, MermaidRender>();
+    c.set("day::graph TD\n A-->B", { status: "done", svg: "<svg/>" });
+    expect(widgetKey(buildMermaidDecorations(doc, "day", c))).toContain("done");
+    // night hasn't been rendered → its key is still pending (so a theme flip
+    // re-renders in the new palette rather than reusing day's colors)
+    expect(widgetKey(buildMermaidDecorations(doc, "night", c))).toContain("pending");
   });
 });
 
