@@ -8,6 +8,7 @@
 // verified in the running app.
 
 import { Extension, type Editor, type Range } from "@tiptap/core";
+import { Plugin, PluginKey } from "@tiptap/pm/state";
 import Suggestion from "@tiptap/suggestion";
 
 export interface SlashItem {
@@ -68,10 +69,28 @@ export const SlashMenu = Extension.create({
   name: "slashMenu",
 
   addProseMirrorPlugins() {
+    // Open the menu only when typing changed the doc — never when the caret
+    // merely navigates (arrow keys) onto an existing "/…" run, which would
+    // otherwise pop the menu open and trap subsequent arrow navigation.
+    // The tracker runs before Suggestion (earlier in the array → its apply
+    // runs first), so `allow` reads the current transaction's flag.
+    let lastTxnChangedDoc = false;
+    const typingTracker = new Plugin({
+      key: new PluginKey("slashMenuTypingTracker"),
+      state: {
+        init: () => null,
+        apply: (tr) => {
+          lastTxnChangedDoc = tr.docChanged;
+          return null;
+        },
+      },
+    });
     return [
+      typingTracker,
       Suggestion<SlashItem>({
         editor: this.editor,
         char: "/",
+        allow: () => lastTxnChangedDoc,
         items: ({ query }) => filterSlashItems(query),
         command: ({ editor, range, props }) => props.run(editor, range),
         render: () => {
