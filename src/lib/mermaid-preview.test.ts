@@ -6,6 +6,7 @@ import { createTestDoc } from "@/test/editor-helpers";
 import {
   findMermaidBlocks,
   createMermaidPreview,
+  buildMermaidDecorations,
   renderMermaid,
   rememberRender,
   type MermaidRender,
@@ -42,10 +43,10 @@ describe("findMermaidBlocks", () => {
   });
 });
 
-describe("createMermaidPreview (DOM builder)", () => {
+describe("createMermaidPreview (DOM builder — pure, renders from cache)", () => {
   it("injects the rendered SVG when the render is cached", () => {
     const cached: MermaidRender = { status: "done", svg: "<svg id='m'><g></g></svg>" };
-    const el = createMermaidPreview(cached, vi.fn());
+    const el = createMermaidPreview(cached);
     expect(el.classList.contains("markd-mermaid-preview")).toBe(true);
     expect(el.getAttribute("contenteditable")).toBe("false");
     expect(el.querySelector("svg")).toBeTruthy();
@@ -53,18 +54,49 @@ describe("createMermaidPreview (DOM builder)", () => {
 
   it("shows the error message as text (never as HTML) on a failed render", () => {
     const cached: MermaidRender = { status: "error", message: "<b>Syntax error</b> on line 2" };
-    const el = createMermaidPreview(cached, vi.fn());
+    const el = createMermaidPreview(cached);
     expect(el.querySelector("svg")).toBeNull();
     expect(el.querySelector("b")).toBeNull(); // message is NOT parsed as HTML
     expect(el.textContent).toContain("Syntax error");
   });
 
-  it("renders a loading placeholder and requests a render exactly once when uncached", () => {
-    const onRequest = vi.fn();
-    const el = createMermaidPreview(undefined, onRequest);
+  it("renders a loading placeholder when uncached", () => {
+    const el = createMermaidPreview(undefined);
     expect(el.querySelector("svg")).toBeNull();
     expect(el.textContent?.toLowerCase()).toContain("render");
-    expect(onRequest).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("buildMermaidDecorations (widget key encodes cache status)", () => {
+  // Regression: a stable widget key makes ProseMirror reuse the placeholder DOM
+  // and skip the builder once the async SVG lands (prosemirror-view dist
+  // index.js:3888 compares spec.key). The key MUST change when the cache
+  // transitions pending -> done, or the diagram stays stuck on "Rendering…".
+  const widgetKey = (set: ReturnType<typeof buildMermaidDecorations>): string => {
+    const decos = set.find();
+    const d = decos[0] as unknown as { spec?: { key?: string }; type?: { spec?: { key?: string } } };
+    return (d.spec?.key ?? d.type?.spec?.key ?? "") as string;
+  };
+
+  it("changes the widget key when a diagram goes from pending to done", () => {
+    const doc = createTestDoc([{ type: "code", text: "graph TD\n A-->B", language: "mermaid" }]);
+    const c = new Map<string, MermaidRender>();
+    const pendingKey = widgetKey(buildMermaidDecorations(doc, "day", c));
+    c.set("day::graph TD\n A-->B", { status: "done", svg: "<svg/>" }); // theme-prefixed key
+    const doneKey = widgetKey(buildMermaidDecorations(doc, "day", c));
+    expect(pendingKey).not.toBe(doneKey);
+    expect(doneKey).toContain("done");
+    expect(pendingKey).toContain("pending");
+  });
+
+  it("caches per theme — a different theme id is a cache miss (pending)", () => {
+    const doc = createTestDoc([{ type: "code", text: "graph TD\n A-->B", language: "mermaid" }]);
+    const c = new Map<string, MermaidRender>();
+    c.set("day::graph TD\n A-->B", { status: "done", svg: "<svg/>" });
+    expect(widgetKey(buildMermaidDecorations(doc, "day", c))).toContain("done");
+    // night hasn't been rendered → its key is still pending (so a theme flip
+    // re-renders in the new palette rather than reusing day's colors)
+    expect(widgetKey(buildMermaidDecorations(doc, "night", c))).toContain("pending");
   });
 });
 
@@ -82,9 +114,31 @@ describe("renderMermaid (lazy import, never throws)", () => {
     const res = await renderMermaid("graph TD;A-->B;", "mmd-1", { load: () => Promise.resolve(m) });
     expect(res).toEqual({ status: "done", svg: "<svg/>" });
     expect(m.initialize).toHaveBeenCalledWith(
-      expect.objectContaining({ startOnLoad: false, securityLevel: "strict" }),
+      expect.objectContaining({ startOnLoad: false, securityLevel: "strict", suppressErrorRendering: true }),
     );
     expect(m.render).toHaveBeenCalledWith("mmd-1", "graph TD;A-->B;");
+  });
+
+  it("removes the orphan temp element mermaid leaves in <body> when a render throws", async () => {
+    // mermaid appends <div id="d{id}"><svg id="{id}"> to document.body, then on a
+    // syntax error throws BEFORE removing it (mermaid.core.mjs render catch), so
+    // it orphans a tall element that shifts the whole page layout up. We must
+    // clean it up ourselves (suppressErrorRendering stops the visible graphic; this
+    // removes the leftover node).
+    const id = "mmd-orphan";
+    const wrapper = document.createElement("div");
+    wrapper.id = "d" + id;
+    const inner = document.createElement("div");
+    inner.id = id;
+    wrapper.appendChild(inner);
+    document.body.appendChild(wrapper);
+
+    const m = fakeMermaid({ render: vi.fn().mockRejectedValue(new Error("Parse error")) });
+    const res = await renderMermaid("bad diagram", id, { load: () => Promise.resolve(m) });
+
+    expect(res.status).toBe("error");
+    expect(document.getElementById("d" + id)).toBeNull();
+    expect(document.getElementById(id)).toBeNull();
   });
 
   it("unwraps an ESM default export from the dynamic import", async () => {
