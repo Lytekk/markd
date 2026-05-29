@@ -14,7 +14,7 @@ function isMarkdownFile(name: string): boolean {
   return MD_EXTENSIONS.some((ext) => name.toLowerCase().endsWith(ext));
 }
 
-function isTauri(): boolean {
+export function isTauri(): boolean {
   // Tauri v2 exposes the IPC bridge as __TAURI_INTERNALS__ by default;
   // __TAURI__ only exists when withGlobalTauri is enabled in tauri.conf.json.
   return "__TAURI_INTERNALS__" in window || "__TAURI__" in window;
@@ -67,7 +67,6 @@ async function tauriSaveFileAs(
   suggestedName = "untitled.md",
 ): Promise<{ path: string; name: string } | null> {
   const { save } = await import("@tauri-apps/plugin-dialog");
-  const { writeTextFile } = await import("@tauri-apps/plugin-fs");
 
   const path = await save({
     defaultPath: suggestedName,
@@ -75,7 +74,10 @@ async function tauriSaveFileAs(
   });
 
   if (!path) return null;
-  await writeTextFile(path, content);
+  // Route through tauriSaveFile so the write goes via the atomic write_file
+  // command (temp + rename), with the same plugin fallback.
+  const ok = await tauriSaveFile(path, content);
+  if (!ok) return null;
   const name = path.split(/[/\\]/).pop() ?? suggestedName;
   return { path, name };
 }
@@ -113,15 +115,16 @@ async function tauriReadDir(
 
     if (item.is_directory) {
       const children = await tauriReadDir(item.path, depth + 1);
-      if (children.length > 0) {
-        entries.push({
-          name: item.name,
-          path: item.path,
-          kind: "directory",
-          children,
-          depth,
-        });
-      }
+      // Show directories even when empty: the tree is now editable (CRUD), so a
+      // freshly-created folder must appear immediately rather than be hidden
+      // until it gains a markdown child.
+      entries.push({
+        name: item.name,
+        path: item.path,
+        kind: "directory",
+        children,
+        depth,
+      });
     } else if (isMarkdownFile(item.name)) {
       entries.push({
         name: item.name,
@@ -234,6 +237,37 @@ export async function saveFileAs(content: string, suggestedName?: string) {
 export async function openDirectory() {
   if (!isTauri()) return null; // Browser doesn't have a good equivalent for file trees
   return tauriOpenDirectory();
+}
+
+/** Re-read a known directory into a tree (no folder picker) — used to refresh
+    the sidebar after a create/rename/trash. */
+export async function readDirTree(rootPath: string): Promise<FileEntry[]> {
+  if (!isTauri()) return [];
+  return tauriReadDir(rootPath, 0);
+}
+
+/** Create an empty file at `path` (Rust create_file; bypasses the fs ACL). */
+export async function createFile(path: string): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("create_file", { path });
+}
+
+/** Create a directory at `path` (Rust create_folder). */
+export async function createFolder(path: string): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("create_folder", { path });
+}
+
+/** Rename/move `from` -> `to` (Rust rename_path; fails if `to` exists). */
+export async function renamePath(from: string, to: string): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("rename_path", { from, to });
+}
+
+/** Move `path` to the OS recycle bin (Rust trash_path; recoverable). */
+export async function trashPath(path: string): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("trash_path", { path });
 }
 
 export async function readFileByPath(path: string): Promise<string> {

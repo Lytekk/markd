@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { Editor } from "@tiptap/react";
+import { promptModal } from "@/lib/modal";
 
 interface ContextMenuProps {
   editor: Editor | null;
@@ -14,6 +15,8 @@ interface MenuItem {
   label: string;
   shortcut?: string;
   action: (editor: Editor) => void;
+  /** If present, the item is shown only when this returns true for the editor. */
+  when?: (editor: Editor) => boolean;
 }
 
 type MenuEntry = MenuItem | "separator";
@@ -62,8 +65,15 @@ const MENU_ITEMS: MenuEntry[] = [
   },
   {
     label: "Insert Image",
-    action: (e) => {
-      const url = prompt("Image URL:");
+    action: async (e) => {
+      // window.prompt is suppressed by WebView2 — use the in-app modal.
+      const url = await promptModal({
+        title: "Insert Image",
+        label: "Image URL or path",
+        placeholder: "https://…  or  ./image.png",
+        okLabel: "Insert",
+        validate: (v) => (v ? null : "Enter a URL or path"),
+      });
       if (url) e.chain().focus().setImage({ src: url }).run();
     },
   },
@@ -71,7 +81,69 @@ const MENU_ITEMS: MenuEntry[] = [
     label: "Insert Code Block",
     action: (e) => e.chain().focus().toggleCodeBlock().run(),
   },
+  // Table editing — only shown when the cursor is inside a table.
+  "separator",
+  {
+    label: "Add Row Above",
+    when: (e) => e.isActive("table"),
+    action: (e) => e.chain().focus().addRowBefore().run(),
+  },
+  {
+    label: "Add Row Below",
+    when: (e) => e.isActive("table"),
+    action: (e) => e.chain().focus().addRowAfter().run(),
+  },
+  {
+    label: "Add Column Left",
+    when: (e) => e.isActive("table"),
+    action: (e) => e.chain().focus().addColumnBefore().run(),
+  },
+  {
+    label: "Add Column Right",
+    when: (e) => e.isActive("table"),
+    action: (e) => e.chain().focus().addColumnAfter().run(),
+  },
+  {
+    label: "Toggle Header Row",
+    when: (e) => e.isActive("table"),
+    action: (e) => e.chain().focus().toggleHeaderRow().run(),
+  },
+  {
+    label: "Delete Row",
+    when: (e) => e.isActive("table"),
+    action: (e) => e.chain().focus().deleteRow().run(),
+  },
+  {
+    label: "Delete Column",
+    when: (e) => e.isActive("table"),
+    action: (e) => e.chain().focus().deleteColumn().run(),
+  },
+  {
+    label: "Delete Table",
+    when: (e) => e.isActive("table"),
+    action: (e) => e.chain().focus().deleteTable().run(),
+  },
 ];
+
+/**
+ * Resolve the visible menu entries for the current editor state: drop items
+ * whose `when` predicate is false, then collapse leading/trailing/duplicate
+ * separators so conditional sections don't leave stray dividers.
+ */
+function resolveItems(all: MenuEntry[], editor: Editor): MenuEntry[] {
+  const shown = all.filter(
+    (it) => it === "separator" || !it.when || it.when(editor),
+  );
+  const out: MenuEntry[] = [];
+  for (const it of shown) {
+    if (it === "separator" && (out.length === 0 || out[out.length - 1] === "separator")) {
+      continue;
+    }
+    out.push(it);
+  }
+  if (out[out.length - 1] === "separator") out.pop();
+  return out;
+}
 
 export function ContextMenu({ editor }: ContextMenuProps) {
   const [position, setPosition] = useState<MenuPosition | null>(null);
@@ -137,7 +209,7 @@ export function ContextMenu({ editor }: ContextMenuProps) {
       className="markd-context-menu"
       style={{ left: position.x, top: position.y }}
     >
-      {MENU_ITEMS.map((item, i) => {
+      {resolveItems(MENU_ITEMS, editor).map((item, i) => {
         if (item === "separator") {
           return <div key={i} className="markd-context-separator" />;
         }

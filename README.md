@@ -19,6 +19,7 @@ Published publicly because it solves a real problem and a few people asked. If i
 - Per-tab scroll position remembered across tab switches
 - External file modification detection — prompts to reload when a file changes on disk
 - Recent files, folder-tree sidebar, outline panel with scroll-aware active heading highlight, and collapsible heading sections
+- Create, rename, and delete files/folders from the file-tree right-click menu (delete moves to the OS recycle bin, so it's recoverable)
 - Drag-to-reorder document sections from the outline sidebar (or keyboard Alt+Up/Down)
 - Find + replace (Ctrl+F / Ctrl+H) with regex, whole-word, and case-sensitive toggles
 - F3 / Shift+F3 to find next/previous without reopening the panel; Ctrl+F3 to select word and search
@@ -29,7 +30,13 @@ Published publicly because it solves a real problem and a few people asked. If i
 - Line numbers (toggle via status bar) in both rendered and source modes
 - Window size and position remembered across restarts
 - Two themes (Day, Night) — extendable via CSS custom properties
-- Syntax highlighting for fenced code blocks (via [lowlight](https://github.com/wooorm/lowlight))
+- Syntax highlighting for fenced code blocks (via [lowlight](https://github.com/wooorm/lowlight)), each with a hover copy button + language badge
+- Mermaid diagrams — fenced ` ```mermaid ` blocks render as live SVG diagrams below the source (lazy-loaded; bad syntax shows an inline error, never a crash)
+- LaTeX math via [KaTeX](https://katex.org) — inline `$x$` and block `$$...$$`; double-click a rendered formula to edit its source
+- Slash menu — type `/` to insert headings, lists, tables, quotes, code blocks, dividers, and math at the caret
+- Customizable text snippets (Ctrl+Space) with `{{date}}`/`{{time}}`/`{{datetime}}` tokens and an add/edit/delete manager
+- Command palette (Ctrl+Shift+P) for quick command access
+- Links — Ctrl+K to add/edit, Ctrl/Cmd-click to open in your system browser
 - Relative image paths resolve against the current file's directory — your markdown stays portable
 - Single-instance: opening a file while Markd is running opens it in a new tab
 - `.md` / `.markdown` / `.mdx` / `.txt` file associations on install
@@ -48,6 +55,7 @@ Published publicly because it solves a real problem and a few people asked. If i
 | Ctrl+T | New tab |
 | Ctrl+Shift+T | Reopen last closed tab |
 | Ctrl+Tab / Ctrl+Shift+Tab | Cycle tabs |
+| Ctrl+Shift+E | Quick-switch tabs (fuzzy search) |
 | Ctrl+R | Reload active tab from disk |
 | Ctrl+Shift+R | Reload all tabs from disk |
 | Ctrl+/ | Toggle source mode |
@@ -57,6 +65,10 @@ Published publicly because it solves a real problem and a few people asked. If i
 | Ctrl+F3 | Find word at cursor |
 | F3 / Shift+F3 | Find next / previous |
 | Ctrl+Shift+X | Toggle strikethrough |
+| Ctrl+Shift+P | Command palette |
+| Ctrl+Space | Insert snippet (customizable) |
+| / (in editor) | Slash menu — insert block (heading, list, table, code, math…) |
+| Ctrl+K | Add / edit link |
 | Alt+1 | Sidebar: Files |
 | Alt+2 | Sidebar: Outline |
 | Alt+Up/Down | Reorder section (in outline) |
@@ -65,7 +77,6 @@ Published publicly because it solves a real problem and a few people asked. If i
 
 ## Known Issues
 
-- **Focus mode doesn't dim non-cursor blocks yet.** Typewriter scroll works. Details + investigation notes in the project's internal TODO.
 - UNC paths from WSL (`\\wsl.localhost\...`) work for opening markdown files and for the asset protocol that serves relative images, but they can be slow or flaky. Keep files on a local drive if you hit issues.
 - Devtools are enabled in the current release binary. Disable by setting `features = []` on the `tauri` dependency in `src-tauri/Cargo.toml` before rebuilding.
 

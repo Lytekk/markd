@@ -3,6 +3,7 @@ import {
   FileEntry,
   openFile,
   openDirectory,
+  readDirTree,
   saveToFile,
   saveFileAs,
   readFileByPath,
@@ -20,6 +21,8 @@ export interface FileState {
   filePath: string | null;
   isDirty: boolean;
   dirTree: FileEntry[];
+  /** The opened folder's root path, for refreshing the tree after CRUD. */
+  dirRoot: string | null;
   savedContent: string;
   lastSaved: number | null;
 }
@@ -30,6 +33,7 @@ export function useFileState() {
     filePath: null,
     isDirty: false,
     dirTree: [],
+    dirRoot: null,
     savedContent: "",
     lastSaved: null,
   });
@@ -72,6 +76,7 @@ export function useFileState() {
     setState((prev) => ({
       ...prev,
       dirTree: result.tree,
+      dirRoot: result.path,
     }));
   }, []);
 
@@ -136,6 +141,7 @@ export function useFileState() {
       filePath: null,
       isDirty: false,
       dirTree: prev.dirTree,
+      dirRoot: prev.dirRoot,
       savedContent: "",
       lastSaved: null,
     }));
@@ -177,6 +183,27 @@ export function useFileState() {
     },
     [],
   );
+
+  // Re-read the opened folder into the tree (after a create/rename/trash).
+  const refreshTree = useCallback(async () => {
+    if (!state.dirRoot) return;
+    const tree = await readDirTree(state.dirRoot);
+    setState((prev) => ({ ...prev, dirTree: tree }));
+  }, [state.dirRoot]);
+
+  // Rename of the ACTIVE file: point state (and the autosave target) at the new
+  // path so autosave writes to the new file, never resurrecting a ghost at the
+  // old path.
+  const updateActiveFilePath = useCallback((newPath: string, newName: string) => {
+    setState((prev) => ({ ...prev, filePath: newPath, fileName: newName }));
+  }, []);
+
+  // Trash of the ACTIVE file: detach from disk (filePath -> null) so the autosave
+  // effect (gated on filePath) clears its timer and can't recreate the trashed
+  // file. Content stays in the editor as an unsaved buffer.
+  const detachActiveFile = useCallback(() => {
+    setState((prev) => ({ ...prev, filePath: null, isDirty: true }));
+  }, []);
 
   // Auto-save: debounce 30s after last edit, only if file has a path
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -222,5 +249,8 @@ export function useFileState() {
     registerGetMarkdown,
     registerSetContent,
     restoreState,
+    refreshTree,
+    updateActiveFilePath,
+    detachActiveFile,
   };
 }

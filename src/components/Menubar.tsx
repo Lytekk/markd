@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Editor as TiptapEditor } from "@tiptap/react";
+import { messageDialog } from "@/lib/dialogs";
 
 export interface MenuItem {
   label: string;
@@ -39,6 +40,7 @@ interface MenubarProps {
   onToggleFocusMode: () => void;
   onToggleFullWidth: () => void;
   onThemeSelect: (id: string) => void;
+  onCheckForUpdates: () => void;
   onNewTab: () => void;
   onCloseTab: () => void;
   onNextTab: () => void;
@@ -58,6 +60,7 @@ export function Menubar(props: MenubarProps) {
     editor,
     sidebarCollapsed,
     sourceMode,
+    focusMode,
     fullWidth,
     activeTheme,
     themes,
@@ -72,8 +75,10 @@ export function Menubar(props: MenubarProps) {
     onReplace,
     onToggleSidebar,
     onToggleSource,
+    onToggleFocusMode,
     onToggleFullWidth,
     onThemeSelect,
+    onCheckForUpdates,
     onNewTab,
     onCloseTab,
     onNextTab,
@@ -164,10 +169,11 @@ export function Menubar(props: MenubarProps) {
           onSelect: onToggleFullWidth,
           checked: fullWidth,
         },
-        // Focus Mode hidden in v0.1.0 — typewriter-scroll half works but
-        // block dimming doesn't render. Re-enable once fixed. Handler and
-        // state (focusMode, onToggleFocusMode) stay wired so nothing else
-        // needs touching when we restore the menu entry.
+        {
+          label: "Focus Mode",
+          onSelect: onToggleFocusMode,
+          checked: focusMode,
+        },
         "separator",
         {
           label: "Theme",
@@ -182,10 +188,15 @@ export function Menubar(props: MenubarProps) {
     {
       label: "Help",
       items: [
+        { label: "Check for Updates…", onSelect: onCheckForUpdates },
+        "separator",
         {
           label: "About Markd",
           onSelect: () =>
-            window.alert("Markd — a distraction-free markdown editor."),
+            void messageDialog(
+              `Markd ${__APP_VERSION__}\n\nA distraction-free markdown editor.`,
+              { title: "About Markd" },
+            ),
         },
       ],
     },

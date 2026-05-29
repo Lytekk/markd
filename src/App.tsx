@@ -7,18 +7,32 @@ import { useTheme } from "@/hooks/use-theme";
 import { Editor } from "@/components/Editor";
 import { Toolbar } from "@/components/Toolbar";
 import { Menubar } from "@/components/Menubar";
-import { Sidebar } from "@/components/Sidebar";
+import { Sidebar, type FileTreeAction } from "@/components/Sidebar";
 import { StatusBar } from "@/components/StatusBar";
 import { FindReplace } from "@/components/FindReplace";
 import { SourceEditor } from "@/components/SourceEditor";
 import { ContextMenu } from "@/components/ContextMenu";
+import { ModalHost } from "@/components/ModalHost";
+import { CommandPalette } from "@/components/CommandPalette";
+import { TabSwitcher } from "@/components/TabSwitcher";
+import { SnippetPicker } from "@/components/SnippetPicker";
+import { SnippetManager } from "@/components/SnippetManager";
+import { spliceSnippetText } from "@/lib/snippets";
+import { insertSnippetIntoEditor } from "@/lib/snippet-insert";
+import { useSnippets } from "@/hooks/use-snippets";
 import { useRecentFiles } from "@/hooks/use-recent-files";
 import { useFullWidth } from "@/hooks/use-full-width";
 import { useLineNumbers } from "@/hooks/use-line-numbers";
 import { useFileTabs } from "@/hooks/use-file-tabs";
 import { useZoom } from "@/hooks/use-zoom";
 import { TabBar } from "@/components/TabBar";
-import { exportAsHtml, exportAsPdf, readFileByPath, saveToFile } from "@/lib/file-system";
+import { createFile, createFolder, exportAsHtml, exportAsPdf, readFileByPath, renamePath, saveToFile, trashPath } from "@/lib/file-system";
+import { ensureMdExtension, joinPath, parentPath, targetDirForEntry, validateName } from "@/lib/file-tree-ops";
+import { shouldCheckForUpdate, makeUpdateCheckRecord } from "@/lib/updater";
+import { askDialog } from "@/lib/dialogs";
+import { confirmModal, promptModal } from "@/lib/modal";
+import { normalizeUrl, wordRangeAt } from "@/lib/links";
+import { splitFrontmatter, joinFrontmatter } from "@/lib/frontmatter";
 
 function isTauri(): boolean {
   // Tauri v2 exposes the IPC bridge as __TAURI_INTERNALS__ by default;
@@ -32,9 +46,19 @@ export function App() {
   const [heldModifier, setHeldModifier] = useState<"ctrl" | "alt" | null>(null);
   const [findReplaceOpen, setFindReplaceOpen] = useState(false);
   const [findReplaceShowReplace, setFindReplaceShowReplace] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [tabSwitcherOpen, setTabSwitcherOpen] = useState(false);
+  const [snippetPickerOpen, setSnippetPickerOpen] = useState(false);
+  const [snippetManagerOpen, setSnippetManagerOpen] = useState(false);
+  const [snippetManagerAdd, setSnippetManagerAdd] = useState(false);
+  const { snippets, addSnippet, updateSnippet, deleteSnippet, resetSnippets } = useSnippets();
+  // Source-mode caret captured at Ctrl+Space (before the picker steals focus).
+  const sourceCaretRef = useRef<{ start: number; end: number } | null>(null);
   const lastSearchTermRef = useRef("");
   const [sourceMode, setSourceMode] = useState(false);
   const [sourceMarkdown, setSourceMarkdown] = useState("");
+  // Markdown captured when entering source mode, to detect a no-op toggle.
+  const sourceEntryMdRef = useRef("");
   const [focusMode, setFocusMode] = useState(false);
   const { activeTheme, switchTheme, themes } = useTheme();
   const { fullWidth, toggleFullWidth } = useFullWidth();
@@ -48,6 +72,9 @@ export function App() {
   // time, so it must be updated BEFORE setContent runs — do it synchronously
   // inside the registerSetContent callback.
   const fileDirRef = useRef<string>("");
+  // Leading YAML frontmatter, kept out of the editor (tiptap-markdown would
+  // corrupt it) and re-prepended verbatim on serialize. Tracks the active file.
+  const frontmatterRef = useRef<string>("");
 
   const editor = useEditor({
     extensions: [
@@ -65,6 +92,10 @@ export function App() {
       fileState.markDirty();
     },
     editorProps: {
+      // Keep the caret line comfortably off the viewport edges (a bit of scroll
+      // room — thin lines especially) instead of jamming against top/bottom.
+      scrollThreshold: 120,
+      scrollMargin: 120,
       attributes: {
         id: "write",
       },
@@ -74,16 +105,18 @@ export function App() {
   // Register editor methods with file state
   useEffect(() => {
     if (!editor) return;
-    fileState.registerGetMarkdown(() => {
-      return editor.storage.markdown.getMarkdown();
-    });
+    fileState.registerGetMarkdown(() =>
+      joinFrontmatter(frontmatterRef.current, editor.storage.markdown.getMarkdown()),
+    );
     fileState.registerSetContent((md: string, fileDir: string) => {
       fileDirRef.current = fileDir;
-      editor.commands.setContent(md, false);
+      const { frontmatter, body } = splitFrontmatter(md);
+      frontmatterRef.current = frontmatter;
+      editor.commands.setContent(body, false);
     });
-    fileTabs.registerGetMarkdown(() => {
-      return editor.storage.markdown.getMarkdown();
-    });
+    fileTabs.registerGetMarkdown(() =>
+      joinFrontmatter(frontmatterRef.current, editor.storage.markdown.getMarkdown()),
+    );
   }, [editor, fileState.registerGetMarkdown, fileState.registerSetContent, fileTabs.registerGetMarkdown]);
 
   // Track recent files when files are opened/saved
@@ -227,12 +260,24 @@ export function App() {
 
     if (!sourceMode) {
       // Switching TO source: serialize current editor content
-      const md = editor.storage.markdown.getMarkdown() as string;
+      const md = joinFrontmatter(
+        frontmatterRef.current,
+        editor.storage.markdown.getMarkdown() as string,
+      );
       setSourceMarkdown(md);
+      sourceEntryMdRef.current = md;
       setSourceMode(true);
     } else {
-      // Switching FROM source: parse markdown back into editor
-      editor.commands.setContent(sourceMarkdown);
+      // Switching FROM source: re-parse only if the source actually changed.
+      // Passing false suppresses onUpdate so a no-op toggle never flags a clean
+      // doc dirty (dirty is driven solely by edits via handleSourceMarkdownChange),
+      // and skipping the re-parse entirely keeps an unedited buffer byte-stable
+      // (no markdown normalization of list markers / spacing on a round-trip).
+      if (sourceMarkdown !== sourceEntryMdRef.current) {
+        const { frontmatter, body } = splitFrontmatter(sourceMarkdown);
+        frontmatterRef.current = frontmatter;
+        editor.commands.setContent(body, false);
+      }
       setSourceMode(false);
     }
   }, [editor, sourceMode, sourceMarkdown]);
@@ -244,6 +289,36 @@ export function App() {
       fileState.markDirty();
     },
     [fileState.markDirty],
+  );
+
+  // Insert a snippet body at the caret. Rendered mode routes through the
+  // caret-safe snippet-insert helper; source mode splices the raw text into the
+  // textarea at the captured (or live, blur-retained) caret and restores it.
+  const insertSnippet = useCallback(
+    (body: string) => {
+      if (sourceMode) {
+        const live = document.querySelector(".markd-source-textarea") as HTMLTextAreaElement | null;
+        const sel =
+          sourceCaretRef.current ??
+          (live
+            ? { start: live.selectionStart, end: live.selectionEnd }
+            : { start: sourceMarkdown.length, end: sourceMarkdown.length });
+        const { text: next, caret: caretPos } = spliceSnippetText(sourceMarkdown, sel.start, sel.end, body);
+        setSourceMarkdown(next);
+        fileState.markDirty();
+        requestAnimationFrame(() => {
+          const t = document.querySelector(".markd-source-textarea") as HTMLTextAreaElement | null;
+          if (t) {
+            t.focus();
+            t.selectionStart = t.selectionEnd = caretPos;
+          }
+        });
+      } else if (editor) {
+        insertSnippetIntoEditor(editor, body);
+      }
+      sourceCaretRef.current = null;
+    },
+    [sourceMode, sourceMarkdown, editor, fileState.markDirty],
   );
 
   // Window title
@@ -291,6 +366,15 @@ export function App() {
 
   const handleSwitchTab = useCallback(
     async (tabId: string) => {
+      // In source mode the live edits live in the SourceEditor textarea
+      // (`sourceMarkdown`), not the ProseMirror editor — commit them back first so
+      // switchTab's getMarkdown snapshot captures them instead of stale editor
+      // content (otherwise the departing tab silently loses the textarea edits).
+      if (sourceMode && editor) {
+        const { frontmatter, body } = splitFrontmatter(sourceMarkdown);
+        frontmatterRef.current = frontmatter;
+        editor.commands.setContent(body, false);
+      }
       const scrollEl = document.querySelector(".markd-editor-scroll") as HTMLElement | null;
       const departingScroll = scrollEl?.scrollTop ?? 0;
       const target = fileTabs.switchTab(tabId, departingScroll);
@@ -305,30 +389,45 @@ export function App() {
           } catch { /* file gone */ }
         }
         fileState.restoreState(target);
+        // restoreState synchronously repopulates the editor + frontmatterRef with
+        // the arriving tab; in source mode, re-derive the textarea from it so the
+        // SourceEditor shows the NEW tab's source, not the departing tab's.
+        if (sourceMode && editor) {
+          const md = joinFrontmatter(
+            frontmatterRef.current,
+            editor.storage.markdown.getMarkdown() as string,
+          );
+          setSourceMarkdown(md);
+          sourceEntryMdRef.current = md;
+        }
         requestAnimationFrame(() => {
           const el = document.querySelector(".markd-editor-scroll") as HTMLElement | null;
           if (el) el.scrollTop = target.scrollTop;
         });
       }
     },
-    [fileTabs.switchTab, fileTabs.hydrateTab, fileState.restoreState],
+    [sourceMode, sourceMarkdown, editor, fileTabs.switchTab, fileTabs.hydrateTab, fileState.restoreState],
   );
 
   const handleCloseTab = useCallback(
     async (tabId: string) => {
       const tab = fileTabs.tabs.find((t) => t.id === tabId);
       if (tab && tab.isDirty) {
-        const shouldSave = window.confirm(
-          `"${tab.fileName}" has unsaved changes.\n\nSave before closing?`,
-        );
-        if (shouldSave) {
+        const choice = await confirmModal({
+          title: "Unsaved Changes",
+          message: `"${tab.fileName}" has unsaved changes.`,
+          defaultValue: "cancel",
+          buttons: [
+            { label: "Save", value: "save", variant: "primary" },
+            { label: "Don't Save", value: "discard", variant: "danger" },
+            { label: "Cancel", value: "cancel" },
+          ],
+        });
+        if (choice === "save") {
           const saved = await fileState.handleSave();
           if (!saved) return;
-        } else {
-          const discard = window.confirm(
-            `Discard changes to "${tab.fileName}"?`,
-          );
-          if (!discard) return;
+        } else if (choice !== "discard") {
+          return; // Cancel or dismissed — abort the close.
         }
       }
       const { switchTo } = fileTabs.closeTab(tabId);
@@ -355,10 +454,17 @@ export function App() {
   const handleCloseAllTabs = useCallback(async () => {
     const dirtyTabs = fileTabs.tabs.filter((t) => t.isDirty);
     if (dirtyTabs.length > 0) {
-      const shouldSave = window.confirm(
-        `${dirtyTabs.length} file(s) have unsaved changes.\n\nSave all before closing?`,
-      );
-      if (shouldSave) {
+      const choice = await confirmModal({
+        title: "Unsaved Changes",
+        message: `${dirtyTabs.length} file(s) have unsaved changes.`,
+        defaultValue: "cancel",
+        buttons: [
+          { label: "Save All", value: "save", variant: "primary" },
+          { label: "Don't Save", value: "discard", variant: "danger" },
+          { label: "Cancel", value: "cancel" },
+        ],
+      });
+      if (choice === "save") {
         for (const tab of dirtyTabs) {
           if (!tab.filePath) continue;
           if (tab.id === fileTabs.activeTabId) {
@@ -368,9 +474,8 @@ export function App() {
             await saveToFile(tab.filePath, tab.content);
           }
         }
-      } else {
-        const discard = window.confirm("Discard all unsaved changes?");
-        if (!discard) return;
+      } else if (choice !== "discard") {
+        return; // Cancel or dismissed — abort the close.
       }
     }
     const { switchTo } = fileTabs.closeAllTabs();
@@ -419,6 +524,47 @@ export function App() {
     },
     [fileTabs.tabs, fileTabs.activeTabId, handleSwitchTab],
   );
+
+  // Ctrl+K: add / edit / remove a link on the selection (or insert a linked URL).
+  const handleEditLink = useCallback(async () => {
+    if (!editor) return;
+    const prev = editor.getAttributes("link").href as string | undefined;
+    const input = await promptModal({
+      title: prev ? "Edit Link" : "Add Link",
+      label: "URL",
+      defaultValue: prev ?? "",
+      placeholder: "https://…  (leave empty to remove)",
+      okLabel: prev ? "Update" : "Add",
+    });
+    if (input === null) return; // cancelled
+    const url = normalizeUrl(input);
+    if (!url) {
+      editor.chain().focus().extendMarkRange("link").unsetLink().run();
+      return;
+    }
+    const { from, to } = editor.state.selection;
+    if (from !== to || prev) {
+      // A selection, or the caret on an existing link → (re)link that range.
+      editor.chain().focus().extendMarkRange("link").setLink({ href: url }).run();
+    } else {
+      // No selection: link the word under the caret if there is one; otherwise
+      // drop the URL in as its own linked text.
+      const word = wordRangeAt(editor.state.doc, from);
+      if (word) {
+        editor.chain().focus().setTextSelection(word).setLink({ href: url }).run();
+      } else {
+        editor
+          .chain()
+          .focus()
+          .insertContent({
+            type: "text",
+            text: input.trim(),
+            marks: [{ type: "link", attrs: { href: url } }],
+          })
+          .run();
+      }
+    }
+  }, [editor]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -568,6 +714,39 @@ export function App() {
             e.preventDefault();
             resetZoom();
             break;
+          case " ":
+            // Ctrl+Space: snippet picker. Guard IME composition (Ctrl+Space also
+            // toggles some input methods) so we don't fight it. Capture the source
+            // textarea caret now, before the picker steals focus.
+            if (e.isComposing) break;
+            e.preventDefault();
+            {
+              const ta = document.querySelector(".markd-source-textarea") as HTMLTextAreaElement | null;
+              sourceCaretRef.current = ta ? { start: ta.selectionStart, end: ta.selectionEnd } : null;
+            }
+            setSnippetPickerOpen((o) => !o);
+            break;
+          case "k":
+            e.preventDefault();
+            void handleEditLink();
+            break;
+          case "e":
+            // Ctrl+Shift+E: quick-switch tabs. Bare Ctrl+E stays TipTap's inline
+            // code (Mod-e) — only the Shift variant opens the switcher, and PM has
+            // no Mod-Shift-e binding so there's no double-fire. No-op for 1 tab.
+            if (e.shiftKey) {
+              if (fileTabsRef.current.tabs.length <= 1) break;
+              e.preventDefault();
+              setTabSwitcherOpen((o) => !o);
+            }
+            break;
+          case "p":
+            // Ctrl+Shift+P only — bare Ctrl+P stays the webview's native print.
+            if (e.shiftKey) {
+              e.preventDefault();
+              setCommandPaletteOpen((o) => !o);
+            }
+            break;
         }
       }
 
@@ -614,6 +793,7 @@ export function App() {
     zoomIn,
     zoomOut,
     resetZoom,
+    handleEditLink,
   ]);
 
   // Ctrl+MouseWheel zoom
@@ -685,14 +865,20 @@ export function App() {
             if (lastMtimeRef.current && currentMtime && currentMtime > lastMtimeRef.current) {
               lastMtimeRef.current = currentMtime;
               fileChangePromptOpen.current = true;
-              const reload = window.confirm(
-                `"${fileState.fileName}" has been modified outside Markd.\n\nReload from disk?`,
-              );
-              fileChangePromptOpen.current = false;
-              if (reload) {
-                const content = await readFileByPath(filePath);
-                fileTabsRef.current.hydrateTab(fileTabsRef.current.activeTabId, content);
-                fileStateRef.current.handleOpenByPath(filePath, content);
+              try {
+                const reload = await askDialog(
+                  `"${fileState.fileName}" has been modified outside Markd.\n\nReload from disk?`,
+                  { title: "File Changed on Disk", kind: "warning" },
+                );
+                if (reload) {
+                  const content = await readFileByPath(filePath);
+                  fileTabsRef.current.hydrateTab(fileTabsRef.current.activeTabId, content);
+                  fileStateRef.current.handleOpenByPath(filePath, content);
+                }
+              } finally {
+                // Reset in finally so a thrown dialog can't permanently wedge
+                // the watcher (it would otherwise never prompt again).
+                fileChangePromptOpen.current = false;
               }
             }
           } catch { /* file may have been deleted */ }
@@ -706,42 +892,74 @@ export function App() {
     };
   }, [fileState.filePath, fileState.fileName]);
 
-  // Auto-update check (startup-only, debounced to 1 hour)
-  useEffect(() => {
-    if (!isTauri()) return;
-    let cancelled = false;
-
-    (async () => {
-      const lastCheck = localStorage.getItem("markd-update-check");
-      if (lastCheck) {
-        const parsed = JSON.parse(lastCheck);
-        const sameVersion = parsed.v === __APP_VERSION__;
-        if (sameVersion && Date.now() - parsed.t < 3600000) return;
+  // Check for updates. `manual` surfaces "you're up to date" and errors via a
+  // dialog; the startup check stays quiet on no-update but NEVER swallows a
+  // thrown check() silently — a swallowed error hid a broken updater (a build
+  // compiled without the updater capability) for 21 days.
+  const checkForUpdates = useCallback(async (manual: boolean) => {
+    if (!isTauri()) {
+      if (manual) {
+        const { message } = await import("@tauri-apps/plugin-dialog");
+        await message("Updates are only available in the desktop app.", {
+          title: "Check for Updates",
+          kind: "info",
+        });
       }
+      return;
+    }
+    if (
+      !manual &&
+      !shouldCheckForUpdate(
+        localStorage.getItem("markd-update-check"),
+        __APP_VERSION__,
+        Date.now(),
+      )
+    ) {
+      return;
+    }
 
+    try {
       const { check } = await import("@tauri-apps/plugin-updater");
       const { ask, message } = await import("@tauri-apps/plugin-dialog");
-      if (cancelled) return;
-
       const update = await check();
-      localStorage.setItem("markd-update-check", JSON.stringify({ t: Date.now(), v: __APP_VERSION__ }));
-      if (!update) return;
+      // Record only AFTER a successful check, so a thrown check() keeps
+      // retrying rather than being debounced away with a stale marker.
+      localStorage.setItem(
+        "markd-update-check",
+        makeUpdateCheckRecord(__APP_VERSION__, Date.now()),
+      );
+      if (!update) {
+        if (manual) {
+          await message(`You're on the latest version — Markd ${__APP_VERSION__}.`, {
+            title: "No Updates Available",
+            kind: "info",
+          });
+        }
+        return;
+      }
 
       const shouldUpdate = await ask(
         `Markd ${update.version} is available.\nThe app will close to install and reopen automatically.`,
         { title: "Update Available", kind: "info" },
       );
       if (!shouldUpdate) return;
-
-      try {
-        await update.downloadAndInstall();
-      } catch (err) {
-        await message(`Update failed: ${err}`, { title: "Update Error", kind: "error" });
+      await update.downloadAndInstall();
+    } catch (err) {
+      console.error("Update check failed:", err);
+      if (manual) {
+        const { message } = await import("@tauri-apps/plugin-dialog");
+        await message(`Update check failed:\n${err}`, {
+          title: "Update Error",
+          kind: "error",
+        });
       }
-    })().catch(console.error);
-
-    return () => { cancelled = true; };
+    }
   }, []);
+
+  // Auto-update check on startup (debounced to 1 hour).
+  useEffect(() => {
+    void checkForUpdates(false);
+  }, [checkForUpdates]);
 
   const handleFileSelectWithTabs = useCallback(
     async (entry: { kind: string; name: string; path: string }) => {
@@ -778,13 +996,108 @@ export function App() {
     [fileState.handleOpenByPath, fileTabs.tabs, fileTabs.openInTab, handleSwitchTab],
   );
 
+  // File-tree CRUD from the sidebar context menu. The data-safety rule: when the
+  // ACTIVE file is renamed/trashed, update useFileState's path (or detach it) so
+  // the 30s autosave can't write to / resurrect the old path, and keep the open
+  // tab's label in sync. All four ops go through Rust (file-system.ts).
+  const handleFileAction = useCallback(
+    async (action: FileTreeAction, entry: { kind: string; name: string; path: string } | null) => {
+      const root = fileState.dirRoot;
+      if (!root) return;
+      const showError = (msg: string) =>
+        confirmModal({
+          title: "File operation failed",
+          message: msg,
+          buttons: [{ label: "OK", value: "ok" }],
+          defaultValue: "ok",
+        });
+      try {
+        if (action === "new-file" || action === "new-folder") {
+          const dir = targetDirForEntry(
+            entry ? { path: entry.path, isDirectory: entry.kind === "directory" } : null,
+            root,
+          );
+          const isFile = action === "new-file";
+          const name = await promptModal({
+            title: isFile ? "New file" : "New folder",
+            label: "Name",
+            placeholder: isFile ? "notes.md" : "folder",
+            okLabel: "Create",
+            validate: validateName,
+          });
+          if (name == null) return;
+          const finalName = isFile ? ensureMdExtension(name.trim()) : name.trim();
+          const targetPath = joinPath(dir, finalName);
+          if (isFile) {
+            await createFile(targetPath);
+            await fileState.refreshTree();
+            await handleFileSelectWithTabs({ kind: "file", name: finalName, path: targetPath });
+          } else {
+            await createFolder(targetPath);
+            await fileState.refreshTree();
+          }
+        } else if (action === "rename" && entry) {
+          const next = await promptModal({
+            title: `Rename "${entry.name}"`,
+            label: "New name",
+            defaultValue: entry.name,
+            okLabel: "Rename",
+            validate: validateName,
+          });
+          if (next == null || next.trim() === entry.name) return;
+          const finalName = entry.kind === "file" ? ensureMdExtension(next.trim()) : next.trim();
+          const newPath = joinPath(parentPath(entry.path), finalName);
+          await renamePath(entry.path, newPath);
+          if (fileState.filePath === entry.path) {
+            fileState.updateActiveFilePath(newPath, finalName);
+            fileTabs.updateTabPath(fileTabs.activeTabId, newPath, finalName);
+          } else {
+            const t = fileTabs.tabs.find((tab) => tab.filePath === entry.path);
+            if (t) fileTabs.updateTabPath(t.id, newPath, finalName);
+          }
+          await fileState.refreshTree();
+        } else if (action === "delete" && entry) {
+          const choice = await confirmModal({
+            title: "Delete",
+            message: `Move "${entry.name}" to the recycle bin?`,
+            buttons: [
+              { label: "Delete", value: "delete", variant: "danger" },
+              { label: "Cancel", value: "cancel" },
+            ],
+            defaultValue: "cancel",
+          });
+          if (choice !== "delete") return;
+          await trashPath(entry.path);
+          const fp = fileState.filePath;
+          const insideTrashed =
+            !!fp && (fp === entry.path || fp.startsWith(entry.path + "/") || fp.startsWith(entry.path + "\\"));
+          if (insideTrashed) fileState.detachActiveFile();
+          await fileState.refreshTree();
+        }
+      } catch (e) {
+        await showError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [
+      fileState.dirRoot,
+      fileState.filePath,
+      fileState.refreshTree,
+      fileState.updateActiveFilePath,
+      fileState.detachActiveFile,
+      fileTabs.tabs,
+      fileTabs.updateTabPath,
+      fileTabs.activeTabId,
+      handleFileSelectWithTabs,
+    ],
+  );
+
   const handleCloseFindReplace = useCallback(() => {
     setFindReplaceOpen(false);
     editor?.commands.clearDecorations();
   }, [editor]);
 
   return (
-    <div className="markd-app">
+    <div className="markd-app" data-mod={heldModifier ?? undefined}>
       <Sidebar
         tree={fileState.dirTree}
         activeFile={fileState.fileName}
@@ -799,6 +1112,8 @@ export function App() {
         onOpenFolder={fileState.handleOpenFolder}
         onToggle={() => setSidebarCollapsed((c) => !c)}
         onRecentFileSelect={handleRecentFileSelect}
+        canEditTree={!!fileState.dirRoot}
+        onFileAction={handleFileAction}
       />
       <div className="markd-editor-area">
         <TabBar
@@ -836,6 +1151,7 @@ export function App() {
           onToggleFocusMode={() => setFocusMode((f) => !f)}
           onToggleFullWidth={toggleFullWidth}
           onThemeSelect={(id) => switchTheme(id as typeof activeTheme)}
+          onCheckForUpdates={() => checkForUpdates(true)}
           onNewTab={handleNewTab}
           onCloseTab={() => handleCloseTab(fileTabs.activeTabId)}
           onNextTab={() => cycleTab(1)}
@@ -898,6 +1214,83 @@ export function App() {
         />
       </div>
       <ContextMenu editor={editor} />
+      <ModalHost />
+      <TabSwitcher
+        open={tabSwitcherOpen}
+        tabs={fileTabs.tabs}
+        getMru={fileTabs.getMru}
+        onSwitch={(id) => {
+          void handleSwitchTab(id);
+        }}
+        onClose={() => setTabSwitcherOpen(false)}
+      />
+      <SnippetPicker
+        open={snippetPickerOpen}
+        snippets={snippets}
+        onInsert={insertSnippet}
+        onManage={() => {
+          setSnippetPickerOpen(false);
+          setSnippetManagerAdd(true); // picker → land on the add form
+          setSnippetManagerOpen(true);
+        }}
+        onClose={() => setSnippetPickerOpen(false)}
+      />
+      <SnippetManager
+        open={snippetManagerOpen}
+        snippets={snippets}
+        startInAdd={snippetManagerAdd}
+        onAdd={addSnippet}
+        onUpdate={updateSnippet}
+        onDelete={deleteSnippet}
+        onReset={resetSnippets}
+        onClose={() => setSnippetManagerOpen(false)}
+      />
+      <CommandPalette
+        open={commandPaletteOpen}
+        onClose={() => setCommandPaletteOpen(false)}
+        commands={[
+          { id: "new", label: "New File", hint: "Ctrl+N", keywords: "create blank", run: fileState.handleNew },
+          { id: "new-tab", label: "New Tab", hint: "Ctrl+T", run: handleNewTab },
+          { id: "switch-tab", label: "Switch Tab…", hint: "Ctrl+Shift+E", keywords: "go to file quick open buffer change", run: () => setTabSwitcherOpen(true) },
+          { id: "insert-snippet", label: "Insert Snippet…", hint: "Ctrl+Space", keywords: "template shortcut macro abbreviation typed", run: () => setSnippetPickerOpen(true) },
+          { id: "manage-snippets", label: "Manage Snippets…", keywords: "customize edit add delete snippet template shortcut", run: () => { setSnippetManagerAdd(false); setSnippetManagerOpen(true); } },
+          { id: "open", label: "Open File…", hint: "Ctrl+O", keywords: "load", run: fileState.handleOpen },
+          { id: "open-folder", label: "Open Folder…", keywords: "directory workspace", run: fileState.handleOpenFolder },
+          { id: "save", label: "Save", hint: "Ctrl+S", run: fileState.handleSave },
+          { id: "save-as", label: "Save As…", hint: "Ctrl+Shift+S", run: fileState.handleSaveAs },
+          { id: "reopen-tab", label: "Reopen Closed Tab", hint: "Ctrl+Shift+T", keywords: "restore", run: handleReopenClosedTab },
+          { id: "close-tab", label: "Close Tab", hint: "Ctrl+W", run: () => handleCloseTab(fileTabs.activeTabId) },
+          { id: "close-all", label: "Close All Tabs", hint: "Ctrl+Shift+W", run: handleCloseAllTabs },
+          { id: "find", label: "Find", hint: "Ctrl+F", keywords: "search", run: () => { setFindReplaceShowReplace(false); setFindReplaceOpen(true); window.dispatchEvent(new Event("markd:find-focus")); } },
+          { id: "replace", label: "Find and Replace", hint: "Ctrl+H", keywords: "search substitute", run: () => { setFindReplaceShowReplace(true); setFindReplaceOpen(true); } },
+          { id: "link", label: "Add / Edit Link", hint: "Ctrl+K", keywords: "url href hyperlink anchor", run: handleEditLink },
+          { id: "toggle-source", label: "Toggle Source / Rendered View", hint: "Ctrl+/", keywords: "markdown raw code", run: handleToggleSource },
+          { id: "toggle-theme", label: "Toggle Theme (Day / Night)", keywords: "dark light appearance", run: handleThemeToggle },
+          { id: "full-width", label: "Toggle Full Width", keywords: "column wide narrow", run: toggleFullWidth },
+          { id: "line-numbers", label: "Toggle Line Numbers", keywords: "gutter", run: toggleLineNumbers },
+          { id: "sidebar", label: "Toggle Sidebar", hint: "Ctrl+\\", keywords: "files outline panel", run: () => setSidebarCollapsed((c) => !c) },
+          { id: "focus-mode", label: "Toggle Focus Mode", keywords: "zen distraction-free dim", run: () => setFocusMode((f) => !f) },
+          { id: "export-html", label: "Export as HTML…", keywords: "save download", run: handleExportHtml },
+          { id: "export-pdf", label: "Export as PDF…", keywords: "print save download", run: exportAsPdf },
+          { id: "zoom-in", label: "Zoom In", hint: "Ctrl+=", run: zoomIn },
+          { id: "zoom-out", label: "Zoom Out", hint: "Ctrl+-", run: zoomOut },
+          { id: "zoom-reset", label: "Reset Zoom", hint: "Ctrl+0", run: resetZoom },
+          ...(editor
+            ? [
+                { id: "h1", label: "Heading 1", keywords: "title section", run: () => editor.chain().focus().toggleHeading({ level: 1 }).run() },
+                { id: "h2", label: "Heading 2", keywords: "section", run: () => editor.chain().focus().toggleHeading({ level: 2 }).run() },
+                { id: "h3", label: "Heading 3", keywords: "section", run: () => editor.chain().focus().toggleHeading({ level: 3 }).run() },
+                { id: "bullet", label: "Bullet List", keywords: "unordered", run: () => editor.chain().focus().toggleBulletList().run() },
+                { id: "ordered", label: "Numbered List", keywords: "ordered", run: () => editor.chain().focus().toggleOrderedList().run() },
+                { id: "task", label: "Task List", keywords: "checkbox todo", run: () => editor.chain().focus().toggleTaskList().run() },
+                { id: "quote", label: "Blockquote", keywords: "citation", run: () => editor.chain().focus().toggleBlockquote().run() },
+                { id: "code-block", label: "Code Block", keywords: "fenced pre", run: () => editor.chain().focus().toggleCodeBlock().run() },
+                { id: "table", label: "Insert Table", keywords: "grid", run: () => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run() },
+                { id: "hr", label: "Horizontal Rule", keywords: "divider separator", run: () => editor.chain().focus().setHorizontalRule().run() },
+              ]
+            : []),
+        ]}
+      />
     </div>
   );
 }

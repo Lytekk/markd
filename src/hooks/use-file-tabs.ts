@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useMemo } from "react";
+import { useState, useCallback, useRef, useMemo, useEffect } from "react";
 
 export interface FileTab {
   id: string;
@@ -152,6 +152,28 @@ export function useFileTabs() {
   tabsRef.current = tabs;
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
+
+  // Quick-switch MRU: tab ids most-recently-active first. Session-only (a ref,
+  // not persisted — no value across reload, no write on every switch). Every tab
+  // activation flows through activate() so the switcher's "toggle to previous"
+  // order stays correct; the effect below prunes ids of tabs that were closed.
+  const mruRef = useRef<string[]>([activeTabId]);
+  const activate = useCallback((id: string) => {
+    mruRef.current = [id, ...mruRef.current.filter((x) => x !== id)];
+    setActiveTabId(id);
+  }, []);
+  const getMru = useCallback(() => mruRef.current.slice(), []);
+
+  // Update a tab's path + name after its file was renamed/moved on disk (the
+  // active file's path is owned by useFileState; this keeps the snapshot tabs
+  // and the TabBar label in sync).
+  const updateTabPath = useCallback((id: string, newPath: string, newName: string) => {
+    setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, filePath: newPath, fileName: newName } : t)));
+  }, []);
+  useEffect(() => {
+    const ids = new Set(tabs.map((t) => t.id));
+    mruRef.current = mruRef.current.filter((id) => ids.has(id));
+  }, [tabs]);
   const [closedStack, setClosedStack] = useState<ClosedTab[]>(() => loadClosedStack());
   const closedStackRef = useRef(closedStack);
   closedStackRef.current = closedStack;
@@ -189,7 +211,7 @@ export function useFileTabs() {
         queueMicrotask(() => persistTabs(updated, tabId));
         return updated;
       });
-      setActiveTabId(tabId);
+      activate(tabId);
       const target = tabsRef.current.find((t) => t.id === tabId);
       return target ?? null;
     },
@@ -209,7 +231,7 @@ export function useFileTabs() {
         ? currentTabs.find((t) => t.filePath === filePath)
         : null;
       if (existing) {
-        setActiveTabId(existing.id);
+        activate(existing.id);
         queueMicrotask(() => persistTabs(currentTabs, existing.id));
         return { tab: existing, isNew: false };
       }
@@ -245,7 +267,7 @@ export function useFileTabs() {
       });
       const newTabs = [...currentTabs, tab];
       setTabs(newTabs);
-      setActiveTabId(tab.id);
+      activate(tab.id);
       queueMicrotask(() => persistTabs(newTabs, tab.id));
       return { tab, isNew: true };
     },
@@ -258,7 +280,7 @@ export function useFileTabs() {
     const currentTabs = tabsRef.current;
     const newTabs = [...currentTabs, tab];
     setTabs(newTabs);
-    setActiveTabId(tab.id);
+    activate(tab.id);
     queueMicrotask(() => persistTabs(newTabs, tab.id));
     return tab;
   }, [snapshotActiveTab]);
@@ -297,7 +319,7 @@ export function useFileTabs() {
       if (currentTabs.length <= 1) {
         const fresh = createTab();
         setTabs([fresh]);
-        setActiveTabId(fresh.id);
+        activate(fresh.id);
         queueMicrotask(() => persistTabs([fresh], fresh.id));
         return { switchTo: fresh };
       }
@@ -306,7 +328,7 @@ export function useFileTabs() {
       if (tabId === activeTabIdRef.current) {
         const nextIdx = Math.min(idx, remaining.length - 1);
         const next = remaining[nextIdx]!;
-        setActiveTabId(next.id);
+        activate(next.id);
         setTabs(remaining);
         queueMicrotask(() => persistTabs(remaining, next.id));
         return { switchTo: next };
@@ -321,7 +343,7 @@ export function useFileTabs() {
   const closeAllTabs = useCallback((): { switchTo: FileTab } => {
     const fresh = createTab();
     setTabs([fresh]);
-    setActiveTabId(fresh.id);
+    activate(fresh.id);
     queueMicrotask(() => persistTabs([fresh], fresh.id));
     return { switchTo: fresh };
   }, []);
@@ -350,7 +372,7 @@ export function useFileTabs() {
       });
       const newTabs = [...tabsRef.current, tab];
       setTabs(newTabs);
-      setActiveTabId(tab.id);
+      activate(tab.id);
       queueMicrotask(() => persistTabs(newTabs, tab.id));
       return { tab };
     }
@@ -429,6 +451,8 @@ export function useFileTabs() {
     tabs,
     activeTab,
     activeTabId,
+    getMru,
+    updateTabPath,
     switchTab,
     openInTab,
     newTab,

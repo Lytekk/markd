@@ -43,4 +43,74 @@ describe("base.css layout", () => {
     expect(body).not.toBeNull();
     expect(body).toMatch(/max-width:\s*100%/);
   });
+
+  test("Source textarea fills the width with a padding-centered column so its scrollbar sits at the window edge like rendered mode", () => {
+    const body = ruleBody(".markd-source-textarea");
+    expect(body, "missing `.markd-source-textarea` rule").not.toBeNull();
+    expect(body).toMatch(/width:\s*100%/);
+    // Reading column comes from adaptive horizontal padding, not a hard
+    // max-width clamp — so the vertical scrollbar lands at the window edge.
+    expect(body).toMatch(/padding:[^;]*max\(/);
+    expect(body).toMatch(/var\(--editor-max-width/);
+    expect(body).toMatch(/overflow-y:\s*auto/);
+  });
+
+  test('[data-full-width="true"] .markd-source-textarea collapses the centering padding so Source view fills the width like #write', () => {
+    const body = ruleBody('[data-full-width="true"] .markd-source-textarea');
+    expect(body, "Source view ignores Full Width").not.toBeNull();
+    expect(body).toMatch(/padding-left:\s*60px/);
+  });
+
+  test("keyboard focus rings are restored for chrome controls (button resets strip the UA outline)", () => {
+    expect(css).toMatch(/button:focus-visible/);
+    expect(css).toMatch(/:focus-visible[^}]*\{[^}]*outline:\s*2px/);
+  });
+
+  test("#write pre is positioned so the code toolbar can anchor to its corner", () => {
+    const body = ruleBody("#write pre");
+    expect(body, "missing `#write pre` rule").not.toBeNull();
+    expect(body).toMatch(/position:\s*relative/);
+  });
+
+  test("the code-block toolbar floats over the block and reveals on hover/focus", () => {
+    const bar = ruleBody(".markd-code-toolbar");
+    expect(bar, "missing `.markd-code-toolbar` rule").not.toBeNull();
+    expect(bar).toMatch(/position:\s*absolute/);
+
+    const copy = ruleBody(".markd-code-copy");
+    expect(copy, "missing `.markd-code-copy` rule").not.toBeNull();
+    expect(copy).toMatch(/cursor:\s*pointer/);
+    expect(copy).toMatch(/opacity:\s*0/); // hidden until the block is hovered/focused
+  });
+
+  test("the code toolbar is screen-only — hidden in print", () => {
+    expect(css).toMatch(/@media print[\s\S]*\.markd-code-toolbar[\s\S]*display:\s*none/);
+  });
+
+  test("the command palette sits near the top (Spotlight-style) with a bounded, scrollable list", () => {
+    const palette = ruleBody(".markd-command-palette");
+    expect(palette, "missing `.markd-command-palette` rule").not.toBeNull();
+    expect(palette).toMatch(/align-self:\s*flex-start/);
+    expect(palette).toMatch(/max-height:/);
+
+    const list = ruleBody(".markd-command-list");
+    expect(list, "missing `.markd-command-list` rule").not.toBeNull();
+    expect(list).toMatch(/overflow-y:\s*auto/);
+  });
+
+  test("the highlighted command row is visually distinct", () => {
+    const selected = ruleBody(".markd-command-item.selected");
+    expect(selected, "missing `.markd-command-item.selected` rule").not.toBeNull();
+    expect(selected).toMatch(/background:/);
+  });
+
+  test("the slash menu is a caret-anchored popup with a highlighted selection", () => {
+    const menu = ruleBody(".markd-slash-menu");
+    expect(menu, "missing `.markd-slash-menu` rule").not.toBeNull();
+    expect(menu).toMatch(/position:\s*fixed/);
+
+    const selected = ruleBody(".markd-slash-item.selected");
+    expect(selected, "missing `.markd-slash-item.selected` rule").not.toBeNull();
+    expect(selected).toMatch(/background:/);
+  });
 });

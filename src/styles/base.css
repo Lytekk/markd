@@ -497,6 +497,11 @@ body {
   text-decoration: none;
 }
 
+/* While Ctrl/Cmd is held, links read as clickable (Ctrl/Cmd-click opens them). */
+.markd-app[data-mod="ctrl"] #write a {
+  cursor: pointer;
+}
+
 #write a:hover {
   text-decoration: underline;
 }
@@ -558,6 +563,7 @@ body {
 }
 
 #write pre {
+  position: relative; /* anchor for the absolutely-positioned code toolbar */
   background: var(--code-block-bg-color);
   border: 1px solid var(--code-block-border-color, var(--border-color));
   border-radius: 6px;
@@ -571,6 +577,64 @@ body {
   padding: 0;
   font-size: 0.85em;
   line-height: 1.6;
+}
+
+/* Code-block toolbar (language label + copy button). Injected as a ProseMirror
+   widget decoration — screen-only: never serialized to markdown, hidden in print.
+   Reveals on hover/focus to stay out of the way while reading. */
+.markd-code-toolbar {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  user-select: none;
+  z-index: 2;
+}
+
+.markd-code-lang {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted-color, #8b949e);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.markd-code-copy {
+  font-size: 0.72rem;
+  line-height: 1;
+  padding: 4px 9px;
+  border-radius: 5px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-color, #fff);
+  color: var(--text-color);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+#write pre:hover .markd-code-lang,
+#write pre:hover .markd-code-copy,
+.markd-code-copy:focus-visible {
+  opacity: 1;
+}
+
+.markd-code-copy:hover {
+  background: var(--hover-bg-color, rgba(127, 127, 127, 0.12));
+}
+
+.markd-code-copy.copied {
+  opacity: 1;
+  color: var(--success-color, #2ea043);
+  border-color: currentColor;
+}
+
+@media print {
+  .markd-code-toolbar {
+    display: none !important;
+  }
 }
 
 /* Syntax highlighting */
@@ -851,6 +915,442 @@ body {
   background: var(--select-text-bg-color);
 }
 
+/* Modal (in-app prompt/confirm — plain DOM, so WebView2 can't suppress it like
+   window.prompt/confirm) */
+.markd-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.markd-modal {
+  background: var(--bg-color, #fff);
+  color: var(--text-color);
+  border: 1px solid var(--border-color, rgba(0, 0, 0, 0.12));
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  width: min(440px, calc(100vw - 64px));
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.markd-modal-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.markd-modal-message {
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.markd-modal-label {
+  font-size: 12px;
+  color: var(--text-muted, var(--control-text-color));
+}
+
+.markd-modal-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text-color);
+  background: var(--input-bg, rgba(127, 127, 127, 0.08));
+  border: 1px solid var(--border-color, rgba(0, 0, 0, 0.15));
+  border-radius: 6px;
+  outline: none;
+}
+
+.markd-modal-input:focus {
+  border-color: var(--primary-color, #4a90d9);
+}
+
+.markd-modal-error {
+  font-size: 12px;
+  color: var(--danger-color, #d9534f);
+}
+
+.markd-modal-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.markd-modal-btn {
+  padding: 7px 14px;
+  font-size: 13px;
+  font-family: inherit;
+  border: 1px solid var(--border-color, rgba(0, 0, 0, 0.15));
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-color);
+  cursor: pointer;
+}
+
+.markd-modal-btn:hover {
+  background: var(--hover-bg, rgba(127, 127, 127, 0.12));
+}
+
+.markd-modal-btn.primary {
+  background: var(--primary-color, #4a90d9);
+  border-color: var(--primary-color, #4a90d9);
+  color: #fff;
+}
+
+.markd-modal-btn.danger {
+  border-color: var(--danger-color, #d9534f);
+  color: var(--danger-color, #d9534f);
+}
+
+/* Command palette (Ctrl+Shift+P) — fuzzy launcher. Reuses .markd-modal-backdrop
+   but sits near the top (Spotlight-style) instead of centered. */
+.markd-command-palette {
+  align-self: flex-start;
+  margin-top: 12vh;
+  background: var(--bg-color, #fff);
+  color: var(--text-color);
+  border: 1px solid var(--border-color, rgba(0, 0, 0, 0.12));
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  width: min(560px, calc(100vw - 64px));
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.markd-command-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 14px 16px;
+  font-size: 15px;
+  font-family: inherit;
+  color: var(--text-color);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border-color, rgba(0, 0, 0, 0.12));
+  outline: none;
+}
+
+.markd-command-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+}
+
+.markd-command-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.markd-command-item.selected {
+  background: var(--primary-color, #4a90d9);
+  color: #fff;
+}
+
+.markd-command-hint {
+  font-size: 11px;
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.markd-command-item.selected .markd-command-hint {
+  opacity: 0.85;
+}
+
+.markd-command-empty {
+  padding: 16px 12px;
+  font-size: 13px;
+  opacity: 0.6;
+  text-align: center;
+}
+
+/* A meta-action row in a fuzzy list (e.g. the snippet picker's "New snippet…")
+   — set off from the data rows with a separator + tint, selected state intact. */
+.markd-command-item.markd-command-action {
+  margin-top: 6px;
+  border-top: 1px solid var(--border-color, rgba(0, 0, 0, 0.12));
+  color: var(--primary-color, #4a90d9);
+  font-weight: 500;
+}
+.markd-command-item.markd-command-action:not(.selected) {
+  background: var(--hover-bg, rgba(127, 127, 127, 0.06));
+}
+.markd-command-item.markd-command-action.selected {
+  color: #fff;
+}
+
+/* Tab quick-switch rows (Ctrl+Shift+E) — reuse .markd-command-item layout, add a
+   leading dirty dot + a dimmed trailing parent-dir for same-named files. */
+.markd-tab-switcher-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.markd-tab-switcher-main .markd-command-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.markd-tab-switcher-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: transparent;
+}
+.markd-tab-switcher-dot.dirty {
+  background: var(--primary-color, #4a90d9);
+}
+.markd-command-item.selected .markd-tab-switcher-dot.dirty {
+  background: #fff;
+}
+.markd-tab-switcher-dir {
+  font-size: 11px;
+  opacity: 0.55;
+  white-space: nowrap;
+}
+.markd-command-item.selected .markd-tab-switcher-dir {
+  opacity: 0.85;
+}
+
+/* Snippet picker rows (Ctrl+Space) — two lines: label + trigger hint on top,
+   a dimmed one-line body preview below. */
+.markd-snippet-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.markd-snippet-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+}
+.markd-snippet-preview {
+  font-size: 11px;
+  opacity: 0.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--mono-font, ui-monospace, monospace);
+}
+.markd-command-item.selected .markd-snippet-preview {
+  opacity: 0.8;
+}
+
+/* Snippet manager modal — reuses .markd-modal-backdrop + .markd-modal-btn. */
+.markd-snippet-manager {
+  background: var(--bg-color, #fff);
+  color: var(--text-color);
+  border: 1px solid var(--border-color, rgba(0, 0, 0, 0.12));
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  width: min(560px, calc(100vw - 64px));
+  max-height: min(80vh, 720px);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.markd-snippet-manager-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.markd-snippet-manager-head h2 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+}
+.markd-modal-close {
+  border: none;
+  background: transparent;
+  color: var(--text-muted, var(--text-color));
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.markd-snippet-manager-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.markd-snippet-manager-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 8px;
+  border-radius: 6px;
+}
+.markd-snippet-manager-item:hover {
+  background: var(--hover-bg, rgba(127, 127, 127, 0.1));
+}
+.markd-snippet-manager-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.markd-snippet-manager-trigger {
+  font-size: 11px;
+  opacity: 0.6;
+  font-family: var(--mono-font, ui-monospace, monospace);
+}
+.markd-snippet-manager-actions {
+  display: flex;
+  gap: 6px;
+}
+.markd-snippet-manager-actions button {
+  font-size: 12px;
+  padding: 3px 8px;
+  border: 1px solid var(--border-color, rgba(0, 0, 0, 0.15));
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-color);
+  cursor: pointer;
+}
+.markd-snippet-manager-actions button:hover {
+  background: var(--hover-bg, rgba(127, 127, 127, 0.12));
+}
+.markd-snippet-manager-empty {
+  padding: 12px 8px;
+  font-size: 13px;
+  opacity: 0.6;
+}
+.markd-snippet-manager-foot {
+  display: flex;
+  gap: 8px;
+  border-top: 1px solid var(--border-color, rgba(0, 0, 0, 0.1));
+  padding-top: 12px;
+}
+.markd-snippet-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-top: 1px solid var(--border-color, rgba(0, 0, 0, 0.1));
+  padding-top: 12px;
+}
+.markd-snippet-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted, var(--text-color));
+}
+.markd-snippet-field input,
+.markd-snippet-field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text-color);
+  background: var(--input-bg, rgba(127, 127, 127, 0.08));
+  border: 1px solid var(--border-color, rgba(0, 0, 0, 0.15));
+  border-radius: 6px;
+  outline: none;
+}
+.markd-snippet-field textarea {
+  font-family: var(--mono-font, ui-monospace, monospace);
+  resize: vertical;
+}
+.markd-snippet-field input:focus,
+.markd-snippet-field textarea:focus {
+  border-color: var(--primary-color, #4a90d9);
+}
+.markd-snippet-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Slash menu (/) — a caret-anchored popup (position set inline from clientRect). */
+.markd-slash-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 200px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--bg-color, #fff);
+  color: var(--text-color);
+  border: 1px solid var(--border-color, rgba(0, 0, 0, 0.12));
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22);
+}
+
+.markd-slash-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text-color);
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.markd-slash-item.selected,
+.markd-slash-item:hover {
+  background: var(--primary-color, #4a90d9);
+  color: #fff;
+}
+
+.markd-slash-empty {
+  padding: 10px;
+  font-size: 13px;
+  opacity: 0.6;
+}
+
+/* Keyboard focus visibility — the button resets strip the UA outline, leaving
+   keyboard/AT users with no focus indicator on the chrome. Restore a ring via
+   :focus-visible (mouse users are unaffected). #write is intentionally excluded
+   (it manages its own caret). */
+.markd-app button:focus-visible,
+.markd-app input:focus-visible,
+.markd-app textarea:focus-visible,
+.markd-app a:focus-visible,
+.markd-app [role="tab"]:focus-visible,
+.markd-app [role="menuitem"]:focus-visible,
+.markd-app [tabindex]:focus-visible {
+  outline: 2px solid var(--primary-color, #4a90d9);
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar {
   width: 8px;
@@ -992,7 +1492,9 @@ body {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: max(0px, calc(50% - var(--editor-max-width, 860px) / 2));
+  /* Align the gutter to the new padding-centered text column (text starts at
+     max(60px, (100% - column)/2); numbers occupy the ~60px just left of it). */
+  left: calc(max(60px, (100% - var(--editor-max-width, 860px)) / 2) - 60px);
   width: 48px;
   overflow: hidden;
   padding: 30px 0 100px 0;
@@ -1018,10 +1520,16 @@ body {
 
 .markd-source-textarea {
   flex: 1;
-  max-width: var(--editor-max-width, 860px);
-  margin: 0 auto;
-  padding: 30px 60px 100px;
-  transition: max-width 0.25s ease;
+  width: 100%;
+  margin: 0;
+  /* The 860px reading column is created by adaptive horizontal padding rather
+     than a max-width clamp, so the textarea spans the full area and its
+     vertical scrollbar sits at the window edge — matching rendered mode
+     (.markd-editor-scroll). Full Width collapses the padding below. */
+  padding: 30px max(60px, calc((100% - var(--editor-max-width, 860px)) / 2)) 100px;
+  transition: padding 0.25s ease;
+  overflow-y: auto;
+  box-sizing: border-box;
   background: transparent;
   border: none;
   outline: none;
@@ -1033,7 +1541,17 @@ body {
   tab-size: 2;
   white-space: pre-wrap;
   word-wrap: break-word;
-  width: 100%;
+}
+
+/* Source view honors Full Width like #write: collapse the centering padding to
+   a fixed gutter so the column expands to fill the editor area. */
+[data-full-width="true"] .markd-source-textarea {
+  padding-left: 60px;
+  padding-right: 60px;
+}
+
+[data-full-width="true"] .markd-line-gutter {
+  left: 0;
 }
 
 /* Rendered mode line numbers (CSS counters on #write blocks) */
