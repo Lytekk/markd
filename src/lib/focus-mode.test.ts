@@ -27,29 +27,34 @@ describe("isBlockActive", () => {
 });
 
 describe("buildFocusDecorations", () => {
+  // Five single-char paragraphs: blocks [0,3) [3,6) [6,9) [9,12) [12,15).
   const doc = createTestDoc([
-    { type: "paragraph", text: "first" },
-    { type: "paragraph", text: "second" },
-    { type: "paragraph", text: "third" },
+    { type: "paragraph", text: "a" },
+    { type: "paragraph", text: "b" },
+    { type: "paragraph", text: "c" },
+    { type: "paragraph", text: "d" },
+    { type: "paragraph", text: "e" },
   ]);
 
   const classOf = (d: unknown) =>
     (d as { type?: { attrs?: { class?: string } } }).type?.attrs?.class;
+  const count = (set: ReturnType<typeof buildFocusDecorations>, cls: string) =>
+    set.find().filter((d) => classOf(d) === cls).length;
 
-  it("decorates every top-level block, exactly one active for a caret", () => {
-    const set = buildFocusDecorations(doc, 10, 10); // caret inside the 2nd paragraph [7,15)
-    const all = set.find();
-    expect(all.length).toBe(3);
-    const active = all.filter((d) => classOf(d) === "focus-active");
-    expect(active.length).toBe(1);
-    expect(active[0]!.from).toBe(7); // the 2nd block
-    expect(all.filter((d) => classOf(d) === "focus-dimmed").length).toBe(2);
+  it("feathers the caret block: active, adjacent blocks 'near', rest dimmed", () => {
+    const set = buildFocusDecorations(doc, 7, 7); // caret in the middle block (idx 2) [6,9)
+    expect(set.find().length).toBe(5);
+    expect(count(set, "focus-active")).toBe(1);
+    expect(count(set, "focus-near")).toBe(2); // the blocks above and below
+    expect(count(set, "focus-dimmed")).toBe(2);
+    expect(set.find().find((d) => classOf(d) === "focus-active")!.from).toBe(6);
   });
 
-  it("keeps every touched block active for a multi-block selection", () => {
-    const set = buildFocusDecorations(doc, 3, 18); // spans blocks 1, 2, 3
-    const active = set.find().filter((d) => classOf(d) === "focus-active");
-    expect(active.length).toBe(3);
+  it("keeps every touched block active for a multi-block selection, feathering the edges", () => {
+    const set = buildFocusDecorations(doc, 1, 7); // spans blocks 1-3 (idx 0,1,2)
+    expect(count(set, "focus-active")).toBe(3);
+    expect(count(set, "focus-near")).toBe(1); // block idx 3 (after the active run)
+    expect(count(set, "focus-dimmed")).toBe(1); // block idx 4
   });
 });
 

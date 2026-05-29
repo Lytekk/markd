@@ -35,14 +35,24 @@ export function isBlockActive(
 
 /** One node decoration per top-level block: focus-active or focus-dimmed. */
 export function buildFocusDecorations(doc: PmNode, from: number, to: number): DecorationSet {
-  const decorations: Decoration[] = [];
-  doc.forEach((node, offset) => {
-    const blockTo = offset + node.nodeSize;
-    decorations.push(
-      Decoration.node(offset, blockTo, {
-        class: isBlockActive(offset, blockTo, from, to) ? "focus-active" : "focus-dimmed",
-      }),
-    );
+  const blocks: { from: number; to: number }[] = [];
+  doc.forEach((node, offset) => blocks.push({ from: offset, to: offset + node.nodeSize }));
+
+  const activeIndices = blocks
+    .map((b, i) => (isBlockActive(b.from, b.to, from, to) ? i : -1))
+    .filter((i) => i >= 0);
+  const activeSet = new Set(activeIndices);
+  const minActive = activeIndices.length ? Math.min(...activeIndices) : -1;
+  const maxActive = activeIndices.length ? Math.max(...activeIndices) : -1;
+
+  // Three tiers so a thin one-line active block still has readable context:
+  // the active block(s) are crisp, the immediately adjacent blocks are
+  // feathered ('near'), and everything else is dimmed.
+  const decorations = blocks.map((b, i) => {
+    let cls = "focus-dimmed";
+    if (activeSet.has(i)) cls = "focus-active";
+    else if (minActive >= 0 && (i === minActive - 1 || i === maxActive + 1)) cls = "focus-near";
+    return Decoration.node(b.from, b.to, { class: cls });
   });
   return DecorationSet.create(doc, decorations);
 }
