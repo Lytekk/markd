@@ -11,6 +11,8 @@ interface CommandPaletteProps {
   placeholder?: string;
   /** Accessible dialog label. Defaults to "Command palette". */
   label?: string;
+  /** Optional extra class per row (e.g. to set off a meta-action). */
+  itemClassName?: (command: Command) => string | undefined;
 }
 
 /**
@@ -26,6 +28,7 @@ export function CommandPalette({
   renderItem,
   placeholder = "Type a command…",
   label = "Command palette",
+  itemClassName,
 }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(0);
@@ -114,7 +117,9 @@ export function CommandPalette({
                 key={command.id}
                 role="option"
                 aria-selected={i === selected}
-                className={`markd-command-item${i === selected ? " selected" : ""}`}
+                className={`markd-command-item${i === selected ? " selected" : ""}${
+                  itemClassName?.(command) ? ` ${itemClassName(command)}` : ""
+                }`}
                 onMouseEnter={() => setSelected(i)}
                 // mousedown (not click) so it fires before the backdrop's blur/close race
                 onMouseDown={(e) => {

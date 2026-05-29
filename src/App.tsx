@@ -49,6 +49,7 @@ export function App() {
   const [tabSwitcherOpen, setTabSwitcherOpen] = useState(false);
   const [snippetPickerOpen, setSnippetPickerOpen] = useState(false);
   const [snippetManagerOpen, setSnippetManagerOpen] = useState(false);
+  const [snippetManagerAdd, setSnippetManagerAdd] = useState(false);
   const { snippets, addSnippet, updateSnippet, deleteSnippet, resetSnippets } = useSnippets();
   // Source-mode caret captured at Ctrl+Space (before the picker steals focus).
   const sourceCaretRef = useRef<{ start: number; end: number } | null>(null);
@@ -1131,6 +1132,7 @@ export function App() {
         onInsert={insertSnippet}
         onManage={() => {
           setSnippetPickerOpen(false);
+          setSnippetManagerAdd(true); // picker → land on the add form
           setSnippetManagerOpen(true);
         }}
         onClose={() => setSnippetPickerOpen(false)}
@@ -1138,6 +1140,7 @@ export function App() {
       <SnippetManager
         open={snippetManagerOpen}
         snippets={snippets}
+        startInAdd={snippetManagerAdd}
         onAdd={addSnippet}
         onUpdate={updateSnippet}
         onDelete={deleteSnippet}
@@ -1152,7 +1155,7 @@ export function App() {
           { id: "new-tab", label: "New Tab", hint: "Ctrl+T", run: handleNewTab },
           { id: "switch-tab", label: "Switch Tab…", hint: "Ctrl+Shift+E", keywords: "go to file quick open buffer change", run: () => setTabSwitcherOpen(true) },
           { id: "insert-snippet", label: "Insert Snippet…", hint: "Ctrl+Space", keywords: "template shortcut macro abbreviation typed", run: () => setSnippetPickerOpen(true) },
-          { id: "manage-snippets", label: "Manage Snippets…", keywords: "customize edit add delete snippet template shortcut", run: () => setSnippetManagerOpen(true) },
+          { id: "manage-snippets", label: "Manage Snippets…", keywords: "customize edit add delete snippet template shortcut", run: () => { setSnippetManagerAdd(false); setSnippetManagerOpen(true); } },
           { id: "open", label: "Open File…", hint: "Ctrl+O", keywords: "load", run: fileState.handleOpen },
           { id: "open-folder", label: "Open Folder…", keywords: "directory workspace", run: fileState.handleOpenFolder },
           { id: "save", label: "Save", hint: "Ctrl+S", run: fileState.handleSave },

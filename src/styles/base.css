@@ -1082,6 +1082,21 @@ body {
   text-align: center;
 }
 
+/* A meta-action row in a fuzzy list (e.g. the snippet picker's "New snippet…")
+   — set off from the data rows with a separator + tint, selected state intact. */
+.markd-command-item.markd-command-action {
+  margin-top: 6px;
+  border-top: 1px solid var(--border-color, rgba(0, 0, 0, 0.12));
+  color: var(--primary-color, #4a90d9);
+  font-weight: 500;
+}
+.markd-command-item.markd-command-action:not(.selected) {
+  background: var(--hover-bg, rgba(127, 127, 127, 0.06));
+}
+.markd-command-item.markd-command-action.selected {
+  color: #fff;
+}
+
 /* Tab quick-switch rows (Ctrl+Shift+E) — reuse .markd-command-item layout, add a
    leading dirty dot + a dimmed trailing parent-dir for same-named files. */
 .markd-tab-switcher-main {

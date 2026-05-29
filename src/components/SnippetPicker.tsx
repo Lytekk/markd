@@ -30,8 +30,8 @@ export function SnippetPicker({ open, snippets, onInsert, onClose, onManage }: S
     if (onManage) {
       rows.push({
         id: "__manage",
-        label: "⚙ Manage snippets…",
-        keywords: "customize edit add delete new manager",
+        label: "➕ New snippet…",
+        keywords: "create add new custom manage edit delete reuse",
         run: onManage,
       });
     }
@@ -63,6 +63,7 @@ export function SnippetPicker({ open, snippets, onInsert, onClose, onManage }: S
       commands={commands}
       onClose={onClose}
       renderItem={renderItem}
+      itemClassName={(c) => (c.id === "__manage" ? "markd-command-action" : undefined)}
       placeholder="Insert a snippet…"
       label="Insert snippet"
     />

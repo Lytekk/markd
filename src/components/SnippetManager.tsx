@@ -3,7 +3,7 @@
 // destructive actions (the modal.ts ModalRequest union stays prompt|confirm —
 // a multi-field editor doesn't fit it, so this is a dedicated dialog).
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { confirmModal } from "@/lib/modal";
 import { validateSnippet, type Snippet } from "@/lib/snippets";
 
@@ -15,6 +15,8 @@ interface SnippetManagerProps {
   onDelete: (id: string) => void;
   onReset: () => void;
   onClose: () => void;
+  /** Open straight into the "add a new snippet" form (e.g. from the picker). */
+  startInAdd?: boolean;
 }
 
 interface FormState {
@@ -32,11 +34,25 @@ export function SnippetManager({
   onDelete,
   onReset,
   onClose,
+  startInAdd,
 }: SnippetManagerProps) {
   // editing: null → list only; { id: null } → adding; { id } → editing that one.
   const [editing, setEditing] = useState<{ id: string | null } | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY);
   const [error, setError] = useState<string | null>(null);
+
+  // When opened from the picker's "New snippet…" row, land directly on the add
+  // form; reset on close so the next open is clean.
+  useEffect(() => {
+    if (!open) {
+      setEditing(null);
+      setError(null);
+    } else if (startInAdd) {
+      setEditing({ id: null });
+      setForm(EMPTY);
+      setError(null);
+    }
+  }, [open, startInAdd]);
 
   if (!open) return null;
 

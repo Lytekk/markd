@@ -108,6 +108,21 @@ describe("CommandPalette", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("applies itemClassName to a row when provided", () => {
+    const { commands } = makeCommands();
+    const { container } = render(
+      <CommandPalette
+        open
+        commands={commands}
+        onClose={vi.fn()}
+        itemClassName={(c) => (c.id === "save" ? "danger-row" : undefined)}
+      />,
+    );
+    expect(container.querySelector(".markd-command-item.danger-row")).toBeTruthy();
+    // only the matching row gets it
+    expect(container.querySelectorAll(".danger-row").length).toBe(1);
+  });
+
   it("defaults the input placeholder but accepts an override", () => {
     const { commands } = makeCommands();
     const { rerender } = render(<CommandPalette open commands={commands} onClose={vi.fn()} />);

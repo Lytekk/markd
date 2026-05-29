@@ -93,4 +93,12 @@ describe("SnippetManager", () => {
     fireEvent.click(screen.getByRole("button", { name: /reset to defaults/i }));
     await waitFor(() => expect(props.onReset).toHaveBeenCalled());
   });
+
+  it("opens directly on the add form when startInAdd is set", () => {
+    setup({ startInAdd: true });
+    // form fields present without first clicking "Add snippet"
+    expect(screen.getByLabelText(/trigger/i)).toBeTruthy();
+    expect(screen.getByLabelText(/^label$/i)).toBeTruthy();
+    expect(screen.getByLabelText(/body/i)).toBeTruthy();
+  });
 });

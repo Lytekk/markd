@@ -39,4 +39,21 @@ describe("SnippetPicker", () => {
     expect(screen.getByText("Today's date")).toBeTruthy();
     expect(screen.queryByText("Heading 1")).toBeNull();
   });
+
+  it("offers a distinct 'New snippet…' action row when onManage is provided", () => {
+    const onManage = vi.fn();
+    const { container } = render(
+      <SnippetPicker open snippets={snippets} onInsert={vi.fn()} onClose={vi.fn()} onManage={onManage} />,
+    );
+    const row = screen.getByText("➕ New snippet…");
+    expect(row).toBeTruthy();
+    expect(container.querySelector(".markd-command-action")).toBeTruthy(); // shaded distinctly
+    fireEvent.mouseDown(row);
+    expect(onManage).toHaveBeenCalled();
+  });
+
+  it("omits the action row when onManage is absent", () => {
+    render(<SnippetPicker open snippets={snippets} onInsert={vi.fn()} onClose={vi.fn()} />);
+    expect(screen.queryByText("➕ New snippet…")).toBeNull();
+  });
 });
