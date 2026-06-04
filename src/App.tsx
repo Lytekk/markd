@@ -918,6 +918,12 @@ export function App() {
           return;
         }
         await invoke("watch_file", { path: filePath });
+        // The live watcher only fires on FUTURE events. Catch a change that
+        // happened while this file was NOT being watched — another tab was active
+        // (we watch the active file only), or the app was starting — by checking
+        // current disk content against savedContent right after arming. This is
+        // what makes switching to a tab whose file changed externally prompt.
+        void check();
       } catch (e) {
         // Surface arm-time failures instead of swallowing them (a silent catch
         // hid the dead watcher across multiple releases).
