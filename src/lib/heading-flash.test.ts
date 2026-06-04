@@ -1,7 +1,7 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
-import { HeadingFlash, FLASH_CLASS, buildFlashDecorations } from "./heading-flash";
+import { HeadingFlash, FLASH_CLASS, buildFlashDecorations, flashKey } from "./heading-flash";
 
 function makeEditor(): Editor {
   return new Editor({
@@ -66,6 +66,41 @@ describe("HeadingFlash", () => {
       editor.commands.flashHeadingAt(headingPos(editor, 2));
       expect(editor.view.dom.querySelector("h1")?.classList.contains(FLASH_CLASS)).toBe(false);
       expect(editor.view.dom.querySelector("h2")?.classList.contains(FLASH_CLASS)).toBe(true);
+    });
+  });
+
+  describe("flashHeadingAt restart — replays the animation on EVERY click", () => {
+    it("dispatches a clear BEFORE the set so the CSS animation restarts even on the same heading", () => {
+      // Re-clicking the same heading must replay the flash. A lone set is a no-op
+      // when the class is already present (the browser sees no change). The
+      // restart mechanism removes the decoration (pos:null) then re-adds it
+      // (pos:h2) with a reflow between — verified here as a clear meta dispatched
+      // before the set meta. (Empty framework dispatches carry no flashKey meta.)
+      editor = makeEditor();
+      const h2 = headingPos(editor, 2);
+      const spy = vi.spyOn(editor.view, "dispatch");
+      editor.commands.flashHeadingAt(h2);
+      const metas = spy.mock.calls.map(([tr]) => tr.getMeta(flashKey) as { pos: number | null } | undefined);
+      const clearIdx = metas.findIndex((m) => m != null && m.pos === null);
+      const setIdx = metas.findIndex((m) => m != null && m.pos === h2);
+      expect(clearIdx).toBeGreaterThanOrEqual(0);
+      expect(setIdx).toBeGreaterThan(clearIdx);
+      expect(editor.view.dom.querySelector("h2")?.classList.contains(FLASH_CLASS)).toBe(true);
+      spy.mockRestore();
+    });
+
+    it("clears the flash after the animation window via the nonce-guarded timeout", () => {
+      editor = makeEditor();
+      vi.useFakeTimers();
+      try {
+        const h2 = headingPos(editor, 2);
+        editor.commands.flashHeadingAt(h2);
+        expect(editor.view.dom.querySelector("h2")?.classList.contains(FLASH_CLASS)).toBe(true);
+        vi.advanceTimersByTime(1100);
+        expect(editor.view.dom.querySelector("h2")?.classList.contains(FLASH_CLASS)).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });
