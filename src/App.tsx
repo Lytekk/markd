@@ -865,12 +865,12 @@ export function App() {
   // what Markd last loaded/saved. Content comparison (not mtime) means our OWN
   // saves never false-prompt (after a save, disk === savedContent).
   const fileChangePromptOpen = useRef(false);
-  const lastPromptedContentRef = useRef<string | null>(null);
   useEffect(() => {
     const filePath = fileState.filePath;
     if (!isTauri() || !filePath) return;
     let cancelled = false;
     let unlisten: (() => void) | null = null;
+    let unlistenFocus: (() => void) | null = null;
 
     const check = async () => {
       if (cancelled || fileChangePromptOpen.current) return;
@@ -885,12 +885,10 @@ export function App() {
         !shouldPromptForExternalChange(
           onDisk,
           fileStateRef.current.savedContent,
-          lastPromptedContentRef.current,
           fileChangePromptOpen.current,
         )
       )
         return;
-      lastPromptedContentRef.current = onDisk;
       fileChangePromptOpen.current = true;
       try {
         const reload = await askDialog(
@@ -917,13 +915,32 @@ export function App() {
           unlisten();
           return;
         }
-        await invoke("watch_file", { path: filePath });
-        // The live watcher only fires on FUTURE events. Catch a change that
-        // happened while this file was NOT being watched — another tab was active
-        // (we watch the active file only), or the app was starting — by checking
-        // current disk content against savedContent right after arming. This is
+        // Re-check whenever Markd regains focus (alt-tab back from another editor).
+        // The native window-focus event is reliable in WebView2 and guarantees
+        // detection of a change made while Markd was backgrounded — independent of
+        // the live watcher's longevity across atomic saves (Notepad++ et al.).
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        if (!cancelled) {
+          unlistenFocus = await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+            if (focused) void check();
+          });
+          if (cancelled) unlistenFocus?.();
+        }
+        // Best-effort live watch. ReadDirectoryChangesW (notify) can fail on some
+        // network / UNC (\\wsl.localhost\...) filesystems — detection must NOT
+        // depend on it, so its failure is caught separately and the initial check
+        // below still runs.
+        try {
+          await invoke("watch_file", { path: filePath });
+        } catch (e) {
+          console.error("[file-watcher] live watch unavailable for this path:", e);
+        }
+        // The live watcher only fires on FUTURE events, and may be unavailable
+        // (UNC). Always run an initial content check on arm — this catches a
+        // change that happened while the file was unwatched: another tab was
+        // active, the app was starting, or the filesystem can't be watched. It is
         // what makes switching to a tab whose file changed externally prompt.
-        void check();
+        if (!cancelled) void check();
       } catch (e) {
         // Surface arm-time failures instead of swallowing them (a silent catch
         // hid the dead watcher across multiple releases).
@@ -934,6 +951,7 @@ export function App() {
     return () => {
       cancelled = true;
       unlisten?.();
+      unlistenFocus?.();
       void import("@tauri-apps/api/core")
         .then(({ invoke }) => invoke("unwatch_file"))
         .catch(() => {});

@@ -1,28 +1,24 @@
 import { describe, it, expect } from "vitest";
 import { shouldPromptForExternalChange } from "./file-change";
 
-// Content-based detection (replaces the old mtime predicate): compare the on-disk
-// content to the version Markd last loaded/saved. Robust where mtime is not —
-// cannot false-positive on Markd's own save, and re-prompting for an
-// already-declined change is suppressed via lastPromptedContent.
+// Content-based detection: compare on-disk content to what Markd last
+// loaded/saved. Prompt EVERY time the disk differs (so re-editing + switching
+// back always re-prompts); duplicate OS events for one save are absorbed by the
+// caller's promptOpen guard.
 describe("shouldPromptForExternalChange", () => {
   it("prompts when on-disk content differs from what Markd saved/loaded", () => {
-    expect(shouldPromptForExternalChange("external edit", "original", null, false)).toBe(true);
+    expect(shouldPromptForExternalChange("external edit", "original", false)).toBe(true);
+  });
+
+  it("prompts again for a second, different external change", () => {
+    expect(shouldPromptForExternalChange("edit two", "original", false)).toBe(true);
   });
 
   it("does not prompt when disk matches saved content (Markd's own save / identical)", () => {
-    expect(shouldPromptForExternalChange("same", "same", null, false)).toBe(false);
+    expect(shouldPromptForExternalChange("same", "same", false)).toBe(false);
   });
 
-  it("does not re-prompt for a change the user already declined (same disk content)", () => {
-    expect(shouldPromptForExternalChange("external edit", "original", "external edit", false)).toBe(false);
-  });
-
-  it("prompts again for a NEW external change after a prior decline", () => {
-    expect(shouldPromptForExternalChange("newer edit", "original", "external edit", false)).toBe(true);
-  });
-
-  it("does not prompt while a prompt is already open (no stacked dialogs)", () => {
-    expect(shouldPromptForExternalChange("external edit", "original", null, true)).toBe(false);
+  it("does not prompt while a prompt is already open (absorbs duplicate save events)", () => {
+    expect(shouldPromptForExternalChange("external edit", "original", true)).toBe(false);
   });
 });
