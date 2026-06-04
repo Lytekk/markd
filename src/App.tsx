@@ -900,7 +900,7 @@ export function App() {
       } catch { /* file may have been deleted / stat unavailable */ }
     };
 
-    const onFocus = () => { void check(); };
+    let unlistenFocus: (() => void) | null = null;
 
     (async () => {
       try {
@@ -909,15 +909,25 @@ export function App() {
         if (cancelled) return;
         lastMtimeRef.current = info.mtime?.getTime() ?? null;
         timer = setInterval(check, 2000);
-      } catch { /* stat not available */ }
-    })();
 
-    window.addEventListener("focus", onFocus);
+        // Re-check the instant the OS window regains focus. Tauri's NATIVE window
+        // focus event (getCurrentWindow().onFocusChanged, sourced from the WRY/Rust
+        // layer) is reliable in WebView2, where the DOM `window` "focus" event is
+        // flaky on alt-tab. Registered AFTER the baseline is seeded so a focus
+        // can't run check() against a null baseline.
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        if (cancelled) return;
+        unlistenFocus = await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+          if (focused) void check();
+        });
+        if (cancelled) unlistenFocus?.(); // effect torn down mid-await
+      } catch { /* stat / window API unavailable */ }
+    })();
 
     return () => {
       cancelled = true;
       if (timer!) clearInterval(timer);
-      window.removeEventListener("focus", onFocus);
+      unlistenFocus?.();
     };
   }, [fileState.filePath, fileState.fileName]);
 
