@@ -1,5 +1,7 @@
+use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
-use tauri::{Emitter, Manager};
+use std::sync::Mutex;
+use tauri::{Emitter, Manager, State};
 
 #[derive(Serialize, Clone)]
 struct OpenedFile {
@@ -143,9 +145,71 @@ fn trash_path(path: String) -> Result<(), String> {
     trash::delete(&path).map_err(|e| e.to_string())
 }
 
+/// Holds the active file's OS filesystem watcher. Watching the file's PARENT
+/// directory (non-recursive) survives atomic saves (write-temp + rename) that a
+/// direct file watch would lose when the original inode is replaced. The callback
+/// emits `file-changed-on-disk`; the frontend then content-compares and prompts.
+/// Uses the `notify` crate (ReadDirectoryChangesW on Windows) — like
+/// read_file/write_file it bypasses the fs-plugin ACL, so no capability is needed.
+#[derive(Default)]
+struct FileWatchState(Mutex<Option<RecommendedWatcher>>);
+
+#[tauri::command]
+fn watch_file(
+    app: tauri::AppHandle,
+    state: State<'_, FileWatchState>,
+    path: String,
+) -> Result<(), String> {
+    let watch_path = std::path::PathBuf::from(&path);
+    let target_name = watch_path.file_name().map(|n| n.to_os_string());
+    let parent = watch_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+    let app_handle = app.clone();
+    let mut watcher = RecommendedWatcher::new(
+        move |res: notify::Result<notify::Event>| {
+            let Ok(event) = res else { return };
+            if !matches!(
+                event.kind,
+                EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
+            ) {
+                return;
+            }
+            // The dir watch also reports siblings — only react to the target file.
+            if event
+                .paths
+                .iter()
+                .any(|p| p.file_name().map(|n| n.to_os_string()) == target_name)
+            {
+                let _ = app_handle.emit("file-changed-on-disk", ());
+            }
+        },
+        Config::default(),
+    )
+    .map_err(|e| e.to_string())?;
+
+    watcher
+        .watch(&parent, RecursiveMode::NonRecursive)
+        .map_err(|e| e.to_string())?;
+
+    // Replacing the stored watcher drops (and stops) any previous one.
+    *state.0.lock().map_err(|e| e.to_string())? = Some(watcher);
+    Ok(())
+}
+
+#[tauri::command]
+fn unwatch_file(state: State<'_, FileWatchState>) -> Result<(), String> {
+    *state.0.lock().map_err(|e| e.to_string())? = None;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(FileWatchState::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(file_path) = args.iter().skip(1).find(|a| !a.starts_with('-')) {
                 let path = std::path::Path::new(file_path);
@@ -176,7 +240,9 @@ pub fn run() {
             create_file,
             create_folder,
             rename_path,
-            trash_path
+            trash_path,
+            watch_file,
+            unwatch_file
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

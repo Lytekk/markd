@@ -1,31 +1,24 @@
 import { describe, it, expect } from "vitest";
-import { shouldPromptReload } from "./file-change";
+import { shouldPromptForExternalChange } from "./file-change";
 
-// The watcher invariant, shared by the 2s mtime poll AND the window-refocus
-// check in App.tsx: prompt only when the file's mtime advanced past the baseline
-// and no prompt is already open. Null mtimes (startup race) never prompt.
-describe("shouldPromptReload", () => {
-  it("prompts when the current mtime is strictly greater than the baseline", () => {
-    expect(shouldPromptReload(1000, 2000, false)).toBe(true);
+// Content-based detection: compare on-disk content to what Markd last
+// loaded/saved. Prompt EVERY time the disk differs (so re-editing + switching
+// back always re-prompts); duplicate OS events for one save are absorbed by the
+// caller's promptOpen guard.
+describe("shouldPromptForExternalChange", () => {
+  it("prompts when on-disk content differs from what Markd saved/loaded", () => {
+    expect(shouldPromptForExternalChange("external edit", "original", false)).toBe(true);
   });
 
-  it("does not prompt when the mtimes are equal (no change)", () => {
-    expect(shouldPromptReload(2000, 2000, false)).toBe(false);
+  it("prompts again for a second, different external change", () => {
+    expect(shouldPromptForExternalChange("edit two", "original", false)).toBe(true);
   });
 
-  it("does not prompt when the current mtime is older than the baseline", () => {
-    expect(shouldPromptReload(2000, 1000, false)).toBe(false);
+  it("does not prompt when disk matches saved content (Markd's own save / identical)", () => {
+    expect(shouldPromptForExternalChange("same", "same", false)).toBe(false);
   });
 
-  it("does not prompt when a prompt is already open (no stacked dialogs)", () => {
-    expect(shouldPromptReload(1000, 2000, true)).toBe(false);
-  });
-
-  it("does not prompt when the baseline is null (before the first stat seeds it)", () => {
-    expect(shouldPromptReload(null, 2000, false)).toBe(false);
-  });
-
-  it("does not prompt when the current mtime is null (stat returned no mtime)", () => {
-    expect(shouldPromptReload(1000, null, false)).toBe(false);
+  it("does not prompt while a prompt is already open (absorbs duplicate save events)", () => {
+    expect(shouldPromptForExternalChange("external edit", "original", true)).toBe(false);
   });
 });
