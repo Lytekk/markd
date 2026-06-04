@@ -28,7 +28,8 @@ interface FlashState {
   nonce: number;
 }
 
-const flashKey = new PluginKey<FlashState>("headingFlash");
+// Exported for white-box tests (inspecting clear→set transaction metas).
+export const flashKey = new PluginKey<FlashState>("headingFlash");
 
 declare module "@tiptap/core" {
   interface Commands<ReturnType> {
@@ -64,14 +65,27 @@ export const HeadingFlash = Extension.create({
     return {
       flashHeadingAt:
         (pos: number) =>
-        ({ editor, state, dispatch }) => {
+        ({ editor, dispatch }) => {
           if (!dispatch) return true;
-          const nonce = (flashKey.getState(state)?.nonce ?? 0) + 1;
-          dispatch(state.tr.setMeta(flashKey, { pos, nonce }));
+          const view = editor.view;
+          const nonce = (flashKey.getState(view.state)?.nonce ?? 0) + 1;
+          // Restart on EVERY click (incl. re-clicking the same heading): clear
+          // the decoration, force a reflow on the heading's DOM, then re-set it.
+          // A lone set is a no-op when the class is already present (the browser
+          // sees no change and won't replay the animation). PM applies decoration
+          // DOM changes synchronously within dispatch, so the reflow between the
+          // two dispatches makes the class absence→presence transition real and
+          // the CSS animation replays. NOTE: a forced reflow (offsetWidth) is used
+          // rather than requestAnimationFrame — rAF is throttled in background
+          // tabs / jsdom and is unnecessary given PM's synchronous DOM update.
+          view.dispatch(view.state.tr.setMeta(flashKey, { pos: null, nonce }));
+          const size = view.state.doc.content.size;
+          const dom = pos >= 0 && pos < size ? view.nodeDOM(pos) : null;
+          if (dom instanceof HTMLElement) void dom.offsetWidth; // force reflow
+          view.dispatch(view.state.tr.setMeta(flashKey, { pos, nonce }));
           // Clear the decoration after the animation. The nonce guard means a
-          // newer flash (e.g. clicking a different heading) is never cleared
-          // early by an older heading's still-pending timeout.
-          const { view } = editor;
+          // newer flash (a different heading, or a repeat click) is never cleared
+          // early by an older still-pending timeout.
           window.setTimeout(() => {
             if (view.isDestroyed) return;
             if (flashKey.getState(view.state)?.nonce === nonce) {
