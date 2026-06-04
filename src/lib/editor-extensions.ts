@@ -20,6 +20,7 @@ import { SlashMenu } from "@/lib/slash-menu";
 import { FocusMode } from "@/lib/focus-mode";
 import { MermaidPreview } from "@/lib/mermaid-preview";
 import { InlineMath, BlockMath } from "@/lib/math";
+import { HeadingFlash } from "@/lib/heading-flash";
 
 const lowlight = createLowlight(common);
 
@@ -79,6 +80,7 @@ export function getExtensions(opts: ExtensionOptions) {
     ExternalLinkOpen,
     SlashMenu,
     FocusMode,
+    HeadingFlash,
     MermaidPreview,
     InlineMath,
     BlockMath,

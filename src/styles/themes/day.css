@@ -26,6 +26,7 @@
   --code-block-bg-color: #f3f4f6;
   --code-block-border-color: #d8dade;
   --table-header-bg: #f1f3f5;
+  --heading-flash-bg: rgba(67, 97, 238, 0.22);
 
   /* Syntax */
   --code-comment: #868e96;

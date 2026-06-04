@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { OutlinePanel, clampActiveHeading } from "./OutlinePanel";
+import { OutlinePanel } from "./OutlinePanel";
+import { clampActiveHeading } from "@/lib/outline-active";
 
 describe("OutlinePanel", () => {
   it("is exported as a function component", () => {
