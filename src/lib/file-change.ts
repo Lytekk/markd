@@ -1,19 +1,21 @@
 /**
- * Decide whether an external-modification reload prompt should be shown.
+ * Decide whether to prompt the user to reload a file that changed on disk.
  *
- * Encapsulates the watcher invariant so both triggers — the 2s mtime poll and the
- * window-refocus check in App.tsx — share one definition that is unit-testable
- * without Tauri. A prompt is warranted only when the file's mtime has advanced
- * past the baseline we recorded, and no prompt is already on screen (so the two
- * triggers can't stack dialogs). Null mtimes (startup race before the first stat,
- * or a stat that returned no mtime) never prompt.
+ * Content-based (not mtime): the on-disk content is compared against the version
+ * Markd last loaded or saved (savedContent). This is robust where mtime is not —
+ * it cannot false-positive on Markd's OWN save (after a save, disk === saved), and
+ * it ignores touches that don't change content. `lastPromptedContent` suppresses
+ * re-prompting for a change the user already declined (identical disk content),
+ * while still prompting for a genuinely new external change.
  */
-export function shouldPromptReload(
-  lastMtime: number | null,
-  currentMtime: number | null,
+export function shouldPromptForExternalChange(
+  diskContent: string,
+  savedContent: string,
+  lastPromptedContent: string | null,
   promptOpen: boolean,
 ): boolean {
   if (promptOpen) return false;
-  if (lastMtime === null || currentMtime === null) return false;
-  return currentMtime > lastMtime;
+  if (diskContent === savedContent) return false;
+  if (diskContent === lastPromptedContent) return false;
+  return true;
 }

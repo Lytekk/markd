@@ -1,31 +1,28 @@
 import { describe, it, expect } from "vitest";
-import { shouldPromptReload } from "./file-change";
+import { shouldPromptForExternalChange } from "./file-change";
 
-// The watcher invariant, shared by the 2s mtime poll AND the window-refocus
-// check in App.tsx: prompt only when the file's mtime advanced past the baseline
-// and no prompt is already open. Null mtimes (startup race) never prompt.
-describe("shouldPromptReload", () => {
-  it("prompts when the current mtime is strictly greater than the baseline", () => {
-    expect(shouldPromptReload(1000, 2000, false)).toBe(true);
+// Content-based detection (replaces the old mtime predicate): compare the on-disk
+// content to the version Markd last loaded/saved. Robust where mtime is not —
+// cannot false-positive on Markd's own save, and re-prompting for an
+// already-declined change is suppressed via lastPromptedContent.
+describe("shouldPromptForExternalChange", () => {
+  it("prompts when on-disk content differs from what Markd saved/loaded", () => {
+    expect(shouldPromptForExternalChange("external edit", "original", null, false)).toBe(true);
   });
 
-  it("does not prompt when the mtimes are equal (no change)", () => {
-    expect(shouldPromptReload(2000, 2000, false)).toBe(false);
+  it("does not prompt when disk matches saved content (Markd's own save / identical)", () => {
+    expect(shouldPromptForExternalChange("same", "same", null, false)).toBe(false);
   });
 
-  it("does not prompt when the current mtime is older than the baseline", () => {
-    expect(shouldPromptReload(2000, 1000, false)).toBe(false);
+  it("does not re-prompt for a change the user already declined (same disk content)", () => {
+    expect(shouldPromptForExternalChange("external edit", "original", "external edit", false)).toBe(false);
   });
 
-  it("does not prompt when a prompt is already open (no stacked dialogs)", () => {
-    expect(shouldPromptReload(1000, 2000, true)).toBe(false);
+  it("prompts again for a NEW external change after a prior decline", () => {
+    expect(shouldPromptForExternalChange("newer edit", "original", "external edit", false)).toBe(true);
   });
 
-  it("does not prompt when the baseline is null (before the first stat seeds it)", () => {
-    expect(shouldPromptReload(null, 2000, false)).toBe(false);
-  });
-
-  it("does not prompt when the current mtime is null (stat returned no mtime)", () => {
-    expect(shouldPromptReload(1000, null, false)).toBe(false);
+  it("does not prompt while a prompt is already open (no stacked dialogs)", () => {
+    expect(shouldPromptForExternalChange("external edit", "original", null, true)).toBe(false);
   });
 });
