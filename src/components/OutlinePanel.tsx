@@ -2,30 +2,13 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import type { Editor } from "@tiptap/react";
 import { extractHeadings, type HeadingEntry } from "@/lib/section-commands";
 import { computeHiddenSet, hasChildren } from "@/lib/outline-tree";
+import { clampActiveHeading } from "@/lib/outline-active";
 
 interface OutlinePanelProps {
   editor: Editor | null;
 }
 
 const COLLAPSED_KEY = "markd-outline-collapsed";
-
-/**
- * Resolve the active heading index from the scroll-spy candidate, forcing the
- * first heading at the very top of the document and the last at the very
- * bottom. Pure (no DOM) so the edge behavior is unit-tested independently of
- * layout. `candidate` is the index chosen by the 40%-viewport-line rule.
- */
-export function clampActiveHeading(
-  candidate: number,
-  count: number,
-  atTop: boolean,
-  atBottom: boolean,
-): number {
-  if (count === 0) return 0;
-  if (atTop) return 0;
-  if (atBottom) return count - 1;
-  return candidate;
-}
 
 export function OutlinePanel({ editor }: OutlinePanelProps) {
   const [headings, setHeadings] = useState<HeadingEntry[]>([]);
@@ -34,6 +17,10 @@ export function OutlinePanel({ editor }: OutlinePanelProps) {
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
   const activeItemRef = useRef<HTMLDivElement>(null);
   const headingsRef = useRef<HeadingEntry[]>([]);
+  // Holds the scroll-spy back briefly after an outline click so the programmatic
+  // smooth-scroll's own scroll events can't overwrite the clicked heading before
+  // it settles. Time-window idiom mirrors Editor.tsx's TYPING_PRIORITY_MS.
+  const suppressSpyUntilRef = useRef(0);
 
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => {
     try {
@@ -96,6 +83,9 @@ export function OutlinePanel({ editor }: OutlinePanelProps) {
     let ticking = false;
     const updateActive = () => {
       ticking = false;
+      // After an outline click we pin the clicked heading active and ignore the
+      // smooth-scroll's transient scroll events for ~700ms (see handleClick).
+      if (performance.now() < suppressSpyUntilRef.current) return;
       const h = headingsRef.current;
       if (h.length === 0) return;
 
@@ -145,14 +135,26 @@ export function OutlinePanel({ editor }: OutlinePanelProps) {
   }, [activeHeadingIndex]);
 
   const handleClick = useCallback(
-    (pos: number) => {
+    (index: number, pos: number) => {
       if (!editor) return;
 
-      const dom = editor.view.nodeDOM(pos);
-      const element =
-        dom instanceof HTMLElement ? dom : (dom as Node)?.parentElement;
+      // Highlight the clicked row at once and hold the scroll-spy back for the
+      // smooth-scroll's duration — the scroll lands the heading at viewport
+      // centre, below the 40%-line spy threshold, so without this the spy would
+      // re-pick the previous heading. After the window lapses with no further
+      // user scroll, the clicked heading stays active.
+      setActiveHeadingIndex(index);
+      suppressSpyUntilRef.current = performance.now() + 700;
 
       editor.chain().focus().setTextSelection(pos + 1).run();
+      // Flash via a ProseMirror decoration (durable across the re-render the
+      // selection/focus change triggers — a direct DOM class is reverted by PM's
+      // MutationObserver) and scroll the heading to centre. The element may be
+      // re-rendered a frame later, but scrollIntoView has already committed the
+      // offset, so the smooth scroll still lands.
+      editor.commands.flashHeadingAt(pos);
+      const dom = editor.view.nodeDOM(pos);
+      const element = dom instanceof HTMLElement ? dom : (dom as Node)?.parentElement ?? null;
       element?.scrollIntoView({ behavior: "smooth", block: "center" });
     },
     [editor],
@@ -228,7 +230,7 @@ export function OutlinePanel({ editor }: OutlinePanelProps) {
             key={heading.id}
             className={`markd-outline-item ${index === activeHeadingIndex ? "active" : ""} ${index === draggingIndex ? "dragging" : ""} ${index === dragOverIndex ? "drag-over" : ""}`}
             style={{ paddingLeft: 16 + (heading.level - minLevel) * 16 }}
-            onClick={() => handleClick(heading.pos)}
+            onClick={() => handleClick(index, heading.pos)}
             aria-current={index === activeHeadingIndex ? "true" : undefined}
             ref={index === activeHeadingIndex ? activeItemRef : undefined}
             draggable

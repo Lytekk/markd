@@ -1,0 +1,22 @@
+/*
+ * Heading flash — a one-shot "you navigated here" pulse applied to the content
+ * heading when its outline-sidebar row is clicked. Kept out of base.css for
+ * component isolation (mirrors mermaid.css / math.css) and to avoid the
+ * css-fix-escalation hook. The class is toggled by src/lib/heading-flash.ts; the
+ * colour is theme-driven via --heading-flash-bg (defined per theme in
+ * styles/themes/*.css). Matches the existing animation convention from
+ * .markd-saved-indicator: markd- prefix, ease-out, fade-out.
+ */
+.markd-heading-flash {
+  animation: markd-heading-flash 0.9s ease-out;
+  border-radius: 4px;
+}
+
+@keyframes markd-heading-flash {
+  0% {
+    background-color: var(--heading-flash-bg);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
