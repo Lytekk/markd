@@ -29,6 +29,7 @@ import { TabBar } from "@/components/TabBar";
 import { createFile, createFolder, exportAsHtml, exportAsPdf, readFileByPath, renamePath, saveToFile, trashPath } from "@/lib/file-system";
 import { ensureMdExtension, joinPath, parentPath, targetDirForEntry, validateName } from "@/lib/file-tree-ops";
 import { shouldCheckForUpdate, makeUpdateCheckRecord } from "@/lib/updater";
+import { shouldPromptReload } from "@/lib/file-change";
 import { askDialog } from "@/lib/dialogs";
 import { confirmModal, promptModal } from "@/lib/modal";
 import { normalizeUrl, wordRangeAt } from "@/lib/links";
@@ -855,7 +856,11 @@ export function App() {
     return () => window.removeEventListener("markd:search-term", handler);
   }, []);
 
-  // Detect external file modifications on the active tab (poll mtime every 2s)
+  // Detect external file modifications on the active tab: poll mtime every 2s AND
+  // re-check the instant the window regains focus. WebView2 throttles background
+  // timers, so an edit made while Markd is backgrounded surfaces immediately on
+  // refocus instead of up to 2s later. Both triggers share one check() and the
+  // fileChangePromptOpen guard so they can't stack dialogs.
   const lastMtimeRef = useRef<number | null>(null);
   const fileChangePromptOpen = useRef(false);
   useEffect(() => {
@@ -868,47 +873,71 @@ export function App() {
     let cancelled = false;
     let timer: ReturnType<typeof setInterval>;
 
+    const check = async () => {
+      if (cancelled || fileChangePromptOpen.current) return;
+      try {
+        const { stat } = await import("@tauri-apps/plugin-fs");
+        const current = await stat(filePath);
+        const currentMtime = current.mtime?.getTime() ?? null;
+        if (!shouldPromptReload(lastMtimeRef.current, currentMtime, fileChangePromptOpen.current)) return;
+        lastMtimeRef.current = currentMtime;
+        fileChangePromptOpen.current = true;
+        try {
+          const reload = await askDialog(
+            `"${fileState.fileName}" has been modified outside Markd.\n\nReload from disk?`,
+            { title: "File Changed on Disk", kind: "warning" },
+          );
+          if (reload) {
+            const content = await readFileByPath(filePath);
+            fileTabsRef.current.hydrateTab(fileTabsRef.current.activeTabId, content);
+            fileStateRef.current.handleOpenByPath(filePath, content);
+          }
+        } finally {
+          // Reset in finally so a thrown dialog can't permanently wedge the
+          // watcher (it would otherwise never prompt again).
+          fileChangePromptOpen.current = false;
+        }
+      } catch { /* file may have been deleted / stat unavailable */ }
+    };
+
+    const onFocus = () => { void check(); };
+
     (async () => {
       try {
         const { stat } = await import("@tauri-apps/plugin-fs");
         const info = await stat(filePath);
         if (cancelled) return;
         lastMtimeRef.current = info.mtime?.getTime() ?? null;
-
-        timer = setInterval(async () => {
-          if (cancelled || fileChangePromptOpen.current) return;
-          try {
-            const current = await stat(filePath);
-            const currentMtime = current.mtime?.getTime() ?? null;
-            if (lastMtimeRef.current && currentMtime && currentMtime > lastMtimeRef.current) {
-              lastMtimeRef.current = currentMtime;
-              fileChangePromptOpen.current = true;
-              try {
-                const reload = await askDialog(
-                  `"${fileState.fileName}" has been modified outside Markd.\n\nReload from disk?`,
-                  { title: "File Changed on Disk", kind: "warning" },
-                );
-                if (reload) {
-                  const content = await readFileByPath(filePath);
-                  fileTabsRef.current.hydrateTab(fileTabsRef.current.activeTabId, content);
-                  fileStateRef.current.handleOpenByPath(filePath, content);
-                }
-              } finally {
-                // Reset in finally so a thrown dialog can't permanently wedge
-                // the watcher (it would otherwise never prompt again).
-                fileChangePromptOpen.current = false;
-              }
-            }
-          } catch { /* file may have been deleted */ }
-        }, 2000);
+        timer = setInterval(check, 2000);
       } catch { /* stat not available */ }
     })();
+
+    window.addEventListener("focus", onFocus);
 
     return () => {
       cancelled = true;
       if (timer!) clearInterval(timer);
+      window.removeEventListener("focus", onFocus);
     };
   }, [fileState.filePath, fileState.fileName]);
+
+  // After an in-app save (manual, save-as, or autosave) the file's mtime advances
+  // — re-seed the watcher baseline so neither the poll nor the focus check treats
+  // our own write as an external modification (which would false-prompt on the
+  // next refocus). lastSaved is bumped by every save path in use-file-state.
+  useEffect(() => {
+    const filePath = fileState.filePath;
+    if (!isTauri() || !filePath || fileState.lastSaved === null) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { stat } = await import("@tauri-apps/plugin-fs");
+        const info = await stat(filePath);
+        if (!cancelled) lastMtimeRef.current = info.mtime?.getTime() ?? null;
+      } catch { /* stat unavailable */ }
+    })();
+    return () => { cancelled = true; };
+  }, [fileState.lastSaved, fileState.filePath]);
 
   // Check for updates. `manual` surfaces "you're up to date" and errors via a
   // dialog; the startup check stays quiet on no-update but NEVER swallows a
