@@ -7,6 +7,7 @@ import {
   buildFlashDecorations,
   flashKey,
   flashWhenInView,
+  isInView,
   type InViewEntry,
   type InViewObserver,
 } from "./heading-flash";
@@ -123,11 +124,17 @@ describe("flashWhenInView — defers the flash until the heading is in view, fir
   // the callback so a test can drive intersection events on demand.
   function makeFakeObserver() {
     let cb: ((entries: InViewEntry[]) => void) | null = null;
-    const state = { observed: null as Element | null, disconnected: false };
+    const state = {
+      observed: null as Element | null,
+      disconnected: false,
+      options: null as { root: Element | null; threshold: number | number[] } | null,
+    };
     const create = (
       callback: (entries: InViewEntry[]) => void,
+      options: { root: Element | null; threshold: number | number[] },
     ): InViewObserver => {
       cb = callback;
+      state.options = options;
       return {
         observe: (el: Element) => {
           state.observed = el;
@@ -145,6 +152,9 @@ describe("flashWhenInView — defers the flash until the heading is in view, fir
       },
       get disconnected() {
         return state.disconnected;
+      },
+      get options() {
+        return state.options;
       },
     };
   }
@@ -201,6 +211,50 @@ describe("flashWhenInView — defers the flash until the heading is in view, fir
     expect(onInView).toHaveBeenCalledTimes(1);
     expect(obs.disconnected).toBe(true);
     expect(fb.cleared).toBe(true);
+  });
+
+  it("flashes for a TALL heading via root-coverage even when its own ratio is below threshold", () => {
+    const obs = makeFakeObserver();
+    const fb = makeFakeFallback();
+    const onInView = vi.fn();
+    flashWhenInView({
+      element: document.createElement("h1"),
+      root: null,
+      threshold: 0.6,
+      onInView,
+      createObserver: obs.create,
+      scheduleFallback: fb.schedule,
+    });
+    // ratio 0.3 (< 0.6) — a heading taller than the viewport — but its visible
+    // slice fills the root viewport (covers 100% of root).
+    obs.emit([{ isIntersecting: true, intersectionRatio: 0.3, intersectionHeight: 480, rootHeight: 480 }]);
+    expect(onInView).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes a DENSE threshold grid to the observer (max 1% gaps)", () => {
+    // IntersectionObserver only fires at ratio crossings. A very tall heading
+    // sweeps a tiny ratio range (a 6x-viewport heading maxes at ~0.17), so with
+    // coarse thresholds the observer fires once at entry (coverage ~0) and then
+    // goes SILENT — the root-coverage predicate never sees the settled state and
+    // the flash degrades to the timer fallback (browser-measured: 2015ms).
+    // A 1%-step grid keeps callbacks coming for any heading height.
+    const obs = makeFakeObserver();
+    const fb = makeFakeFallback();
+    flashWhenInView({
+      element: document.createElement("h1"),
+      root: null,
+      threshold: 0.6,
+      onInView: vi.fn(),
+      createObserver: obs.create,
+      scheduleFallback: fb.schedule,
+    });
+    const t = obs.options?.threshold;
+    expect(Array.isArray(t)).toBe(true);
+    const arr = (t as number[]).slice().sort((a, b) => a - b);
+    expect(arr[0]).toBe(0);
+    expect(arr[arr.length - 1]).toBe(1);
+    const maxGap = Math.max(...arr.slice(1).map((v, i) => v - arr[i]!));
+    expect(maxGap).toBeLessThanOrEqual(0.01 + 1e-9);
   });
 
   it("does NOT flash while the element is only partially visible (below threshold)", () => {
@@ -288,5 +342,48 @@ describe("flashWhenInView — defers the flash until the heading is in view, fir
     expect(fb.cleared).toBe(true);
     obs.emit([IN_VIEW]);
     expect(onInView).not.toHaveBeenCalled();
+  });
+});
+
+describe("isInView — in-view predicate, incl. targets taller than the viewport", () => {
+  it("is false when not intersecting", () => {
+    expect(isInView({ isIntersecting: false, intersectionRatio: 1 }, 0.6)).toBe(false);
+  });
+
+  it("is true when the target's own visible fraction meets the threshold", () => {
+    expect(isInView({ isIntersecting: true, intersectionRatio: 0.6 }, 0.6)).toBe(true);
+    expect(isInView({ isIntersecting: true, intersectionRatio: 0.9 }, 0.6)).toBe(true);
+  });
+
+  it("is false when partially visible and not taller than the root", () => {
+    expect(isInView({ isIntersecting: true, intersectionRatio: 0.3 }, 0.6)).toBe(false);
+  });
+
+  it("is true for a TALL target whose visible slice covers the threshold of the root", () => {
+    // 3x-viewport heading: own ratio maxes ~0.33, but centred it fills the root.
+    expect(
+      isInView(
+        { isIntersecting: true, intersectionRatio: 0.33, intersectionHeight: 480, rootHeight: 480 },
+        0.6,
+      ),
+    ).toBe(true);
+  });
+
+  it("is false for a tall target whose visible slice does not yet cover the threshold of the root", () => {
+    expect(
+      isInView(
+        { isIntersecting: true, intersectionRatio: 0.2, intersectionHeight: 200, rootHeight: 480 },
+        0.6,
+      ),
+    ).toBe(false);
+  });
+
+  it("falls back to the ratio check when rootHeight is missing or zero", () => {
+    expect(
+      isInView({ isIntersecting: true, intersectionRatio: 0.3, intersectionHeight: 480, rootHeight: 0 }, 0.6),
+    ).toBe(false);
+    expect(
+      isInView({ isIntersecting: true, intersectionRatio: 0.3, intersectionHeight: 480 }, 0.6),
+    ).toBe(false);
   });
 });

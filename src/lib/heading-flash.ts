@@ -63,7 +63,31 @@ export function buildFlashDecorations(doc: PmNode, pos: number | null): Decorati
 /** Minimal IntersectionObserverEntry shape this helper reads (real entries satisfy it). */
 export interface InViewEntry {
   isIntersecting: boolean;
+  /** Visible fraction of the TARGET element (0–1). */
   intersectionRatio: number;
+  /** Height of the visible slice (real IntersectionObserverEntry.intersectionRect.height).
+   * Optional — lets a target taller than the root qualify via root-coverage. */
+  intersectionHeight?: number;
+  /** Height of the root viewport (real IntersectionObserverEntry.rootBounds.height). */
+  rootHeight?: number;
+}
+
+/**
+ * Whether `entry` counts as "in view" at `threshold`. Normally this is the
+ * target's own visible fraction (`intersectionRatio`). But a target TALLER than
+ * the root viewport can never reach `threshold` as a fraction of itself (a
+ * 3×-viewport heading maxes near 0.33), so it would silently fall back to the
+ * timer. In that case ask instead whether the visible slice covers `threshold`
+ * of the ROOT viewport — i.e. the heading has filled the screen. Pure, so it's
+ * unit-testable; requires rootHeight > 0 to take the root-coverage path.
+ */
+export function isInView(entry: InViewEntry, threshold: number): boolean {
+  if (!entry.isIntersecting) return false;
+  if (entry.intersectionRatio >= threshold) return true;
+  if (entry.rootHeight && entry.rootHeight > 0 && entry.intersectionHeight !== undefined) {
+    return entry.intersectionHeight / entry.rootHeight >= threshold;
+  }
+  return false;
 }
 
 /** Minimal observer surface this helper uses (real IntersectionObserver satisfies it). */
@@ -84,7 +108,7 @@ export interface FlashWhenInViewOptions {
   /** Constructs the observer — injectable so tests run without IntersectionObserver. */
   createObserver: (
     callback: (entries: InViewEntry[]) => void,
-    options: { root: Element | null; threshold: number },
+    options: { root: Element | null; threshold: number | number[] },
   ) => InViewObserver;
   /** Schedules a fallback `run` and returns a clear fn — injectable for tests. */
   scheduleFallback: (run: () => void) => () => void;
@@ -116,13 +140,24 @@ export function flashWhenInView(options: FlashWhenInViewOptions): () => void {
     options.onInView();
   };
 
+  // DENSE (1%-step) thresholds: IntersectionObserver only fires at ratio
+  // crossings, and a very tall heading sweeps a tiny ratio range (a 6x-viewport
+  // heading maxes at ~0.17) — with coarse thresholds the observer fires once at
+  // entry (coverage ~0) and then goes silent, so the root-coverage predicate
+  // never sees the settled state and the flash degrades to the timer fallback
+  // (browser-measured: 2015ms). A 1% grid keeps callbacks coming for any
+  // heading height; isInView() decides "in view" per callback (ratio OR
+  // root-coverage). ~100 entries is well within IO limits and the observer
+  // disconnects on the first qualifying callback.
+  const observerThresholds = Array.from(
+    new Set([...Array.from({ length: 101 }, (_, i) => i / 100), options.threshold]),
+  ).sort((a, b) => a - b);
+
   observer = options.createObserver(
     (entries) => {
-      if (entries.some((e) => e.isIntersecting && e.intersectionRatio >= options.threshold)) {
-        finish();
-      }
+      if (entries.some((e) => isInView(e, options.threshold))) finish();
     },
-    { root: options.root, threshold: options.threshold },
+    { root: options.root, threshold: observerThresholds },
   );
   clearFallback = options.scheduleFallback(finish);
   observer.observe(options.element);

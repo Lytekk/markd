@@ -170,7 +170,18 @@ export function OutlinePanel({ editor }: OutlinePanelProps) {
           threshold: 0.6,
           onInView: () => editor.commands.flashHeadingAt(pos),
           createObserver: (cb, opts) =>
-            new IntersectionObserver((entries) => cb(entries), opts),
+            new IntersectionObserver(
+              (entries) =>
+                cb(
+                  entries.map((e) => ({
+                    isIntersecting: e.isIntersecting,
+                    intersectionRatio: e.intersectionRatio,
+                    intersectionHeight: e.intersectionRect.height,
+                    rootHeight: e.rootBounds?.height,
+                  })),
+                ),
+              opts,
+            ),
           scheduleFallback: (run) => {
             // Only matters if the observer never reports in view (heading detached
             // by a re-render). 2000ms gives a very long smooth-scroll headroom to
