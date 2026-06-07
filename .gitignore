@@ -32,6 +32,11 @@ TODO.md
 CLAUDE.md
 .claude/
 .serena/
+/docs/
+
+# Local tooling artifacts (code-intelligence index + browser-automation scratch)
+.axon/
+.playwright-mcp/
 
 # Ad-hoc dev fixtures — files pasted into public/ so the dev server can serve
 # them for in-browser paste tests (e.g. fetch('/JOURNAL.md')). Not a real
