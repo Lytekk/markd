@@ -1,22 +1,64 @@
 /*
- * Heading flash — a one-shot "you navigated here" pulse applied to the content
- * heading when its outline-sidebar row is clicked. Kept out of base.css for
- * component isolation (mirrors mermaid.css / math.css) and to avoid the
- * css-fix-escalation hook. The class is toggled by src/lib/heading-flash.ts; the
- * colour is theme-driven via --heading-flash-bg (defined per theme in
- * styles/themes/*.css). Matches the existing animation convention from
- * .markd-saved-indicator: markd- prefix, ease-out, fade-out.
+ * Heading flash — a "you navigated here" pulse on the content heading whose
+ * outline-sidebar row was clicked. Fired ONCE the heading scrolls into view (see
+ * flashWhenInView in src/lib/heading-flash.ts), not at click time. Kept out of
+ * base.css for component isolation (mirrors mermaid.css / math.css) and to avoid
+ * the css-fix-escalation hook. The .markd-heading-flash class is toggled on the
+ * heading by the HeadingFlash decoration (src/lib/heading-flash.ts); the colour
+ * is theme-driven via --heading-flash-bg (styles/themes/*.css).
  */
 .markd-heading-flash {
-  animation: markd-heading-flash 0.9s ease-out;
-  border-radius: 4px;
+  position: relative;
+  isolation: isolate; /* contain the overlay's negative z-index to this heading */
 }
 
+/* The pulse rides an OPACITY-animated overlay, not the heading's background-color:
+ * opacity is GPU-composited and fades cleanly at constant hue (background-color
+ * interpolates muddy toward rgba(0,0,0,0)); base opacity 0 means removing the
+ * class after FLASH_MS (heading-flash.ts — must stay > this duration) never pops. */
+.markd-heading-flash::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1; /* behind the heading text */
+  border-radius: 4px;
+  background-color: var(--heading-flash-bg);
+  opacity: 0; /* hidden at rest — the keyframes drive the pulse */
+  pointer-events: none;
+  animation: markd-heading-flash 1.4s ease-in-out;
+}
+
+/* Double pulse (heartbeat) with a decaying echo — immediate hit, fade, softer
+ * second swell, then a brisk, smooth settle. ease-in-out keeps each swell visible
+ * and lands the final fade gently; a plain ease-out front-loads it into an
+ * invisible tail and reads as an abrupt ending. */
 @keyframes markd-heading-flash {
   0% {
-    background-color: var(--heading-flash-bg);
+    opacity: 1; /* pulse 1 — immediate hit */
+  }
+  30% {
+    opacity: 0; /* pulse 1 fades out */
+  }
+  55% {
+    opacity: 0.65; /* pulse 2 — softer echo */
   }
   100% {
-    background-color: transparent;
+    opacity: 0; /* smooth settle */
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* One brief, gentle fade — no pulsing — for reduced-motion users. */
+  .markd-heading-flash::after {
+    animation: markd-heading-flash-reduced 0.8s ease-out;
+  }
+
+  @keyframes markd-heading-flash-reduced {
+    0% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+    }
   }
 }

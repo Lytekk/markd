@@ -19,9 +19,11 @@ import { Decoration, DecorationSet } from "@tiptap/pm/view";
 
 export const FLASH_CLASS = "markd-heading-flash";
 
-// Must outlast the CSS animation (0.9s in outline-flash.css) so the fade
-// completes before the decoration (and class) is removed.
-const FLASH_MS = 1000;
+// Must outlast the CSS animation (1.4s in outline-flash.css — and the 0.8s
+// prefers-reduced-motion variant) so the fade completes before the decoration
+// (and class) is removed — else the flash is yanked mid-fade and disappears
+// too soon.
+const FLASH_MS = 1500;
 
 interface FlashState {
   pos: number | null;
@@ -56,6 +58,81 @@ export function buildFlashDecorations(doc: PmNode, pos: number | null): Decorati
   return DecorationSet.create(doc, [
     Decoration.node(pos, pos + node.nodeSize, { class: FLASH_CLASS }),
   ]);
+}
+
+/** Minimal IntersectionObserverEntry shape this helper reads (real entries satisfy it). */
+export interface InViewEntry {
+  isIntersecting: boolean;
+  intersectionRatio: number;
+}
+
+/** Minimal observer surface this helper uses (real IntersectionObserver satisfies it). */
+export interface InViewObserver {
+  observe(el: Element): void;
+  disconnect(): void;
+}
+
+export interface FlashWhenInViewOptions {
+  /** The heading element an outline click is jumping to. */
+  element: HTMLElement;
+  /** Scroll root the visibility is measured against (the editor scroll container). */
+  root: Element | null;
+  /** Fraction of the element that must be visible to count as "in view" (0–1). */
+  threshold: number;
+  /** Called exactly once, when the element is in view (or via the fallback). */
+  onInView: () => void;
+  /** Constructs the observer — injectable so tests run without IntersectionObserver. */
+  createObserver: (
+    callback: (entries: InViewEntry[]) => void,
+    options: { root: Element | null; threshold: number },
+  ) => InViewObserver;
+  /** Schedules a fallback `run` and returns a clear fn — injectable for tests. */
+  scheduleFallback: (run: () => void) => () => void;
+}
+
+/**
+ * Fire `onInView` exactly ONCE, when `element` is at least `threshold` visible
+ * within `root`. Used to defer the heading flash until a smooth-scroll has
+ * actually landed the heading in the viewport — flashing at click time would
+ * burn the ~1.4s pulse off-screen while the scroll is still travelling. A
+ * fallback fires anyway if the observer never reports the element in view (e.g.
+ * it was detached by a ProseMirror re-render during the scroll). Returns a
+ * cancel fn (used to supersede a pending flash when a newer click arrives).
+ *
+ * Dependency-injected (observer + fallback) so it is unit-testable without a
+ * real IntersectionObserver — jsdom provides none. Mirrors the injectable-deps
+ * pattern of file-change.ts / focus-mode's pure helpers.
+ */
+export function flashWhenInView(options: FlashWhenInViewOptions): () => void {
+  let done = false;
+  let clearFallback = (): void => {};
+  let observer: InViewObserver | null = null;
+
+  const finish = () => {
+    if (done) return;
+    done = true;
+    clearFallback();
+    observer?.disconnect();
+    options.onInView();
+  };
+
+  observer = options.createObserver(
+    (entries) => {
+      if (entries.some((e) => e.isIntersecting && e.intersectionRatio >= options.threshold)) {
+        finish();
+      }
+    },
+    { root: options.root, threshold: options.threshold },
+  );
+  clearFallback = options.scheduleFallback(finish);
+  observer.observe(options.element);
+
+  return () => {
+    if (done) return;
+    done = true;
+    clearFallback();
+    observer?.disconnect();
+  };
 }
 
 export const HeadingFlash = Extension.create({

@@ -3,6 +3,7 @@ import type { Editor } from "@tiptap/react";
 import { extractHeadings, type HeadingEntry } from "@/lib/section-commands";
 import { computeHiddenSet, hasChildren } from "@/lib/outline-tree";
 import { clampActiveHeading } from "@/lib/outline-active";
+import { flashWhenInView } from "@/lib/heading-flash";
 
 interface OutlinePanelProps {
   editor: Editor | null;
@@ -21,6 +22,10 @@ export function OutlinePanel({ editor }: OutlinePanelProps) {
   // smooth-scroll's own scroll events can't overwrite the clicked heading before
   // it settles. Time-window idiom mirrors Editor.tsx's TYPING_PRIORITY_MS.
   const suppressSpyUntilRef = useRef(0);
+  // Cancels a pending "flash once in view" from a prior click, so a rapid second
+  // click can't flash the previous heading when its scroll finally lands.
+  const cancelFlashRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => cancelFlashRef.current?.(), []);
 
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => {
     try {
@@ -147,14 +152,34 @@ export function OutlinePanel({ editor }: OutlinePanelProps) {
       suppressSpyUntilRef.current = performance.now() + 700;
 
       editor.chain().focus().setTextSelection(pos + 1).run();
-      // Flash via a ProseMirror decoration (durable across the re-render the
-      // selection/focus change triggers — a direct DOM class is reverted by PM's
-      // MutationObserver) and scroll the heading to centre. The element may be
-      // re-rendered a frame later, but scrollIntoView has already committed the
-      // offset, so the smooth scroll still lands.
-      editor.commands.flashHeadingAt(pos);
+
       const dom = editor.view.nodeDOM(pos);
       const element = dom instanceof HTMLElement ? dom : (dom as Node)?.parentElement ?? null;
+
+      // Defer the flash until the heading has actually scrolled into view, then
+      // play it once. Firing at click time would burn the ~1.4s pulse off-screen
+      // while the smooth-scroll is still travelling for any off-viewport heading.
+      // flashHeadingAt(pos) re-resolves the node BY POSITION, so it still targets
+      // the right element even if PM re-rendered it during the scroll. A fallback
+      // (in flashWhenInView) still flashes if the observer never reports in view.
+      if (element) {
+        cancelFlashRef.current?.();
+        cancelFlashRef.current = flashWhenInView({
+          element,
+          root: element.closest(".markd-editor-scroll"),
+          threshold: 0.6,
+          onInView: () => editor.commands.flashHeadingAt(pos),
+          createObserver: (cb, opts) =>
+            new IntersectionObserver((entries) => cb(entries), opts),
+          scheduleFallback: (run) => {
+            // Only matters if the observer never reports in view (heading detached
+            // by a re-render). 2000ms gives a very long smooth-scroll headroom to
+            // land first, so the fallback doesn't flash mid-travel.
+            const id = window.setTimeout(run, 2000);
+            return () => window.clearTimeout(id);
+          },
+        });
+      }
       element?.scrollIntoView({ behavior: "smooth", block: "center" });
     },
     [editor],
