@@ -84,10 +84,22 @@ Published publicly because it solves a real problem and a few people asked. If i
 
 Grab the latest release from [Releases](../../releases):
 
+### Windows
+
 - **MSI** — for IT-managed installs.
 - **NSIS** (`Markd_*-setup.exe`) — for individual users. Uninstaller lands in *Apps & Features*.
 
 Or run the bare `markd.exe` without installation — it's portable.
+
+### macOS
+
+- **DMG** (`Markd_*_universal.dmg`) — universal binary (Intel + Apple Silicon).
+
+The macOS build is **not Apple-notarized** (no Apple Developer certificate), so Gatekeeper will warn on first launch: right-click the app → **Open** → **Open**, or clear the quarantine flag with `xattr -cr /Applications/Markd.app`. Auto-updates are still cryptographically verified (Ed25519) on every platform.
+
+Known macOS limitations (Markd is primarily developed on Windows):
+- Double-clicking an `.md` file in Finder opens Markd but may not load the file — use **Ctrl+O** inside the app.
+- Custom shortcuts currently use **Ctrl**, not **Cmd** (TipTap's built-in formatting shortcuts respect Cmd).
 
 ## Build from Source
 
