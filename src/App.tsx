@@ -28,7 +28,12 @@ import { useZoom } from "@/hooks/use-zoom";
 import { TabBar } from "@/components/TabBar";
 import { createFile, createFolder, exportAsHtml, exportAsPdf, readFileByPath, renamePath, saveToFile, trashPath } from "@/lib/file-system";
 import { ensureMdExtension, joinPath, parentPath, targetDirForEntry, validateName } from "@/lib/file-tree-ops";
-import { shouldCheckForUpdate, makeUpdateCheckRecord } from "@/lib/updater";
+import {
+  shouldCheckForUpdate,
+  makeUpdateCheckRecord,
+  shouldOfferUpdate,
+  UPDATE_SKIP_KEY,
+} from "@/lib/updater";
 import { shouldPromptForExternalChange } from "@/lib/file-change";
 import { askDialog } from "@/lib/dialogs";
 import { confirmModal, promptModal } from "@/lib/modal";
@@ -986,7 +991,7 @@ export function App() {
 
     try {
       const { check } = await import("@tauri-apps/plugin-updater");
-      const { ask, message } = await import("@tauri-apps/plugin-dialog");
+      const { message } = await import("@tauri-apps/plugin-dialog");
       const update = await check();
       // Record only AFTER a successful check, so a thrown check() keeps
       // retrying rather than being debounced away with a stale marker.
@@ -1004,11 +1009,35 @@ export function App() {
         return;
       }
 
-      const shouldUpdate = await ask(
-        `Markd ${update.version} is available.\nThe app will close to install and reopen automatically.`,
-        { title: "Update Available", kind: "info" },
-      );
-      if (!shouldUpdate) return;
+      // Honor "Skip This Version" on automatic checks only — a manual check is
+      // an explicit ask, so a stored skip must never silently eat its result.
+      if (
+        !shouldOfferUpdate(update.version, localStorage.getItem(UPDATE_SKIP_KEY), manual)
+      ) {
+        return;
+      }
+
+      // In-app modal (not dialog.ask) so we get three buttons; immune to
+      // WebView2 native-dialog gating like the rest of the modal system.
+      const choice = await confirmModal({
+        title: "Update Available",
+        message: `Markd ${update.version} is available.\nThe app will close to install and reopen automatically.`,
+        buttons: [
+          { label: "Install Now", value: "install", variant: "primary" },
+          { label: "Remind Me Later", value: "later" },
+          { label: "Skip This Version", value: "skip" },
+        ],
+        defaultValue: "install",
+      });
+      if (choice === "skip") {
+        localStorage.setItem(UPDATE_SKIP_KEY, update.version);
+        return;
+      }
+      // "later" and Esc are both no-ops: the next eligible check re-prompts.
+      // Deliberately NOT clearing a stored skip here — "later" is the weaker
+      // choice and must never silently erase an explicit same-version skip
+      // (re-prompted via manual check); stale skips are inert by exact-match.
+      if (choice !== "install") return;
       await update.downloadAndInstall();
     } catch (err) {
       console.error("Update check failed:", err);
