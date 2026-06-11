@@ -16,7 +16,13 @@ export function ModalHost() {
   useEffect(
     () =>
       _subscribeModal((r) => {
-        setReq(r);
+        setReq((current) => {
+          // A new request displaces any in-flight one: resolve the old promise
+          // as a dismissal instead of orphaning it forever (the startup
+          // auto-update prompt sits open unattended and is displaceable).
+          if (current && current !== r) current.resolve(null);
+          return r;
+        });
         setError(null);
         if (r?.kind === "prompt") setValue(r.defaultValue);
       }),

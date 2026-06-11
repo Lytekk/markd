@@ -63,4 +63,25 @@ describe("ModalHost", () => {
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Enter" });
     await expect(p).resolves.toBe("cancel");
   });
+
+  it("a second request resolves the displaced modal with null instead of orphaning it", async () => {
+    // Regression guard: the startup auto-update prompt sits open unattended;
+    // any user-triggered modal displaces it. The displaced promise must settle
+    // (as a dismissal), never hang forever.
+    render(<ModalHost />);
+    const first = confirmModal({
+      title: "Update Available",
+      message: "Markd 0.3.14 is available.",
+      buttons: [{ label: "Install Now", value: "install", variant: "primary" }],
+    });
+    await screen.findByText("Markd 0.3.14 is available.");
+    const second = confirmModal({
+      title: "Delete File",
+      message: "Really delete?",
+      buttons: [{ label: "Delete", value: "delete", variant: "danger" }],
+    });
+    await expect(first).resolves.toBeNull();
+    fireEvent.click(await screen.findByText("Delete"));
+    await expect(second).resolves.toBe("delete");
+  });
 });

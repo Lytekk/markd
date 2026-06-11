@@ -29,6 +29,7 @@ Published publicly because it solves a real problem and a few people asked. If i
 - Auto-save every 30 seconds for named files
 - Line numbers (toggle via status bar) in both rendered and source modes
 - Window size and position remembered across restarts
+- Auto-update — checks GitHub Releases on startup (Ed25519-signed); choose **Install Now**, **Remind Me Later**, or **Skip This Version** (skip is per-version; a newer release prompts again)
 - Two themes (Day, Night) — extendable via CSS custom properties
 - Syntax highlighting for fenced code blocks (via [lowlight](https://github.com/wooorm/lowlight)), each with a hover copy button + language badge
 - Mermaid diagrams — fenced ` ```mermaid ` blocks render as live SVG diagrams below the source (lazy-loaded; bad syntax shows an inline error, never a crash)

@@ -3,6 +3,7 @@ import {
   shouldCheckForUpdate,
   makeUpdateCheckRecord,
   ONE_HOUR_MS,
+  shouldOfferUpdate,
 } from "./updater";
 
 describe("shouldCheckForUpdate", () => {
@@ -49,5 +50,31 @@ describe("makeUpdateCheckRecord", () => {
     const rec = makeUpdateCheckRecord("0.3.6", NOW);
     expect(shouldCheckForUpdate(rec, "0.3.6", NOW + 1000)).toBe(false);
     expect(JSON.parse(rec)).toEqual({ t: NOW, v: "0.3.6" });
+  });
+});
+
+describe("shouldOfferUpdate", () => {
+  const OFFERED = "0.3.14";
+
+  test("offers when no skipped version is stored", () => {
+    expect(shouldOfferUpdate(OFFERED, null, false)).toBe(true);
+  });
+
+  test("offers when a different version was skipped", () => {
+    // Skip is exact-version: a newer release supersedes an old skip.
+    expect(shouldOfferUpdate(OFFERED, "0.3.13", false)).toBe(true);
+  });
+
+  test("suppresses automatic prompts for a skipped version", () => {
+    expect(shouldOfferUpdate(OFFERED, OFFERED, false)).toBe(false);
+  });
+
+  test("manual checks always offer, even a skipped version", () => {
+    // The user explicitly asked — a stored skip must not silently eat the result.
+    expect(shouldOfferUpdate(OFFERED, OFFERED, true)).toBe(true);
+  });
+
+  test("treats an empty stored value as no skip", () => {
+    expect(shouldOfferUpdate(OFFERED, "", false)).toBe(true);
   });
 });

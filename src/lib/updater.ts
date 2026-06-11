@@ -51,3 +51,24 @@ export function makeUpdateCheckRecord(currentVersion: string, now: number): stri
   const record: UpdateCheckRecord = { t: now, v: currentVersion };
   return JSON.stringify(record);
 }
+
+/** localStorage key holding the version the user chose to skip ("Skip This Version"). */
+export const UPDATE_SKIP_KEY = "markd-update-skip";
+
+/**
+ * Decide whether to surface the update prompt for an available version.
+ *
+ * Manual checks always prompt — the user explicitly asked, so a stored skip
+ * must not silently eat the result. Automatic checks stay quiet only for the
+ * exact skipped version; any other release supersedes the skip. The stored
+ * value is the raw version string (no JSON), so a malformed value can never
+ * throw — it simply fails to match and we fail open to prompting.
+ */
+export function shouldOfferUpdate(
+  offeredVersion: string,
+  skippedVersion: string | null,
+  manual: boolean,
+): boolean {
+  if (manual) return true;
+  return skippedVersion !== offeredVersion;
+}
