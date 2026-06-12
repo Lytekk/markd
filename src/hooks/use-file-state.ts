@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
+import { resolveSaveContent } from "@/lib/markdown-fidelity";
 import {
   FileEntry,
   openFile,
@@ -97,7 +98,14 @@ export function useFileState() {
   }, []);
 
   const handleSave = useCallback(async () => {
-    const md = getMarkdownRef.current?.() ?? "";
+    // Round-trip fidelity: a clean buffer writes savedContent VERBATIM (no
+    // re-serialization → no normalization churn on untouched files); a dirty
+    // buffer serializes with the source's trailing-newline convention.
+    const md = resolveSaveContent(
+      state.isDirty,
+      state.savedContent,
+      () => getMarkdownRef.current?.() ?? "",
+    );
 
     if (state.filePath) {
       const ok = await saveToFile(state.filePath, md);
@@ -119,10 +127,14 @@ export function useFileState() {
       return true;
     }
     return false;
-  }, [state.filePath, state.fileName]);
+  }, [state.filePath, state.fileName, state.isDirty, state.savedContent]);
 
   const handleSaveAs = useCallback(async () => {
-    const md = getMarkdownRef.current?.() ?? "";
+    const md = resolveSaveContent(
+      state.isDirty,
+      state.savedContent,
+      () => getMarkdownRef.current?.() ?? "",
+    );
     const result = await saveFileAs(md, state.fileName);
     if (result) {
       setState((prev) => ({
@@ -134,7 +146,7 @@ export function useFileState() {
         lastSaved: Date.now(),
       }));
     }
-  }, [state.fileName]);
+  }, [state.fileName, state.isDirty, state.savedContent]);
 
   const handleFileSelect = useCallback(async (entry: FileEntry) => {
     if (entry.kind !== "file") return;
@@ -235,7 +247,13 @@ export function useFileState() {
 
     if (state.isDirty && state.filePath) {
       autoSaveTimerRef.current = setTimeout(async () => {
-        const md = getMarkdownRef.current?.() ?? "";
+        // Autosave only arms while dirty → always serializes; conform to the
+        // source's newline/line-ending conventions like the manual save path.
+        const md = resolveSaveContent(
+          true,
+          state.savedContent,
+          () => getMarkdownRef.current?.() ?? "",
+        );
         const ok = await saveToFile(state.filePath!, md);
         if (ok) {
           setState((prev) => ({

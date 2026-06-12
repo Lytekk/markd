@@ -42,6 +42,7 @@ import { normalizeUrl, wordRangeAt } from "@/lib/links";
 import { splitFrontmatter, joinFrontmatter } from "@/lib/frontmatter";
 import { computeTextStats, type TextStats } from "@/lib/text-stats";
 import { canRevertClean, docMatchesSaved, parseSavedDoc, sourceModeIsDirty } from "@/lib/dirty-check";
+import { resolveSaveContent } from "@/lib/markdown-fidelity";
 import { tabDisplayInfo } from "@/lib/tab-display";
 
 function isTauri(): boolean {
@@ -577,8 +578,24 @@ export function App() {
           ],
         });
         if (choice === "save") {
-          const saved = await fileState.handleSave();
-          if (!saved) return;
+          if (tabId === fileTabs.activeTabId) {
+            const saved = await fileState.handleSave();
+            if (!saved) return;
+          } else if (tab.filePath) {
+            // Background tab (closed via its × / middle-click without being
+            // active): handleSave() operates on the ACTIVE file — it would
+            // save the wrong buffer and discard this one. Write the closing
+            // tab's own content directly.
+            const ok = await saveToFile(
+              tab.filePath,
+              resolveSaveContent(true, tab.savedContent, () => tab.content),
+            );
+            if (!ok) return;
+          } else {
+            // Untitled background tab: no path to write without focusing it —
+            // abort the close rather than lose the buffer.
+            return;
+          }
         } else if (choice !== "discard") {
           return; // Cancel or dismissed — abort the close.
         }
@@ -624,7 +641,7 @@ export function App() {
             const saved = await fileState.handleSave();
             if (!saved) return;
           } else {
-            await saveToFile(tab.filePath, tab.content);
+            await saveToFile(tab.filePath, resolveSaveContent(true, tab.savedContent, () => tab.content));
           }
         }
       } else if (choice !== "discard") {
@@ -774,8 +791,11 @@ export function App() {
                   if (tab.id === active) {
                     await fileState.handleSave();
                   } else {
-                    const ok = await saveToFile(tab.filePath, tab.content);
-                    if (ok) fileTabsRef.current.markTabSaved(tab.id, { savedContent: tab.content });
+                    // Background-tab content is a serialized snapshot —
+                    // conform it to the file's newline/line-ending convention.
+                    const md = resolveSaveContent(true, tab.savedContent, () => tab.content);
+                    const ok = await saveToFile(tab.filePath, md);
+                    if (ok) fileTabsRef.current.markTabSaved(tab.id, { savedContent: md });
                   }
                 }
               })();

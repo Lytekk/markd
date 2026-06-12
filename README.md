@@ -41,6 +41,7 @@ Published publicly because it solves a real problem and a few people asked. If i
 - Command palette (Ctrl+Shift+P) for quick command access
 - Links — Ctrl+K to add/edit, Ctrl/Cmd-click to open in your system browser
 - Relative image paths resolve against the current file's directory — your markdown stays portable
+- Round-trip faithful saves — an untouched file saves byte-identical (no markdown normalization churn), raw HTML like `<placeholder>` or `<details>` blocks is preserved verbatim (shown as muted source chips), and `**bold with `code` inside**` survives
 - Single-instance: opening a file while Markd is running opens it in a new tab
 - `.md` / `.markdown` / `.mdx` / `.txt` file associations on install
 - Full width toggle (Ctrl+Shift+F → status bar toggle) for the editor column
