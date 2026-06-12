@@ -31,7 +31,7 @@ export function TabBar({
           return (
             <div
               key={tab.id}
-              className={`markd-tab ${tab.id === activeTabId ? "active" : ""}`}
+              className={`markd-tab ${tab.id === activeTabId ? "active" : ""} ${tab.isDirty ? "dirty" : ""}`}
               onClick={() => onSwitchTab(tab.id)}
               onAuxClick={(e) => {
                 if (e.button === 1) {
@@ -45,8 +45,15 @@ export function TabBar({
                 {parentDir && (
                   <span className="markd-tab-dir">{parentDir}/</span>
                 )}
-                {tab.isDirty ? `${tab.fileName} •` : tab.fileName}
+                {tab.fileName}
               </span>
+              {tab.isDirty && (
+                <span
+                  className="markd-tab-dirty-dot"
+                  title="Unsaved changes"
+                  aria-label="Unsaved changes"
+                />
+              )}
               <button
                 className="markd-tab-close"
                 onClick={(e) => {

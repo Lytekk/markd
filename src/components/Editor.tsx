@@ -1,10 +1,10 @@
 import { useEffect, useRef } from "react";
 import { EditorContent } from "@tiptap/react";
 import type { Editor as TiptapEditor } from "@tiptap/react";
+import { computeTextStats } from "@/lib/text-stats";
 
 interface EditorProps {
   editor: TiptapEditor | null;
-  onUpdate: () => void;
   focusMode: boolean;
 }
 
@@ -17,11 +17,9 @@ export function Editor({ editor, focusMode }: EditorProps) {
   useEffect(() => {
     if (!editor) return;
     const handler = () => {
-      const text = editor.state.doc.textContent;
-      const words = text.split(/\s+/).filter(Boolean).length;
       window.dispatchEvent(
         new CustomEvent("markd:stats", {
-          detail: { words, chars: text.length },
+          detail: computeTextStats(editor.state.doc.textContent),
         }),
       );
     };

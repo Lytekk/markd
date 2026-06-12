@@ -174,3 +174,29 @@ describe("useFileTabs — updateTabPath (file renamed/moved on disk)", () => {
     expect(b!.fileName).toBe("b.md");
   });
 });
+
+describe("useFileTabs — markTabClean (revert-to-saved clears the indicator)", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("clears the active tab's dirty flag", () => {
+    const { result } = renderHook(() => useFileTabs());
+    act(() => { result.current.markTabDirty(); });
+    const activeId = result.current.activeTabId;
+    expect(result.current.tabs.find((t) => t.id === activeId)!.isDirty).toBe(true);
+    act(() => { result.current.markTabClean(); });
+    expect(result.current.tabs.find((t) => t.id === activeId)!.isDirty).toBe(false);
+  });
+
+  it("leaves other tabs' dirty flags untouched", () => {
+    const { result } = renderHook(() => useFileTabs());
+    act(() => { result.current.openInTab("a.md", "/tmp/a.md", "A"); });
+    const aId = result.current.tabs.find((t) => t.filePath === "/tmp/a.md")!.id;
+    act(() => { result.current.markTabDirty(aId); });
+    act(() => { result.current.openInTab("b.md", "/tmp/b.md", "B"); });
+    act(() => { result.current.markTabDirty(); });
+    act(() => { result.current.markTabClean(); });
+    expect(result.current.tabs.find((t) => t.id === aId)!.isDirty).toBe(true);
+    const activeId = result.current.activeTabId;
+    expect(result.current.tabs.find((t) => t.id === activeId)!.isDirty).toBe(false);
+  });
+});

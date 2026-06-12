@@ -16,7 +16,7 @@ function makeEditor() {
 describe("Editor", () => {
   it("renders nothing until the editor exists", () => {
     const { container } = render(
-      <Editor editor={null} onUpdate={() => {}} focusMode={false} />,
+      <Editor editor={null} focusMode={false} />,
     );
     expect(container.firstChild).toBeNull();
   });
@@ -24,7 +24,7 @@ describe("Editor", () => {
   it("adds the focus-mode class and enables the focus-mode extension when on", () => {
     const editor = makeEditor();
     const { container } = render(
-      <Editor editor={editor} onUpdate={() => {}} focusMode={true} />,
+      <Editor editor={editor} focusMode={true} />,
     );
     const scroll = container.querySelector(".markd-editor-scroll");
     expect(scroll).not.toBeNull();
@@ -36,7 +36,7 @@ describe("Editor", () => {
   it("leaves focus mode off when focusMode is false", () => {
     const editor = makeEditor();
     const { container } = render(
-      <Editor editor={editor} onUpdate={() => {}} focusMode={false} />,
+      <Editor editor={editor} focusMode={false} />,
     );
     const scroll = container.querySelector(".markd-editor-scroll");
     expect(scroll!.classList.contains("focus-mode")).toBe(false);

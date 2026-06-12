@@ -15,13 +15,15 @@ Published publicly because it solves a real problem and a few people asked. If i
 - WYSIWYG rendered view with a keyboard-shortcut source-mode toggle (Ctrl+/)
 - File / Edit / View / Help menubar with native shortcuts
 - Multi-tab editing with middle-click close, dirty indicators, and Ctrl+T / Ctrl+W / Ctrl+Tab shortcuts
+- Unsaved changes show a dot on the tab (hover swaps it for the close button) that clears when you save — or undo back to the saved state
+- Live word/char counts with +/− deltas since the file was opened (green/red while unsaved, faded once saved, gone on reopen)
 - Tab session persistence — tabs and scroll position survive Ctrl+R refresh and app restarts
 - Per-tab scroll position remembered across tab switches
 - External file modification detection — prompts to reload when a file changes on disk
 - Recent files, folder-tree sidebar, outline panel with scroll-aware active heading highlight, and collapsible heading sections
 - Create, rename, and delete files/folders from the file-tree right-click menu (delete moves to the OS recycle bin, so it's recoverable)
 - Drag-to-reorder document sections from the outline sidebar (or keyboard Alt+Up/Down)
-- Find + replace (Ctrl+F / Ctrl+H) with regex, whole-word, and case-sensitive toggles
+- Find + replace (Ctrl+F / Ctrl+H) with regex, whole-word, and case-sensitive toggles — each tab remembers its last search, so reopening the panel picks up where you left off
 - F3 / Shift+F3 to find next/previous without reopening the panel; Ctrl+F3 to select word and search
 - Ctrl+R to reload active tab from disk; Ctrl+Shift+R to reload all tabs; Ctrl+Shift+S to save all
 - Alt+1 / Alt+2 to switch sidebar between Files and Outline tabs

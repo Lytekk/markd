@@ -2,20 +2,49 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import type { Editor } from "@tiptap/react";
 import type { SearchState } from "@/lib/search-and-replace";
 
+/**
+ * The find/replace panel's full UI state. App.tsx keeps one per tab
+ * (session-only) so reopening Ctrl+F/Ctrl+H recalls what was last typed
+ * for THAT tab; the panel is keyed by tab id and re-initializes from it.
+ */
+export interface FindUiState {
+  searchTerm: string;
+  replaceTerm: string;
+  caseSensitive: boolean;
+  useRegex: boolean;
+  wholeWord: boolean;
+}
+
 interface FindReplaceProps {
   editor: Editor | null;
   showReplace: boolean;
   onClose: () => void;
+  initialState?: FindUiState;
+  onStateChange?: (state: FindUiState) => void;
 }
 
-export function FindReplace({ editor, showReplace, onClose }: FindReplaceProps) {
-  const [searchTerm, setSearchTerm] = useState("");
-  const [replaceTerm, setReplaceTerm] = useState("");
-  const [caseSensitive, setCaseSensitive] = useState(false);
-  const [useRegex, setUseRegex] = useState(false);
-  const [wholeWord, setWholeWord] = useState(false);
+export function FindReplace({
+  editor,
+  showReplace,
+  onClose,
+  initialState,
+  onStateChange,
+}: FindReplaceProps) {
+  const [searchTerm, setSearchTerm] = useState(initialState?.searchTerm ?? "");
+  const [replaceTerm, setReplaceTerm] = useState(initialState?.replaceTerm ?? "");
+  const [caseSensitive, setCaseSensitive] = useState(initialState?.caseSensitive ?? false);
+  const [useRegex, setUseRegex] = useState(initialState?.useRegex ?? false);
+  const [wholeWord, setWholeWord] = useState(initialState?.wholeWord ?? false);
   const [replaceVisible, setReplaceVisible] = useState(showReplace);
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Report the full UI state upward on every change (ref'd so a re-rendered
+  // parent callback can't re-trigger the effect).
+  const onStateChangeRef = useRef(onStateChange);
+  onStateChangeRef.current = onStateChange;
+  useEffect(() => {
+    onStateChangeRef.current?.({ searchTerm, replaceTerm, caseSensitive, useRegex, wholeWord });
+  }, [searchTerm, replaceTerm, caseSensitive, useRegex, wholeWord]);
 
   // Sync showReplace prop
   useEffect(() => {

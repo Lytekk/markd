@@ -25,6 +25,13 @@ export interface FileState {
   dirRoot: string | null;
   savedContent: string;
   lastSaved: number | null;
+  /**
+   * Bumped on every open-class load (open / open-by-path / file-select / new)
+   * and NEVER on tab-switch restores. App.tsx uses it as the reset signal for
+   * the word/char-count baseline, which tracks "since the file was opened",
+   * not "since the last save".
+   */
+  openCount: number;
 }
 
 export function useFileState() {
@@ -36,6 +43,7 @@ export function useFileState() {
     dirRoot: null,
     savedContent: "",
     lastSaved: null,
+    openCount: 0,
   });
 
   const getMarkdownRef = useRef<(() => string) | null>(null);
@@ -56,6 +64,13 @@ export function useFileState() {
     setState((prev) => (prev.isDirty ? prev : { ...prev, isDirty: true }));
   }, []);
 
+  // Inverse of markDirty — used when the buffer returns to the saved state
+  // (Ctrl+Z back to the last save), so the dirty indicator can clear without
+  // an actual save.
+  const markClean = useCallback(() => {
+    setState((prev) => (prev.isDirty ? { ...prev, isDirty: false } : prev));
+  }, []);
+
   const handleOpen = useCallback(async () => {
     const result = await openFile();
     if (!result) return;
@@ -67,6 +82,7 @@ export function useFileState() {
       filePath: result.path,
       isDirty: false,
       savedContent: result.content,
+      openCount: prev.openCount + 1,
     }));
   }, []);
 
@@ -131,6 +147,7 @@ export function useFileState() {
       filePath: entry.path,
       isDirty: false,
       savedContent: content,
+      openCount: prev.openCount + 1,
     }));
   }, []);
 
@@ -144,6 +161,7 @@ export function useFileState() {
       dirRoot: prev.dirRoot,
       savedContent: "",
       lastSaved: null,
+      openCount: prev.openCount + 1,
     }));
   }, []);
 
@@ -158,6 +176,7 @@ export function useFileState() {
       filePath,
       isDirty: false,
       savedContent: content,
+      openCount: prev.openCount + 1,
     }));
   }, []);
 
@@ -239,6 +258,7 @@ export function useFileState() {
   return {
     ...state,
     markDirty,
+    markClean,
     handleOpen,
     handleOpenFolder,
     handleSave,

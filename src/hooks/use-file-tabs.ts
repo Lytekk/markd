@@ -402,6 +402,19 @@ export function useFileTabs() {
     [],
   );
 
+  // Inverse of markTabDirty — clears the flag when the buffer returns to the
+  // saved state (revert-by-undo). Deliberately does not persist, mirroring
+  // markTabDirty: persistence happens on the next snapshot/save.
+  const markTabClean = useCallback(
+    (tabId?: string) => {
+      const id = tabId ?? activeTabIdRef.current;
+      setTabs((prev) =>
+        prev.map((t) => (t.id === id && t.isDirty ? { ...t, isDirty: false } : t)),
+      );
+    },
+    [],
+  );
+
   const markTabSaved = useCallback(
     (
       tabId: string,
@@ -459,6 +472,7 @@ export function useFileTabs() {
     closeTab,
     closeAllTabs,
     markTabDirty,
+    markTabClean,
     markTabSaved,
     hydrateTab,
     registerGetMarkdown,
