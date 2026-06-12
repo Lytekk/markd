@@ -21,6 +21,8 @@ import { FocusMode } from "@/lib/focus-mode";
 import { MermaidPreview } from "@/lib/mermaid-preview";
 import { InlineMath, BlockMath } from "@/lib/math";
 import { HeadingFlash } from "@/lib/heading-flash";
+import { applyMinimalEscaping, FaithfulCode, FaithfulText } from "@/lib/markdown-fidelity";
+import { RawInlineHTML, RawBlockHTML } from "@/lib/raw-html";
 
 const lowlight = createLowlight(common);
 
@@ -38,10 +40,19 @@ export interface ExtensionOptions {
 }
 
 export function getExtensions(opts: ExtensionOptions) {
+  // Round-trip fidelity: swap prosemirror-markdown's over-eager escaping for
+  // the minimal policy before any serializer exists (see markdown-fidelity.ts).
+  applyMinimalEscaping();
   return [
     StarterKit.configure({
       codeBlock: false, // replaced by CodeBlockLowlight
+      text: false, // replaced by FaithfulText (no HTML-entity escaping on save)
+      code: false, // replaced by FaithfulCode (bold/italic may wrap code spans)
     }),
+    FaithfulText,
+    FaithfulCode,
+    RawInlineHTML,
+    RawBlockHTML,
     CodeBlockLowlight.configure({
       lowlight,
       defaultLanguage: "plaintext",

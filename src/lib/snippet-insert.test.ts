@@ -99,9 +99,16 @@ describe("insertSnippetIntoEditor", () => {
     expect(editor.state.doc.textContent).not.toContain("");
   });
 
-  it("does not produce executable content from a raw-HTML body (schema sanitizes)", () => {
+  it("does not produce executable content from a raw-HTML body", () => {
     editor.commands.setContent("");
     insertSnippetIntoEditor(editor, "<script>alert(1)</script>");
-    expect(editor.getHTML().toLowerCase()).not.toContain("<script");
+    // Raw HTML is now PRESERVED as inert data (raw-html.ts) instead of being
+    // dropped: the script source may appear in a quoted attribute value and
+    // as an entity-escaped text node — neither parses to a script ELEMENT.
+    // The security property is "no executable node", not "no such substring".
+    const dom = new DOMParser().parseFromString(editor.getHTML(), "text/html");
+    expect(dom.querySelector("script")).toBeNull();
+    // The source must survive as data for round-trip fidelity.
+    expect(editor.storage.markdown.getMarkdown()).toContain("<script>alert(1)</script>");
   });
 });

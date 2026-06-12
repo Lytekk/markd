@@ -3,6 +3,9 @@
   --bg-color: #1e1e2e;
   --text-color: #cdd6f4;
   --primary-color: #89b4fa;
+  /* Status-bar word/char delta colors (Catppuccin green/red) */
+  --stat-add-color: #a6e3a1;
+  --stat-del-color: #f38ba8;
   --font-family: "Segoe UI", "Inter", -apple-system, BlinkMacSystemFont, Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-size: 16px;
   --line-height: 1.7;

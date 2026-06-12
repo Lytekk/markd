@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import type { Node as PMNode } from "@tiptap/pm/model";
 import { useEditor } from "@tiptap/react";
 import { Markdown } from "tiptap-markdown";
 import { getExtensions } from "@/lib/editor-extensions";
@@ -9,7 +10,7 @@ import { Toolbar } from "@/components/Toolbar";
 import { Menubar } from "@/components/Menubar";
 import { Sidebar, type FileTreeAction } from "@/components/Sidebar";
 import { StatusBar } from "@/components/StatusBar";
-import { FindReplace } from "@/components/FindReplace";
+import { FindReplace, type FindUiState } from "@/components/FindReplace";
 import { SourceEditor } from "@/components/SourceEditor";
 import { ContextMenu } from "@/components/ContextMenu";
 import { ModalHost } from "@/components/ModalHost";
@@ -39,12 +40,20 @@ import { askDialog } from "@/lib/dialogs";
 import { confirmModal, promptModal } from "@/lib/modal";
 import { normalizeUrl, wordRangeAt } from "@/lib/links";
 import { splitFrontmatter, joinFrontmatter } from "@/lib/frontmatter";
+import { computeTextStats, type TextStats } from "@/lib/text-stats";
+import { canRevertClean, docMatchesSaved, parseSavedDoc, sourceModeIsDirty } from "@/lib/dirty-check";
+import { resolveSaveContent } from "@/lib/markdown-fidelity";
+import { tabDisplayInfo } from "@/lib/tab-display";
 
 function isTauri(): boolean {
   // Tauri v2 exposes the IPC bridge as __TAURI_INTERNALS__ by default;
   // __TAURI__ only exists when withGlobalTauri is enabled in tauri.conf.json.
   return "__TAURI_INTERNALS__" in window || "__TAURI__" in window;
 }
+
+// How long after the last edit to test whether the doc returned to the saved
+// state. Long enough to coalesce undo bursts, short enough to feel instant.
+const REVERT_CHECK_MS = 250;
 
 export function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -81,6 +90,21 @@ export function App() {
   // Leading YAML frontmatter, kept out of the editor (tiptap-markdown would
   // corrupt it) and re-prepended verbatim on serialize. Tracks the active file.
   const frontmatterRef = useRef<string>("");
+  // Saved-state baseline for revert detection: the doc as of the last save (or
+  // load), plus its frontmatter. Undoing back to this state clears dirty.
+  const savedDocRef = useRef<PMNode | null>(null);
+  const savedFrontmatterRef = useRef<string>("");
+  const revertCheckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Word/char-count baselines per tab, captured at OPEN time (not save) — the
+  // status bar shows deltas against these.
+  const statsBaselineMapRef = useRef(new Map<string, TextStats>());
+  const [statsBaseline, setStatsBaseline] = useState<TextStats | null>(null);
+  // Find/replace UI state per tab (session-only) — Ctrl+F/Ctrl+H recall what
+  // was last typed for the active tab.
+  const findStateMapRef = useRef(new Map<string, FindUiState>());
+  // Dirty flag captured when entering source mode — reverting the textarea to
+  // its entry snapshot restores it (see sourceModeIsDirty).
+  const sourceEntryDirtyRef = useRef(false);
 
   const editor = useEditor({
     extensions: [
@@ -94,8 +118,28 @@ export function App() {
       }),
     ],
     content: "",
-    onUpdate: () => {
+    onUpdate: ({ editor: ed }) => {
       fileState.markDirty();
+      // Debounced revert check: if the doc returns to the saved baseline
+      // (undo past every change), clear the dirty flag — nothing to save.
+      if (revertCheckTimerRef.current) clearTimeout(revertCheckTimerRef.current);
+      revertCheckTimerRef.current = setTimeout(() => {
+        // canRevertClean: a detached buffer (file trashed) keeps a stale
+        // baseline that may still match — matching must NOT clear the
+        // unsaved-changes guard there (the buffer can be the only copy).
+        const fs = fileStateRef.current;
+        if (
+          canRevertClean(fs.filePath, fs.savedContent) &&
+          docMatchesSaved(
+            ed.state.doc,
+            savedDocRef.current,
+            frontmatterRef.current,
+            savedFrontmatterRef.current,
+          )
+        ) {
+          fs.markClean();
+        }
+      }, REVERT_CHECK_MS);
     },
     editorProps: {
       // Keep the caret line comfortably off the viewport edges (a bit of scroll
@@ -124,6 +168,25 @@ export function App() {
       joinFrontmatter(frontmatterRef.current, editor.storage.markdown.getMarkdown()),
     );
   }, [editor, fileState.registerGetMarkdown, fileState.registerSetContent, fileTabs.registerGetMarkdown]);
+
+  // Capture the saved-state doc whenever savedContent changes (open / save /
+  // tab switch). When the editor currently HOLDS the saved state, share its
+  // doc — reference lineage keeps doc.eq cheap on every revert check. When a
+  // dirty tab arrives, the saved state is not in the editor, so reconstruct
+  // it with a standalone parse (null on failure → revert check stays dirty).
+  useEffect(() => {
+    if (!editor) return;
+    const { frontmatter, body } = splitFrontmatter(fileState.savedContent);
+    savedFrontmatterRef.current = frontmatter;
+    const currentMd = joinFrontmatter(
+      frontmatterRef.current,
+      editor.storage.markdown.getMarkdown() as string,
+    );
+    savedDocRef.current =
+      currentMd === fileState.savedContent
+        ? editor.state.doc
+        : parseSavedDoc(editor, body);
+  }, [editor, fileState.savedContent]);
 
   // Track recent files when files are opened/saved
   useEffect(() => {
@@ -263,6 +326,9 @@ export function App() {
   // Toggle source mode
   const handleToggleSource = useCallback(() => {
     if (!editor) return;
+    // Defensive: a pending revert check from the rendered editor must not
+    // fire across the mode boundary.
+    if (revertCheckTimerRef.current) clearTimeout(revertCheckTimerRef.current);
 
     if (!sourceMode) {
       // Switching TO source: serialize current editor content
@@ -272,6 +338,13 @@ export function App() {
       );
       setSourceMarkdown(md);
       sourceEntryMdRef.current = md;
+      sourceEntryDirtyRef.current = fileStateRef.current.isDirty;
+      // Footer counts switch to the raw-markdown basis the textarea shows.
+      window.dispatchEvent(
+        new CustomEvent("markd:stats", {
+          detail: computeTextStats(splitFrontmatter(md).body),
+        }),
+      );
       setSourceMode(true);
     } else {
       // Switching FROM source: re-parse only if the source actually changed.
@@ -288,13 +361,33 @@ export function App() {
     }
   }, [editor, sourceMode, sourceMarkdown]);
 
-  // Handle source markdown changes — mark dirty
+  // Handle source markdown changes — track dirty (string compares only: the
+  // buffer is raw text, so revert-to-saved/entry detection is plain equality)
+  // and keep the footer counts live while the PM editor is unmounted.
   const handleSourceMarkdownChange = useCallback(
     (md: string) => {
       setSourceMarkdown(md);
-      fileState.markDirty();
+      const fs = fileStateRef.current;
+      if (
+        sourceModeIsDirty(
+          md,
+          fs.savedContent,
+          sourceEntryMdRef.current,
+          sourceEntryDirtyRef.current,
+        ) ||
+        !canRevertClean(fs.filePath, fs.savedContent)
+      ) {
+        fileState.markDirty();
+      } else {
+        fileState.markClean();
+      }
+      window.dispatchEvent(
+        new CustomEvent("markd:stats", {
+          detail: computeTextStats(splitFrontmatter(md).body),
+        }),
+      );
     },
-    [fileState.markDirty],
+    [fileState.markDirty, fileState.markClean],
   );
 
   // Insert a snippet body at the caret. Rendered mode routes through the
@@ -367,8 +460,41 @@ export function App() {
   }, [fileState.filePath, fileState.fileName, fileState.savedContent]);
 
   useEffect(() => {
-    if (fileState.isDirty) fileTabsRef.current.markTabDirty();
+    const ft = fileTabsRef.current;
+    if (fileState.isDirty) ft.markTabDirty();
+    else ft.markTabClean();
   }, [fileState.isDirty]);
+
+  // Word/char baseline for the status-bar deltas: reset on open-class loads
+  // (openCount never bumps on tab switches), restored — or lazily created —
+  // when the active tab changes, pruned alongside closed tabs.
+  useEffect(() => {
+    if (!editor) return;
+    const stats = computeTextStats(editor.state.doc.textContent);
+    statsBaselineMapRef.current.set(fileTabsRef.current.activeTabId, stats);
+    setStatsBaseline(stats);
+  }, [editor, fileState.openCount]);
+
+  useEffect(() => {
+    if (!editor) return;
+    const map = statsBaselineMapRef.current;
+    let stats = map.get(fileTabs.activeTabId);
+    if (!stats) {
+      stats = computeTextStats(editor.state.doc.textContent);
+      map.set(fileTabs.activeTabId, stats);
+    }
+    setStatsBaseline(stats);
+  }, [editor, fileTabs.activeTabId]);
+
+  useEffect(() => {
+    const live = new Set(fileTabs.tabs.map((t) => t.id));
+    for (const id of [...statsBaselineMapRef.current.keys()]) {
+      if (!live.has(id)) statsBaselineMapRef.current.delete(id);
+    }
+    for (const id of [...findStateMapRef.current.keys()]) {
+      if (!live.has(id)) findStateMapRef.current.delete(id);
+    }
+  }, [fileTabs.tabs]);
 
   // Pin the app shell: the layout viewport must NEVER scroll — only
   // .markd-editor-scroll does. Some WebView2 focus handling scrolls the document
@@ -390,6 +516,10 @@ export function App() {
 
   const handleSwitchTab = useCallback(
     async (tabId: string) => {
+      // Defensive: don't let the departing tab's pending revert check fire
+      // against the arriving tab's state (it would be a no-op today, but
+      // only incidentally — see dirty-check.ts).
+      if (revertCheckTimerRef.current) clearTimeout(revertCheckTimerRef.current);
       // In source mode the live edits live in the SourceEditor textarea
       // (`sourceMarkdown`), not the ProseMirror editor — commit them back first so
       // switchTab's getMarkdown snapshot captures them instead of stale editor
@@ -448,8 +578,24 @@ export function App() {
           ],
         });
         if (choice === "save") {
-          const saved = await fileState.handleSave();
-          if (!saved) return;
+          if (tabId === fileTabs.activeTabId) {
+            const saved = await fileState.handleSave();
+            if (!saved) return;
+          } else if (tab.filePath) {
+            // Background tab (closed via its × / middle-click without being
+            // active): handleSave() operates on the ACTIVE file — it would
+            // save the wrong buffer and discard this one. Write the closing
+            // tab's own content directly.
+            const ok = await saveToFile(
+              tab.filePath,
+              resolveSaveContent(true, tab.savedContent, () => tab.content),
+            );
+            if (!ok) return;
+          } else {
+            // Untitled background tab: no path to write without focusing it —
+            // abort the close rather than lose the buffer.
+            return;
+          }
         } else if (choice !== "discard") {
           return; // Cancel or dismissed — abort the close.
         }
@@ -495,7 +641,7 @@ export function App() {
             const saved = await fileState.handleSave();
             if (!saved) return;
           } else {
-            await saveToFile(tab.filePath, tab.content);
+            await saveToFile(tab.filePath, resolveSaveContent(true, tab.savedContent, () => tab.content));
           }
         }
       } else if (choice !== "discard") {
@@ -613,6 +759,16 @@ export function App() {
             }
           }
           if (term) {
+            // Seed the per-tab find state so the panel mounts prefilled with
+            // this term; the direct command covers the already-open case.
+            const prev = findStateMapRef.current.get(fileTabs.activeTabId);
+            findStateMapRef.current.set(fileTabs.activeTabId, {
+              searchTerm: term,
+              replaceTerm: prev?.replaceTerm ?? "",
+              caseSensitive: prev?.caseSensitive ?? false,
+              useRegex: prev?.useRegex ?? false,
+              wholeWord: prev?.wholeWord ?? false,
+            });
             editor.commands.setSearchTerm(term);
             setFindReplaceOpen(true);
             setFindReplaceShowReplace(false);
@@ -635,8 +791,11 @@ export function App() {
                   if (tab.id === active) {
                     await fileState.handleSave();
                   } else {
-                    const ok = await saveToFile(tab.filePath, tab.content);
-                    if (ok) fileTabsRef.current.markTabSaved(tab.id, { savedContent: tab.content });
+                    // Background-tab content is a serialized snapshot —
+                    // conform it to the file's newline/line-ending convention.
+                    const md = resolveSaveContent(true, tab.savedContent, () => tab.content);
+                    const ok = await saveToFile(tab.filePath, md);
+                    if (ok) fileTabsRef.current.markTabSaved(tab.id, { savedContent: md });
                   }
                 }
               })();
@@ -1191,6 +1350,14 @@ export function App() {
     editor?.commands.clearDecorations();
   }, [editor]);
 
+  // Footer filename mirrors the active tab's label (incl. the parent-dir
+  // disambiguation prefix) so the two never disagree.
+  const footerFileName = useMemo(() => {
+    const d = tabDisplayInfo(fileTabs.tabs).get(fileTabs.activeTabId);
+    if (!d) return fileState.fileName;
+    return d.parentDir ? `${d.parentDir}/${d.fileName}` : d.fileName;
+  }, [fileTabs.tabs, fileTabs.activeTabId, fileState.fileName]);
+
   return (
     <div className="markd-app" data-mod={heldModifier ?? undefined}>
       <Sidebar
@@ -1270,9 +1437,14 @@ export function App() {
         <div className="markd-editor-content">
           {findReplaceOpen && (
             <FindReplace
+              key={fileTabs.activeTabId}
               editor={editor}
               showReplace={findReplaceShowReplace}
               onClose={handleCloseFindReplace}
+              initialState={findStateMapRef.current.get(fileTabs.activeTabId)}
+              onStateChange={(s) => {
+                findStateMapRef.current.set(fileTabs.activeTabId, s);
+              }}
             />
           )}
           {sourceMode ? (
@@ -1284,13 +1456,14 @@ export function App() {
           ) : (
             <Editor
               editor={editor}
-              onUpdate={fileState.markDirty}
               focusMode={focusMode}
             />
           )}
         </div>
         <StatusBar
-          fileName={fileState.fileName}
+          fileName={footerFileName}
+          filePath={fileState.filePath}
+          statsBaseline={statsBaseline}
           isDirty={fileState.isDirty}
           theme={activeTheme}
           lastSaved={fileState.lastSaved}

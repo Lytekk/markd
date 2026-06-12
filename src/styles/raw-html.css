@@ -1,0 +1,23 @@
+/* Raw HTML atoms (src/lib/raw-html.ts) — preserved verbatim for round-trip
+   fidelity, displayed as muted source chips. */
+
+.markd-raw-html {
+  font-family: var(--monospace);
+  font-size: 0.85em;
+  opacity: 0.6;
+  background: var(--item-hover-bg-color, rgba(128, 128, 128, 0.12));
+  border-radius: 3px;
+  padding: 0 3px;
+  white-space: pre-wrap;
+}
+
+.markd-raw-html-block {
+  font-family: var(--monospace);
+  font-size: 0.85em;
+  opacity: 0.6;
+  background: var(--item-hover-bg-color, rgba(128, 128, 128, 0.12));
+  border-radius: 4px;
+  padding: 6px 10px;
+  margin: 4px 0;
+  white-space: pre-wrap;
+}

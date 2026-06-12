@@ -235,6 +235,38 @@ body {
   color: var(--text-color);
 }
 
+/* Dirty-state dot — owns the close button's 16px slot until hover swaps the
+   close button back in (VS Code pattern), so the tab never changes width. */
+.markd-tab-dirty-dot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.markd-tab-dirty-dot::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--primary-color, #4a90d9);
+}
+
+.markd-tab.dirty .markd-tab-close {
+  display: none;
+}
+
+.markd-tab.dirty:hover .markd-tab-close {
+  display: flex;
+  opacity: 1;
+}
+
+.markd-tab.dirty:hover .markd-tab-dirty-dot {
+  display: none;
+}
+
 .markd-tab-new {
   display: flex;
   align-items: center;
@@ -712,6 +744,37 @@ body {
 .markd-status-bar .right {
   display: flex;
   gap: 16px;
+}
+
+.markd-status-filename {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.markd-dirty-bullet {
+  color: var(--primary-color, #4a90d9);
+  font-size: 13px;
+  line-height: 1;
+}
+
+/* Word/char deltas vs the open-time baseline: vivid while unsaved, faded once
+   saved, absent at zero. Colors themeable via day.css / night.css. */
+.markd-stat-delta {
+  margin-left: 4px;
+  font-weight: 600;
+}
+
+.markd-stat-delta.plus {
+  color: var(--stat-add-color, #1a7f37);
+}
+
+.markd-stat-delta.minus {
+  color: var(--stat-del-color, #cf222e);
+}
+
+.markd-stat-delta.faded {
+  opacity: 0.55;
 }
 
 /* Sidebar Tabs */

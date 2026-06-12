@@ -29,9 +29,25 @@ describe("TabBar", () => {
     expect(screen.queryByText("notes/")).toBeNull();
   });
 
-  it("renders a trailing dirty bullet for unsaved tabs", () => {
+  it("renders a prominent dirty dot for unsaved tabs (close button stays for hover-swap)", () => {
     const tabs = [tab({ id: "a", fileName: "x.md", filePath: "/p/x.md", isDirty: true })];
-    render(<TabBar tabs={tabs} activeTabId="a" onSwitchTab={noop} onCloseTab={noop} onNewTab={noop} />);
-    expect(screen.getByText(/x\.md •/)).toBeTruthy();
+    const { container } = render(
+      <TabBar tabs={tabs} activeTabId="a" onSwitchTab={noop} onCloseTab={noop} onNewTab={noop} />,
+    );
+    const tabEl = container.querySelector(".markd-tab")!;
+    expect(tabEl.classList.contains("dirty")).toBe(true);
+    expect(container.querySelector(".markd-tab-dirty-dot")).not.toBeNull();
+    expect(container.querySelector(".markd-tab-close")).not.toBeNull();
+    // the old low-visibility text-bullet suffix is gone
+    expect(screen.queryByText(/x\.md •/)).toBeNull();
+  });
+
+  it("renders no dirty dot for clean tabs", () => {
+    const tabs = [tab({ id: "a", fileName: "x.md", filePath: "/p/x.md", isDirty: false })];
+    const { container } = render(
+      <TabBar tabs={tabs} activeTabId="a" onSwitchTab={noop} onCloseTab={noop} onNewTab={noop} />,
+    );
+    expect(container.querySelector(".markd-tab")!.classList.contains("dirty")).toBe(false);
+    expect(container.querySelector(".markd-tab-dirty-dot")).toBeNull();
   });
 });

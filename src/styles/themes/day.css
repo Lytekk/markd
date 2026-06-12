@@ -4,6 +4,9 @@
   --bg-color: #ffffff;
   --text-color: #1a1a2e;
   --primary-color: #4361ee;
+  /* Status-bar word/char delta colors (added/removed vs open baseline) */
+  --stat-add-color: #1a7f37;
+  --stat-del-color: #cf222e;
   --font-family: "Segoe UI", "Inter", -apple-system, BlinkMacSystemFont, Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-size: 16px;
   --line-height: 1.7;

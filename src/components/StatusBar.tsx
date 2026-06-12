@@ -1,7 +1,11 @@
 import { useState, useEffect } from "react";
+import type { TextStats } from "@/lib/text-stats";
 
 interface StatusBarProps {
+  /** Display name matching the active tab's label (incl. parent-dir prefix). */
   fileName: string;
+  /** Full path of the active file — surfaced as a tooltip. */
+  filePath: string | null;
   isDirty: boolean;
   theme: string;
   lastSaved: number | null;
@@ -9,6 +13,12 @@ interface StatusBarProps {
   focusMode: boolean;
   fullWidth: boolean;
   lineNumbers: boolean;
+  /**
+   * Word/char counts captured when the file was opened (null = unknown).
+   * Deltas against it render vivid while dirty, faded once saved, and hide at
+   * zero (e.g. after undoing back to the open-time state).
+   */
+  statsBaseline: TextStats | null;
   onThemeChange: () => void;
   onExportHtml: () => void;
   onExportPdf: () => void;
@@ -19,8 +29,24 @@ interface StatusBarProps {
   zoom: number;
 }
 
+function StatDelta({
+  current,
+  baseline,
+  faded,
+}: {
+  current: number;
+  baseline: number;
+  faded: boolean;
+}) {
+  const delta = current - baseline;
+  if (delta === 0) return null;
+  const cls = `markd-stat-delta ${delta > 0 ? "plus" : "minus"}${faded ? " faded" : ""}`;
+  return <span className={cls}>{delta > 0 ? `+${delta}` : `${delta}`}</span>;
+}
+
 export function StatusBar({
   fileName,
+  filePath,
   isDirty,
   theme,
   lastSaved,
@@ -28,6 +54,7 @@ export function StatusBar({
   focusMode,
   fullWidth,
   lineNumbers,
+  statsBaseline,
   onThemeChange,
   onExportHtml,
   onExportPdf,
@@ -37,7 +64,7 @@ export function StatusBar({
   onToggleLineNumbers,
   zoom,
 }: StatusBarProps) {
-  const [stats, setStats] = useState({ words: 0, chars: 0 });
+  const [stats, setStats] = useState<TextStats>({ words: 0, chars: 0 });
   const [showSaved, setShowSaved] = useState(false);
 
   useEffect(() => {
@@ -57,18 +84,32 @@ export function StatusBar({
     return () => clearTimeout(timer);
   }, [lastSaved]);
 
+  // Source mode counts raw markdown while the baseline counted rendered text —
+  // a delta across those bases is noise, so suppress it there.
+  const showDeltas = statsBaseline !== null && !sourceMode;
+
   return (
     <div className="markd-status-bar">
       <div className="left">
-        <span>
+        <span className="markd-status-filename" title={filePath ?? undefined}>
           {fileName}
-          {isDirty ? " \u2022" : ""}
+          {isDirty && <span className="markd-dirty-bullet">●</span>}
         </span>
         {showSaved && <span className="markd-saved-indicator">Saved</span>}
       </div>
       <div className="right">
-        <span>{stats.words} words</span>
-        <span>{stats.chars} chars</span>
+        <span>
+          {stats.words} words
+          {showDeltas && (
+            <StatDelta current={stats.words} baseline={statsBaseline.words} faded={!isDirty} />
+          )}
+        </span>
+        <span>
+          {stats.chars} chars
+          {showDeltas && (
+            <StatDelta current={stats.chars} baseline={statsBaseline.chars} faded={!isDirty} />
+          )}
+        </span>
         <button
           onClick={onToggleFocusMode}
           style={btnStyle}
@@ -77,8 +118,13 @@ export function StatusBar({
         >
           Focus
         </button>
-        <button onClick={onToggleSource} style={btnStyle} title="Toggle Source (Ctrl+/)">
-          {sourceMode ? "WYSIWYG" : "Source"}
+        <button
+          onClick={onToggleSource}
+          style={btnStyle}
+          className={sourceMode ? "status-btn-active" : ""}
+          title="Toggle Source (Ctrl+/)"
+        >
+          Source
         </button>
         <button
           onClick={onToggleFullWidth}
@@ -86,7 +132,7 @@ export function StatusBar({
           className={fullWidth ? "status-btn-active" : ""}
           title="Toggle Full Width"
         >
-          {fullWidth ? "Column" : "Full"}
+          {fullWidth ? "Full" : "Column"}
         </button>
         <button
           onClick={onToggleLineNumbers}
