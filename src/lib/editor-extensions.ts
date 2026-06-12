@@ -1,7 +1,6 @@
 import StarterKit from "@tiptap/starter-kit";
 import { Extension } from "@tiptap/core";
 import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
-import Table from "@tiptap/extension-table";
 import TableRow from "@tiptap/extension-table-row";
 import TableCell from "@tiptap/extension-table-cell";
 import TableHeader from "@tiptap/extension-table-header";
@@ -23,6 +22,7 @@ import { InlineMath, BlockMath } from "@/lib/math";
 import { HeadingFlash } from "@/lib/heading-flash";
 import { applyMinimalEscaping, FaithfulCode, FaithfulText } from "@/lib/markdown-fidelity";
 import { RawInlineHTML, RawBlockHTML } from "@/lib/raw-html";
+import { FaithfulTable } from "@/lib/table-fidelity";
 
 const lowlight = createLowlight(common);
 
@@ -62,7 +62,7 @@ export function getExtensions(opts: ExtensionOptions) {
       allowBase64: true,
       getFileDir: opts.getFileDir,
     }),
-    Table.configure({
+    FaithfulTable.configure({
       resizable: true,
     }),
     TableRow,
