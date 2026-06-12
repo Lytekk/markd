@@ -1,6 +1,6 @@
 [package]
 name = "markd"
-version = "0.3.15"
+version = "0.3.16"
 description = "A Typora-like Markdown editor"
 authors = ["Incato"]
 license = "MIT"
