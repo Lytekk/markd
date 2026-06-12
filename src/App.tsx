@@ -43,6 +43,7 @@ import { splitFrontmatter, joinFrontmatter } from "@/lib/frontmatter";
 import { computeTextStats, type TextStats } from "@/lib/text-stats";
 import { canRevertClean, docMatchesSaved, parseSavedDoc, sourceModeIsDirty } from "@/lib/dirty-check";
 import { resolveSaveContent } from "@/lib/markdown-fidelity";
+import { loadEditorContent } from "@/lib/editor-load";
 import { tabDisplayInfo } from "@/lib/tab-display";
 
 function isTauri(): boolean {
@@ -162,7 +163,9 @@ export function App() {
       fileDirRef.current = fileDir;
       const { frontmatter, body } = splitFrontmatter(md);
       frontmatterRef.current = frontmatter;
-      editor.commands.setContent(body, false);
+      // loadEditorContent (NOT bare setContent): resets PM history so Ctrl+Z
+      // can never pull the previous tab's doc into this one (see editor-load.ts).
+      loadEditorContent(editor, body);
     });
     fileTabs.registerGetMarkdown(() =>
       joinFrontmatter(frontmatterRef.current, editor.storage.markdown.getMarkdown()),

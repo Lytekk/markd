@@ -51,13 +51,13 @@ describe("docMatchesSaved", () => {
     }
   });
 
-  it("stays unmatched when undo overshoots past a setContent load (the app's real load path)", () => {
-    // App.tsx loads via setContent(body, false). A setContent step shares
-    // ProseMirror's 500ms history group with an IMMEDIATE edit, so one undo
-    // reverts both and travels past the load — the doc goes empty, NOT back
-    // to the loaded state. The dirty flag therefore STAYS SET (safe
-    // degradation: never falsely clean). This pins that known divergence
-    // from the time-separated case above.
+  it("stays unmatched when undo overshoots past a BARE setContent load", () => {
+    // Documents raw setContent semantics: the load is an undoable step that
+    // shares ProseMirror's 500ms history group with an immediate edit, so
+    // one undo reverts both — the doc goes empty, docMatchesSaved is false,
+    // and the dirty flag STAYS SET (safe degradation: never falsely clean).
+    // The APP no longer loads this way: loadEditorContent (editor-load.ts)
+    // resets history at every load, see editor-load.test.ts.
     editor.commands.setContent(MD, false);
     const saved = editor.state.doc;
     editor.commands.insertContent("more");

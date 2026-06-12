@@ -200,3 +200,41 @@ describe("useFileTabs — markTabClean (revert-to-saved clears the indicator)", 
     expect(result.current.tabs.find((t) => t.id === activeId)!.isDirty).toBe(false);
   });
 });
+
+describe("useFileTabs — unsaved-edit snapshots survive tab creation (batching clobber)", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("newTab preserves the departing tab's unsaved content", () => {
+    const { result } = renderHook(() => useFileTabs());
+    act(() => { result.current.registerGetMarkdown(() => "EDITED CONTENT"); });
+    const firstId = result.current.activeTabId;
+    // snapshot + create are batched into one React flush — the snapshot's
+    // functional update must not be clobbered by the create's setTabs.
+    act(() => { result.current.newTab(); });
+    expect(result.current.tabs.find((t) => t.id === firstId)!.content).toBe("EDITED CONTENT");
+  });
+
+  it("openInTab (new file) preserves the departing tab's unsaved content", () => {
+    const { result } = renderHook(() => useFileTabs());
+    act(() => { result.current.registerGetMarkdown(() => "EDITED"); });
+    // dirty first tab → openInTab's untitled-reuse branch is skipped (mirrors
+    // the real app, where typing marks the tab dirty)
+    act(() => { result.current.markTabDirty(); });
+    const firstId = result.current.activeTabId;
+    act(() => { result.current.openInTab("a.md", "/tmp/a.md", "A"); });
+    expect(result.current.tabs.find((t) => t.id === firstId)!.content).toBe("EDITED");
+  });
+
+  it("reopenLastClosed (untitled) preserves the departing tab's unsaved content", () => {
+    localStorage.setItem(
+      CLOSED_STACK_KEY,
+      JSON.stringify([{ id: "z", fileName: "Untitled", filePath: null, scrollTop: 0, content: "old" }]),
+    );
+    const { result } = renderHook(() => useFileTabs());
+    act(() => { result.current.registerGetMarkdown(() => "KEEP ME"); });
+    act(() => { result.current.markTabDirty(); });
+    const firstId = result.current.activeTabId;
+    act(() => { result.current.reopenLastClosed(); });
+    expect(result.current.tabs.find((t) => t.id === firstId)!.content).toBe("KEEP ME");
+  });
+});

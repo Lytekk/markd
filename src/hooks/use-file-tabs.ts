@@ -190,9 +190,16 @@ export function useFileTabs() {
   const snapshotActiveTab = useCallback(() => {
     const md = getMarkdownRef.current?.() ?? "";
     const id = activeTabIdRef.current;
-    setTabs((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, content: md } : t)),
+    // Update the REF synchronously, not just queued state: callers (newTab /
+    // openInTab / reopenLastClosed) immediately read tabsRef.current and issue
+    // a non-functional setTabs — under React batching that replace would
+    // discard a merely-queued snapshot, losing the departing tab's unsaved
+    // edits (user-hit data loss; switchTab was immune because it snapshots
+    // inside its own single functional update).
+    tabsRef.current = tabsRef.current.map((t) =>
+      t.id === id ? { ...t, content: md } : t,
     );
+    setTabs(tabsRef.current);
     return md;
   }, []);
 
