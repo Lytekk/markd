@@ -236,20 +236,44 @@ describe("round-trip fidelity (app extension pipeline)", () => {
     expect(roundTrip(once)).toBe(once);
   });
 
-  // KNOWN LOSSES in tables — tiptap-markdown's cell serializer (a) skips
-  // cells whose only content is an atom (textContent.trim() guard) and
-  // (b) doesn't pipe-escape inline-code content. Both PRE-DATE this patch
-  // (raw HTML in cells was deleted everywhere before; \| in cell code was
-  // already corrupted at HEAD). Fixing them means forking the table
-  // serializer — pinned here so CI flips loudly when that lands.
-  it.fails("KNOWN LOSS: raw-html-only table cell survives", () => {
+  // Table-cell fidelity (table-fidelity.ts forks tiptap-markdown's cell
+  // serializer): atom-only cells render (the old textContent.trim() guard
+  // DELETED them), and every literal pipe in a cell — including inside code
+  // spans and raw HTML, which bypass esc() — is written \| per GFM (the
+  // table parser unescapes pipes before inline parsing).
+  it("raw-html-only table cell survives", () => {
     const src = "| <br> | x |\n| --- | --- |\n| 1 | 2 |\n";
     expect(roundTrip(src)).toBe(src);
   });
 
-  it.fails("KNOWN LOSS: pipe inside code in a table cell survives", () => {
+  it("pipe inside code in a table cell survives (was non-idempotent corruption)", () => {
     const src = "| `a\\|b` | x |\n| --- | --- |\n| 1 | 2 |\n";
     expect(roundTrip(src)).toBe(src);
+  });
+
+  it("pipe in plain text in a table cell is re-escaped", () => {
+    const src = "| a\\|b | x |\n| --- | --- |\n| 1 | 2 |\n";
+    expect(roundTrip(src)).toBe(src);
+  });
+
+  it("math-only table cell survives", () => {
+    const src = "| $x^2$ | y |\n| --- | --- |\n| 1 | 2 |\n";
+    expect(roundTrip(src)).toBe(src);
+  });
+
+  it("raw html with surrounding text in a table cell survives", () => {
+    const src = "| a<br>b | x |\n| --- | --- |\n| 1 | 2 |\n";
+    expect(roundTrip(src)).toBe(src);
+  });
+
+  it("table round-trips stay idempotent", () => {
+    for (const src of [
+      "| `a\\|b` | x |\n| --- | --- |\n| <br> | 2 |\n",
+      "| **bold** | _em_ |\n| --- | --- |\n| `c` | d |\n",
+    ]) {
+      const once = roundTrip(src);
+      expect(roundTrip(once)).toBe(once);
+    }
   });
 
   // The HTML export embeds editor.getHTML() verbatim (file-system.ts), so
