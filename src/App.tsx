@@ -27,7 +27,7 @@ import { useLineNumbers } from "@/hooks/use-line-numbers";
 import { useFileTabs } from "@/hooks/use-file-tabs";
 import { useZoom } from "@/hooks/use-zoom";
 import { TabBar } from "@/components/TabBar";
-import { createFile, createFolder, exportAsHtml, exportAsPdf, readFileByPath, renamePath, saveToFile, trashPath } from "@/lib/file-system";
+import { createFile, createFolder, exportAsHtml, exportAsPdf, pathExists, readFileByPath, renamePath, saveToFile, trashPath } from "@/lib/file-system";
 import { ensureMdExtension, joinPath, parentPath, targetDirForEntry, validateName } from "@/lib/file-tree-ops";
 import {
   shouldCheckForUpdate,
@@ -35,8 +35,8 @@ import {
   shouldOfferUpdate,
   UPDATE_SKIP_KEY,
 } from "@/lib/updater";
-import { shouldPromptForExternalChange } from "@/lib/file-change";
-import { askDialog } from "@/lib/dialogs";
+import { shouldPromptForExternalChange, shouldPromptForDeletion } from "@/lib/file-change";
+import { askDialog, messageDialog } from "@/lib/dialogs";
 import { confirmModal, promptModal } from "@/lib/modal";
 import { normalizeUrl, wordRangeAt } from "@/lib/links";
 import { splitFrontmatter, joinFrontmatter } from "@/lib/frontmatter";
@@ -81,7 +81,7 @@ export function App() {
   const { lineNumbers, toggleLineNumbers } = useLineNumbers();
   const { zoom, zoomIn, zoomOut, resetZoom } = useZoom();
   const fileState = useFileState();
-  const { recentFiles, addRecentFile } = useRecentFiles();
+  const { recentFiles, addRecentFile, removeRecentFile } = useRecentFiles();
   const fileTabs = useFileTabs();
 
   // Directory of the currently-open file. Read by ResolvedImage at renderHTML
@@ -204,6 +204,9 @@ export function App() {
   fileTabsRef.current = fileTabs;
   const fileStateRef = useRef(fileState);
   fileStateRef.current = fileState;
+  // Latest handleCloseTab, callable from the [filePath]-keyed watcher effect
+  // (which must not list it as a dep). Assigned just after its definition below.
+  const handleCloseTabRef = useRef<(tabId: string) => Promise<void> | void>(() => {});
 
   // Load file passed as CLI arg / OS file association (Tauri only).
   // Skipped when tabs were restored from persistence (refresh case).
@@ -622,7 +625,8 @@ export function App() {
       }
     },
     [fileTabs.tabs, fileTabs.closeTab, fileTabs.hydrateTab, fileState.handleSave, fileState.restoreState],
-  );;
+  );
+  handleCloseTabRef.current = handleCloseTab;;
 
   const handleCloseAllTabs = useCallback(async () => {
     const dirtyTabs = fileTabs.tabs.filter((t) => t.isDirty);
@@ -1041,13 +1045,49 @@ export function App() {
 
     const check = async () => {
       if (cancelled || fileChangePromptOpen.current) return;
-      let onDisk: string;
+      let onDisk: string | null = null;
       try {
         onDisk = await readFileByPath(filePath);
       } catch {
-        return; // file deleted / unreadable — nothing to prompt about
+        onDisk = null; // read failed — could be a real deletion or a transient race
       }
       if (cancelled) return;
+
+      // Read failed: the file may have been deleted/moved, or the read just raced
+      // an atomic save (write-temp + rename). A definitive existence check tells
+      // them apart — only a true deletion prompts.
+      if (onDisk === null) {
+        let exists = true;
+        try {
+          exists = await pathExists(filePath);
+        } catch {
+          exists = true; // can't determine → don't nag
+        }
+        // Bail if torn down meanwhile — e.g. the user trashed this file from the
+        // sidebar, which detaches it (filePath→null) and re-runs this effect.
+        if (cancelled || fileStateRef.current.filePath !== filePath) return;
+        if (!shouldPromptForDeletion(exists, fileChangePromptOpen.current)) return;
+        fileChangePromptOpen.current = true;
+        try {
+          const keep = await askDialog(
+            `"${fileStateRef.current.fileName}" no longer exists on disk — it may have been deleted or moved.\n\nKeep it open in the editor? It becomes an unsaved document you can re-save anywhere.`,
+            { title: "File Deleted", kind: "warning", okLabel: "Keep in Editor", cancelLabel: "Close Tab" },
+          );
+          if (keep) {
+            // Detach from the now-missing path: the buffer becomes the only copy
+            // — kept dirty + close-guarded, autosave timer cancelled, and the
+            // watcher torn down (filePath→null re-runs this effect). Same
+            // primitive the sidebar trash uses.
+            fileStateRef.current.detachActiveFile();
+          } else {
+            await handleCloseTabRef.current(fileTabsRef.current.activeTabId);
+          }
+        } finally {
+          fileChangePromptOpen.current = false;
+        }
+        return;
+      }
+
       if (
         !shouldPromptForExternalChange(
           onDisk,
@@ -1238,19 +1278,30 @@ export function App() {
 
   const handleRecentFileSelect = useCallback(
     async (file: { name: string; path: string }) => {
+      const existing = fileTabs.tabs.find((t) => t.filePath === file.path);
+      if (existing) {
+        handleSwitchTab(existing.id);
+        return;
+      }
+      // The file may have been deleted/moved since it was added to Recent Files.
+      // Verify before opening a (would-be-empty) tab; if gone, drop it and say so.
+      if (!(await pathExists(file.path))) {
+        removeRecentFile(file.path);
+        await messageDialog(`"${file.name}" no longer exists — removed from Recent Files.`, {
+          title: "File Not Found",
+          kind: "warning",
+        });
+        return;
+      }
       try {
-        const existing = fileTabs.tabs.find((t) => t.filePath === file.path);
-        if (existing) {
-          handleSwitchTab(existing.id);
-          return;
-        }
         fileTabs.openInTab(file.name, file.path, "");
         await fileState.handleOpenByPath(file.path);
       } catch (err) {
         console.error("Failed to open recent file:", err);
+        removeRecentFile(file.path);
       }
     },
-    [fileState.handleOpenByPath, fileTabs.tabs, fileTabs.openInTab, handleSwitchTab],
+    [fileState.handleOpenByPath, fileTabs.tabs, fileTabs.openInTab, handleSwitchTab, removeRecentFile],
   );
 
   // File-tree CRUD from the sidebar context menu. The data-safety rule: when the
@@ -1377,6 +1428,7 @@ export function App() {
         onOpenFolder={fileState.handleOpenFolder}
         onToggle={() => setSidebarCollapsed((c) => !c)}
         onRecentFileSelect={handleRecentFileSelect}
+        onRecentFileRemove={removeRecentFile}
         canEditTree={!!fileState.dirRoot}
         onFileAction={handleFileAction}
       />

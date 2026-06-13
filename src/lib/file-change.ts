@@ -17,3 +17,17 @@ export function shouldPromptForExternalChange(
   if (promptOpen) return false;
   return diskContent !== savedContent;
 }
+
+
+/**
+ * Decide whether to prompt because the active file was DELETED/moved out from
+ * under us (distinct from a content change). The watcher's read throws when the
+ * file is gone, but a read can also fail transiently mid atomic-save (write-temp
+ * + rename) — so the caller confirms with a definitive existence check
+ * (`path_exists`) and passes the result here. We prompt only when the file truly
+ * does not exist and no other prompt is already open (no stacked dialogs).
+ */
+export function shouldPromptForDeletion(fileExists: boolean, promptOpen: boolean): boolean {
+  if (promptOpen) return false;
+  return !fileExists;
+}

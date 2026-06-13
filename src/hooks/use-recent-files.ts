@@ -36,6 +36,16 @@ export function useRecentFiles() {
     });
   }, []);
 
+  // Drop a single entry — used by the Recent Files × button and to auto-prune
+  // an entry whose file we discover is gone on open/existence-check.
+  const removeRecentFile = useCallback((path: string) => {
+    setRecentFiles((prev) => {
+      const updated = prev.filter((f) => f.path !== path);
+      persistRecentFiles(updated);
+      return updated;
+    });
+  }, []);
+
   const getRecentFiles = useCallback((): RecentFile[] => {
     return recentFiles;
   }, [recentFiles]);
@@ -45,5 +55,5 @@ export function useRecentFiles() {
     setRecentFiles([]);
   }, []);
 
-  return { recentFiles, addRecentFile, getRecentFiles, clearRecentFiles };
+  return { recentFiles, addRecentFile, removeRecentFile, getRecentFiles, clearRecentFiles };
 }

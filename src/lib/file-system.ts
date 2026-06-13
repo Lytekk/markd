@@ -275,6 +275,18 @@ export async function readFileByPath(path: string): Promise<string> {
   return tauriReadFileByPath(path);
 }
 
+/**
+ * True if `path` currently exists on disk. Definitive (a metadata check, not a
+ * content read), so it distinguishes a real deletion from a transient mid
+ * atomic-save read failure, and flags stale Recent Files. The browser dev server
+ * has no filesystem, so it reports true there (nothing is treated as missing).
+ */
+export async function pathExists(path: string): Promise<boolean> {
+  if (!isTauri()) return true;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<boolean>("path_exists", { path });
+}
+
 export async function exportAsHtml(html: string, title: string): Promise<void> {
   const styles = Array.from(document.styleSheets)
     .flatMap((sheet) => {

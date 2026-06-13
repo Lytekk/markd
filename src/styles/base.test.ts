@@ -113,4 +113,39 @@ describe("base.css layout", () => {
     expect(selected, "missing `.markd-slash-item.selected` rule").not.toBeNull();
     expect(selected).toMatch(/background:/);
   });
+
+  // Source-mode line numbers must track their lines exactly. The gutter number
+  // block height has to equal the textarea ROW height (--line-height ×
+  // --font-size), not the smaller 12px number glyph's em — otherwise a fixed
+  // per-line deficit accumulates and the numbers slide off after scrolling.
+  test("the gutter line height is sized off --font-size, not the smaller number glyph", () => {
+    const body = ruleBody(".markd-line-number");
+    expect(body, "missing `.markd-line-number` rule").not.toBeNull();
+    expect(body).toMatch(/height:\s*calc\(var\(--line-height\)\s*\*\s*var\(--font-size\)\)/);
+  });
+
+  // With wrapping on, one logical line spans N textarea rows but only one gutter
+  // number — drift. When line numbers are on we turn wrapping off so a logical
+  // line is exactly one row (long lines scroll horizontally, code-editor style).
+  test("line-numbered source disables soft-wrap so each line maps to one gutter number", () => {
+    const body = ruleBody(".markd-source-editor.with-line-numbers .markd-source-textarea");
+    expect(body, "missing wrap-off rule for line-numbered source").not.toBeNull();
+    expect(body).toMatch(/white-space:\s*pre\s*;/);
+  });
+
+  test("footer export actions carry a VISIBLE button border so they don't read as toggles", () => {
+    const body = ruleBody(".markd-status-action");
+    expect(body, "missing `.markd-status-action` rule").not.toBeNull();
+    // A real width — not `border: none` — is what makes them read as buttons.
+    expect(body).toMatch(/border:\s*1px/);
+  });
+
+  test("a VISIBLE divider fences the footer toggle group off from the export actions", () => {
+    const body = ruleBody(".markd-status-divider");
+    expect(body, "missing `.markd-status-divider` rule").not.toBeNull();
+    // Existence alone isn't enough — an emptied rule renders nothing. Pin the
+    // properties that actually draw the 1px rule.
+    expect(body).toMatch(/width:\s*1px/);
+    expect(body).toMatch(/background:/);
+  });
 });

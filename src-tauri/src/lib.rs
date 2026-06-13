@@ -145,6 +145,15 @@ fn trash_path(path: String) -> Result<(), String> {
     trash::delete(&path).map_err(|e| e.to_string())
 }
 
+/// True if `path` currently exists on disk. A definitive existence check (not a
+/// content read) so the frontend can tell a real external deletion apart from a
+/// transient read failure mid atomic-save, and flag stale Recent Files. Bypasses
+/// the fs ACL like the other custom commands → no capability needed.
+#[tauri::command]
+fn path_exists(path: String) -> bool {
+    std::path::Path::new(&path).exists()
+}
+
 /// Holds the active file's OS filesystem watcher. Watching the file's PARENT
 /// directory (non-recursive) survives atomic saves (write-temp + rename) that a
 /// direct file watch would lose when the original inode is replaced. The callback
@@ -241,6 +250,7 @@ pub fn run() {
             create_folder,
             rename_path,
             trash_path,
+            path_exists,
             watch_file,
             unwatch_file
         ])

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type MouseEvent as ReactMouseEvent } from "react";
 import type { Editor } from "@tiptap/react";
 import type { FileEntry } from "@/lib/file-system";
+import { pathExists } from "@/lib/file-system";
 import type { RecentFile } from "@/hooks/use-recent-files";
 import { OutlinePanel } from "@/components/OutlinePanel";
 
@@ -22,6 +23,8 @@ interface SidebarProps {
   onOpenFolder: () => void;
   onToggle: () => void;
   onRecentFileSelect: (file: RecentFile) => void;
+  /** Remove a single entry from the Recent Files list (× button / auto-prune). */
+  onRecentFileRemove: (path: string) => void;
   /** True when the tree is editable (a folder is open in a Tauri build). */
   canEditTree?: boolean;
   onFileAction?: (action: FileTreeAction, entry: FileEntry | null) => void;
@@ -41,10 +44,33 @@ export function Sidebar({
   onOpenFolder,
   onToggle,
   onRecentFileSelect,
+  onRecentFileRemove,
   canEditTree,
   onFileAction,
 }: SidebarProps) {
   const [treeMenu, setTreeMenu] = useState<{ x: number; y: number; entry: FileEntry | null } | null>(null);
+
+  // Flag Recent Files whose target no longer exists on disk (deleted/moved out
+  // from under us) so they read as stale; the × button removes any entry. In the
+  // browser dev server pathExists() returns true, so nothing is flagged there.
+  const [missingRecent, setMissingRecent] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    if (recentFiles.length === 0) {
+      setMissingRecent(new Set());
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const checks = await Promise.all(
+        recentFiles.map(async (f) => [f.path, await pathExists(f.path)] as const),
+      );
+      if (cancelled) return;
+      setMissingRecent(new Set(checks.filter(([, exists]) => !exists).map(([p]) => p)));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [recentFiles]);
   const openTreeMenu = useCallback(
     (e: ReactMouseEvent, entry: FileEntry | null) => {
       if (!canEditTree) return;
@@ -121,7 +147,12 @@ export function Sidebar({
         <div className="markd-file-tree" onContextMenu={(e) => openTreeMenu(e, null)}>
           {tree.length === 0 ? (
             recentFiles.length > 0 ? (
-              <RecentFilesList files={recentFiles} onSelect={onRecentFileSelect} />
+              <RecentFilesList
+                files={recentFiles}
+                onSelect={onRecentFileSelect}
+                onRemove={onRecentFileRemove}
+                missing={missingRecent}
+              />
             ) : (
               <div style={{ padding: "16px", opacity: 0.5, fontSize: 13 }}>
                 Open a folder to browse files
@@ -179,36 +210,56 @@ function truncatePath(filePath: string): string {
 
 /* ── Recent Files List ───────────────────────────────────────────── */
 
-function RecentFilesList({
+export function RecentFilesList({
   files,
   onSelect,
+  onRemove,
+  missing,
 }: {
   files: RecentFile[];
   onSelect: (file: RecentFile) => void;
+  onRemove: (path: string) => void;
+  /** Paths whose file no longer exists on disk — rendered as stale. */
+  missing?: Set<string>;
 }) {
   return (
     <div className="markd-recent-files">
       <div className="markd-recent-header">Recent Files</div>
-      {files.map((file) => (
-        <div
-          key={file.path}
-          className="markd-file-item"
-          onClick={() => onSelect(file)}
-          title={file.path}
-          style={{ paddingLeft: 16 }}
-        >
-          <span className="icon">
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <path d="M3 1h7l3 3v11H3V1z" />
-              <path d="M10 1v3h3" />
-            </svg>
-          </span>
-          <span className="name">{file.name}</span>
-          <span className="markd-file-path-hint">
-            {truncatePath(file.path)}
-          </span>
-        </div>
-      ))}
+      {files.map((file) => {
+        const isMissing = missing?.has(file.path) ?? false;
+        return (
+          <div
+            key={file.path}
+            className={`markd-file-item${isMissing ? " markd-recent-missing" : ""}`}
+            onClick={() => onSelect(file)}
+            title={isMissing ? `${file.path} — file not found (deleted or moved)` : file.path}
+            style={{ paddingLeft: 16 }}
+          >
+            <span className="icon">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M3 1h7l3 3v11H3V1z" />
+                <path d="M10 1v3h3" />
+              </svg>
+            </span>
+            <span className="name">{file.name}</span>
+            <span className="markd-file-path-hint">
+              {truncatePath(file.path)}
+            </span>
+            <button
+              className="markd-recent-remove"
+              aria-label="Remove from recent files"
+              title="Remove from recent files"
+              onClick={(e) => {
+                // Don't let the × bubble to the row's open-on-click handler.
+                e.stopPropagation();
+                onRemove(file.path);
+              }}
+            >
+              ×
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }
