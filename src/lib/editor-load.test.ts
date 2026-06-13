@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { Editor as TiptapEditor } from "@tiptap/core";
 import { Markdown } from "tiptap-markdown";
 import { getExtensions } from "@/lib/editor-extensions";
-import { loadEditorContent } from "./editor-load";
+import { loadEditorContent, isHistoryPlugin } from "./editor-load";
 import { docMatchesSaved } from "./dirty-check";
 
 let editor: TiptapEditor;
@@ -21,6 +21,16 @@ const DOC_A = "# Tab A\n\nalpha content\n";
 const DOC_B = "# Tab B\n\nbeta content\n";
 
 describe("loadEditorContent (history isolation across loads)", () => {
+  // Perf guard: loadEditorContent clears undo by resetting ONLY the history
+  // plugin (cheap) rather than recreating the whole EditorState (re-inits all
+  // plugins → a full second re-render). That hinges on locating exactly one
+  // history plugin; if a TipTap upgrade ever changes its state shape, detection
+  // would silently fall back to the slow recreate. Catch that here.
+  it("locates exactly one prosemirror-history plugin (the fast reset path)", () => {
+    const matches = editor.state.plugins.filter((p) => isHistoryPlugin(p, editor.state));
+    expect(matches).toHaveLength(1);
+  });
+
   it("undo after a load is a no-op — it can NEVER restore the previous tab's doc", () => {
     // The incident: one shared PM instance hosts every tab's doc; a plain
     // setContent records the swap as an undoable step, so Ctrl+Z after a
