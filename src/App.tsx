@@ -1283,9 +1283,16 @@ export function App() {
         handleSwitchTab(existing.id);
         return;
       }
-      // The file may have been deleted/moved since it was added to Recent Files.
-      // Verify before opening a (would-be-empty) tab; if gone, drop it and say so.
-      if (!(await pathExists(file.path))) {
+      // Read the content FIRST, then seed it into both the tab and the editor in
+      // one synchronous step (the proven open path — see the initial-load and
+      // single-instance handlers). The previous form passed "" to openInTab and
+      // relied on a separate handleOpenByPath read, leaving the new tab's content
+      // empty across the async gap. A failed read = the file is gone since it was
+      // added → drop it from Recent Files (this read replaces the existence check).
+      let content: string;
+      try {
+        content = await readFileByPath(file.path);
+      } catch {
         removeRecentFile(file.path);
         await messageDialog(`"${file.name}" no longer exists — removed from Recent Files.`, {
           title: "File Not Found",
@@ -1293,13 +1300,8 @@ export function App() {
         });
         return;
       }
-      try {
-        fileTabs.openInTab(file.name, file.path, "");
-        await fileState.handleOpenByPath(file.path);
-      } catch (err) {
-        console.error("Failed to open recent file:", err);
-        removeRecentFile(file.path);
-      }
+      fileTabs.openInTab(file.name, file.path, content);
+      await fileState.handleOpenByPath(file.path, content);
     },
     [fileState.handleOpenByPath, fileTabs.tabs, fileTabs.openInTab, handleSwitchTab, removeRecentFile],
   );
