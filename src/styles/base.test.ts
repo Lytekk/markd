@@ -148,4 +148,13 @@ describe("base.css layout", () => {
     expect(body).toMatch(/width:\s*1px/);
     expect(body).toMatch(/background:/);
   });
+
+  // Day/Night swap cross-fades colors via a transient `.theme-transition` class
+  // (use-theme adds it only during the swap) so the change doesn't shock the eyes.
+  test("theme swap cross-fades colors via a .theme-transition rule that transitions background-color", () => {
+    expect(css).toMatch(/html\.theme-transition\b/);
+    // The color transition must be present (the whole point), guarded for reduced-motion users.
+    expect(css).toMatch(/\.theme-transition[\s\S]{0,260}transition:[\s\S]{0,120}background-color/);
+    expect(css).toMatch(/prefers-reduced-motion/);
+  });
 });
