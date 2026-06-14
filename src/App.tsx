@@ -24,9 +24,11 @@ import { useSnippets } from "@/hooks/use-snippets";
 import { useRecentFiles } from "@/hooks/use-recent-files";
 import { useFullWidth } from "@/hooks/use-full-width";
 import { useLineNumbers } from "@/hooks/use-line-numbers";
-import { useFileTabs } from "@/hooks/use-file-tabs";
+import { useFileTabs, type FileTab } from "@/hooks/use-file-tabs";
+import { copyToClipboard } from "@/lib/code-block-enhance";
+import { revealInFileManager } from "@/lib/reveal";
 import { useZoom } from "@/hooks/use-zoom";
-import { TabBar } from "@/components/TabBar";
+import { TabBar, type TabAction } from "@/components/TabBar";
 import { createFile, createFolder, exportAsHtml, exportAsPdf, pathExists, readFileByPath, renamePath, saveToFile, trashPath } from "@/lib/file-system";
 import { ensureMdExtension, joinPath, parentPath, targetDirForEntry, validateName } from "@/lib/file-tree-ops";
 import {
@@ -626,7 +628,25 @@ export function App() {
     },
     [fileTabs.tabs, fileTabs.closeTab, fileTabs.hydrateTab, fileState.handleSave, fileState.restoreState],
   );
-  handleCloseTabRef.current = handleCloseTab;;
+  handleCloseTabRef.current = handleCloseTab;
+
+  // Tab right-click context-menu actions. Path ops use the shared WebView2-safe
+  // clipboard helper + the opener reveal helper; Close routes through the
+  // unsaved-changes-guarded handleCloseTab (never a raw close).
+  const handleTabAction = useCallback(
+    async (action: TabAction, tab: FileTab) => {
+      if (action === "copy-path") {
+        if (tab.filePath) await copyToClipboard(tab.filePath);
+      } else if (action === "copy-name") {
+        await copyToClipboard(tab.fileName);
+      } else if (action === "reveal") {
+        if (tab.filePath) await revealInFileManager(tab.filePath);
+      } else if (action === "close") {
+        void handleCloseTab(tab.id);
+      }
+    },
+    [handleCloseTab],
+  );;
 
   const handleCloseAllTabs = useCallback(async () => {
     const dirtyTabs = fileTabs.tabs.filter((t) => t.isDirty);
@@ -1312,6 +1332,15 @@ export function App() {
   // tab's label in sync. All four ops go through Rust (file-system.ts).
   const handleFileAction = useCallback(
     async (action: FileTreeAction, entry: { kind: string; name: string; path: string } | null) => {
+      // Path ops are root-independent — handle them before the open-folder guard.
+      if (action === "copy-path") {
+        if (entry) await copyToClipboard(entry.path);
+        return;
+      }
+      if (action === "reveal") {
+        if (entry) await revealInFileManager(entry.path);
+        return;
+      }
       const root = fileState.dirRoot;
       if (!root) return;
       const showError = (msg: string) =>
@@ -1441,6 +1470,7 @@ export function App() {
           onSwitchTab={handleSwitchTab}
           onCloseTab={handleCloseTab}
           onNewTab={handleNewTab}
+          onTabAction={handleTabAction}
         />
         <Menubar
           editor={editor}

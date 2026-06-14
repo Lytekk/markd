@@ -7,7 +7,7 @@ import { OutlinePanel } from "@/components/OutlinePanel";
 
 type SidebarTab = "files" | "outline";
 
-export type FileTreeAction = "new-file" | "new-folder" | "rename" | "delete";
+export type FileTreeAction = "new-file" | "new-folder" | "rename" | "delete" | "copy-path" | "reveal";
 
 interface SidebarProps {
   tree: FileEntry[];
@@ -186,6 +186,13 @@ export function Sidebar({
           </button>
           {treeMenu.entry && (
             <>
+              <div className="markd-context-separator" />
+              <button className="markd-context-item" onClick={() => runTreeAction("copy-path")}>
+                Copy Path
+              </button>
+              <button className="markd-context-item" onClick={() => runTreeAction("reveal")}>
+                Reveal in File Explorer
+              </button>
               <div className="markd-context-separator" />
               <button className="markd-context-item" onClick={() => runTreeAction("rename")}>
                 Rename…
