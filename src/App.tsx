@@ -152,6 +152,11 @@ export function App() {
       scrollMargin: 120,
       attributes: {
         id: "write",
+        // Disable the browser's native spellcheck: on a large, word-heavy doc
+        // Chromium spellchecking the whole contenteditable is a documented severe
+        // perf hit (re-runs on every content swap / keystroke). A markdown/spec
+        // editor doesn't need red squiggles; this keeps switching + typing snappy.
+        spellcheck: "false",
       },
     },
   });
