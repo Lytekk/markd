@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
+import type { JSONContent } from "@tiptap/core";
 import { resolveSaveContent } from "@/lib/markdown-fidelity";
 import {
   FileEntry,
@@ -48,14 +49,16 @@ export function useFileState() {
   });
 
   const getMarkdownRef = useRef<(() => string) | null>(null);
-  const setContentRef = useRef<((md: string, fileDir: string) => void) | null>(null);
+  const setContentRef = useRef<
+    ((md: string, fileDir: string, docJSON?: JSONContent) => void) | null
+  >(null);
 
   const registerGetMarkdown = useCallback((fn: () => string) => {
     getMarkdownRef.current = fn;
   }, []);
 
   const registerSetContent = useCallback(
-    (fn: (md: string, fileDir: string) => void) => {
+    (fn: (md: string, fileDir: string, docJSON?: JSONContent) => void) => {
       setContentRef.current = fn;
     },
     [],
@@ -201,8 +204,14 @@ export function useFileState() {
       isDirty: boolean;
       savedContent: string;
       lastSaved?: number | null;
+      /** Cached PM JSON of content's body — restore via this (fast) when present. */
+      docJSON?: JSONContent;
     }) => {
-      setContentRef.current?.(snapshot.content, snapshot.filePath ? dirname(snapshot.filePath) : "");
+      setContentRef.current?.(
+        snapshot.content,
+        snapshot.filePath ? dirname(snapshot.filePath) : "",
+        snapshot.docJSON,
+      );
       setState((prev) => ({
         ...prev,
         fileName: snapshot.fileName,

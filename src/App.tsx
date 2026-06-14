@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import type { Node as PMNode } from "@tiptap/pm/model";
 import { useEditor } from "@tiptap/react";
+import type { JSONContent } from "@tiptap/core";
 import { Markdown } from "tiptap-markdown";
 import { getExtensions } from "@/lib/editor-extensions";
 import { useFileState } from "@/hooks/use-file-state";
@@ -24,10 +25,12 @@ import { useSnippets } from "@/hooks/use-snippets";
 import { useRecentFiles } from "@/hooks/use-recent-files";
 import { useFullWidth } from "@/hooks/use-full-width";
 import { useLineNumbers } from "@/hooks/use-line-numbers";
-import { useFileTabs } from "@/hooks/use-file-tabs";
+import { useFileTabs, type FileTab } from "@/hooks/use-file-tabs";
+import { copyToClipboard } from "@/lib/code-block-enhance";
+import { revealInFileManager } from "@/lib/reveal";
 import { useZoom } from "@/hooks/use-zoom";
-import { TabBar } from "@/components/TabBar";
-import { createFile, createFolder, exportAsHtml, exportAsPdf, readFileByPath, renamePath, saveToFile, trashPath } from "@/lib/file-system";
+import { TabBar, type TabAction } from "@/components/TabBar";
+import { createFile, createFolder, exportAsHtml, exportAsPdf, pathExists, readFileByPath, renamePath, saveToFile, trashPath } from "@/lib/file-system";
 import { ensureMdExtension, joinPath, parentPath, targetDirForEntry, validateName } from "@/lib/file-tree-ops";
 import {
   shouldCheckForUpdate,
@@ -35,8 +38,8 @@ import {
   shouldOfferUpdate,
   UPDATE_SKIP_KEY,
 } from "@/lib/updater";
-import { shouldPromptForExternalChange } from "@/lib/file-change";
-import { askDialog } from "@/lib/dialogs";
+import { shouldPromptForExternalChange, shouldPromptForDeletion } from "@/lib/file-change";
+import { askDialog, messageDialog } from "@/lib/dialogs";
 import { confirmModal, promptModal } from "@/lib/modal";
 import { normalizeUrl, wordRangeAt } from "@/lib/links";
 import { splitFrontmatter, joinFrontmatter } from "@/lib/frontmatter";
@@ -81,7 +84,7 @@ export function App() {
   const { lineNumbers, toggleLineNumbers } = useLineNumbers();
   const { zoom, zoomIn, zoomOut, resetZoom } = useZoom();
   const fileState = useFileState();
-  const { recentFiles, addRecentFile } = useRecentFiles();
+  const { recentFiles, addRecentFile, removeRecentFile } = useRecentFiles();
   const fileTabs = useFileTabs();
 
   // Directory of the currently-open file. Read by ResolvedImage at renderHTML
@@ -149,6 +152,11 @@ export function App() {
       scrollMargin: 120,
       attributes: {
         id: "write",
+        // Disable the browser's native spellcheck: on a large, word-heavy doc
+        // Chromium spellchecking the whole contenteditable is a documented severe
+        // perf hit (re-runs on every content swap / keystroke). A markdown/spec
+        // editor doesn't need red squiggles; this keeps switching + typing snappy.
+        spellcheck: "false",
       },
     },
   });
@@ -159,18 +167,41 @@ export function App() {
     fileState.registerGetMarkdown(() =>
       joinFrontmatter(frontmatterRef.current, editor.storage.markdown.getMarkdown()),
     );
-    fileState.registerSetContent((md: string, fileDir: string) => {
+    fileState.registerSetContent((md: string, fileDir: string, docJSON?: JSONContent) => {
       fileDirRef.current = fileDir;
       const { frontmatter, body } = splitFrontmatter(md);
       frontmatterRef.current = frontmatter;
       // loadEditorContent (NOT bare setContent): resets PM history so Ctrl+Z
       // can never pull the previous tab's doc into this one (see editor-load.ts).
-      loadEditorContent(editor, body);
+      // Fast path: when the tab carries a cached PM JSON doc (set on switch-away),
+      // load that — it skips the slow markdown re-parse (the large-doc switch lag).
+      // First load / post-external-change has no cache → parse the markdown body.
+      loadEditorContent(editor, docJSON ?? body);
     });
     fileTabs.registerGetMarkdown(() =>
       joinFrontmatter(frontmatterRef.current, editor.storage.markdown.getMarkdown()),
     );
-  }, [editor, fileState.registerGetMarkdown, fileState.registerSetContent, fileTabs.registerGetMarkdown]);
+    // The doc as PM JSON (body only — frontmatter lives in frontmatterRef), cached
+    // per tab on switch-away for the fast JSON restore above.
+    fileTabs.registerGetJSON(() => editor.getJSON());
+    // Authoritative "buffer == saved" check (same doc.eq predicate as the
+    // revert-check) so leaving a clean tab can skip the markdown serialize.
+    fileTabs.registerIsClean(() =>
+      docMatchesSaved(
+        editor.state.doc,
+        savedDocRef.current,
+        frontmatterRef.current,
+        savedFrontmatterRef.current,
+      ),
+    );
+  }, [
+    editor,
+    fileState.registerGetMarkdown,
+    fileState.registerSetContent,
+    fileTabs.registerGetMarkdown,
+    fileTabs.registerGetJSON,
+    fileTabs.registerIsClean,
+  ]);
 
   // Capture the saved-state doc whenever savedContent changes (open / save /
   // tab switch). When the editor currently HOLDS the saved state, share its
@@ -204,6 +235,9 @@ export function App() {
   fileTabsRef.current = fileTabs;
   const fileStateRef = useRef(fileState);
   fileStateRef.current = fileState;
+  // Latest handleCloseTab, callable from the [filePath]-keyed watcher effect
+  // (which must not list it as a dep). Assigned just after its definition below.
+  const handleCloseTabRef = useRef<(tabId: string) => Promise<void> | void>(() => {});
 
   // Load file passed as CLI arg / OS file association (Tauri only).
   // Skipped when tabs were restored from persistence (refresh case).
@@ -543,6 +577,11 @@ export function App() {
             fileTabs.hydrateTab(target.id, content);
             target.content = content;
             target.savedContent = content;
+            // Disk-sourced content — drop any stale JSON cache so restoreState
+            // parses the fresh body (an empty-serializing doc keeps a truthy
+            // docJSON; without this, the stale empty doc would win and the editor
+            // would load BLANK over the real content — data loss).
+            target.docJSON = undefined;
           } catch { /* file gone */ }
         }
         fileState.restoreState(target);
@@ -612,6 +651,9 @@ export function App() {
             fileTabs.hydrateTab(switchTo.id, content);
             switchTo.content = content;
             switchTo.savedContent = content;
+            // See handleSwitchTab: disk-sourced content must drop the stale JSON
+            // cache or an empty-serializing tab loads BLANK over real content.
+            switchTo.docJSON = undefined;
           } catch { /* file gone */ }
         }
         fileState.restoreState(switchTo);
@@ -622,6 +664,25 @@ export function App() {
       }
     },
     [fileTabs.tabs, fileTabs.closeTab, fileTabs.hydrateTab, fileState.handleSave, fileState.restoreState],
+  );
+  handleCloseTabRef.current = handleCloseTab;
+
+  // Tab right-click context-menu actions. Path ops use the shared WebView2-safe
+  // clipboard helper + the opener reveal helper; Close routes through the
+  // unsaved-changes-guarded handleCloseTab (never a raw close).
+  const handleTabAction = useCallback(
+    async (action: TabAction, tab: FileTab) => {
+      if (action === "copy-path") {
+        if (tab.filePath) await copyToClipboard(tab.filePath);
+      } else if (action === "copy-name") {
+        await copyToClipboard(tab.fileName);
+      } else if (action === "reveal") {
+        if (tab.filePath) await revealInFileManager(tab.filePath);
+      } else if (action === "close") {
+        void handleCloseTab(tab.id);
+      }
+    },
+    [handleCloseTab],
   );;
 
   const handleCloseAllTabs = useCallback(async () => {
@@ -1041,13 +1102,49 @@ export function App() {
 
     const check = async () => {
       if (cancelled || fileChangePromptOpen.current) return;
-      let onDisk: string;
+      let onDisk: string | null = null;
       try {
         onDisk = await readFileByPath(filePath);
       } catch {
-        return; // file deleted / unreadable — nothing to prompt about
+        onDisk = null; // read failed — could be a real deletion or a transient race
       }
       if (cancelled) return;
+
+      // Read failed: the file may have been deleted/moved, or the read just raced
+      // an atomic save (write-temp + rename). A definitive existence check tells
+      // them apart — only a true deletion prompts.
+      if (onDisk === null) {
+        let exists = true;
+        try {
+          exists = await pathExists(filePath);
+        } catch {
+          exists = true; // can't determine → don't nag
+        }
+        // Bail if torn down meanwhile — e.g. the user trashed this file from the
+        // sidebar, which detaches it (filePath→null) and re-runs this effect.
+        if (cancelled || fileStateRef.current.filePath !== filePath) return;
+        if (!shouldPromptForDeletion(exists, fileChangePromptOpen.current)) return;
+        fileChangePromptOpen.current = true;
+        try {
+          const keep = await askDialog(
+            `"${fileStateRef.current.fileName}" no longer exists on disk — it may have been deleted or moved.\n\nKeep it open in the editor? It becomes an unsaved document you can re-save anywhere.`,
+            { title: "File Deleted", kind: "warning", okLabel: "Keep in Editor", cancelLabel: "Close Tab" },
+          );
+          if (keep) {
+            // Detach from the now-missing path: the buffer becomes the only copy
+            // — kept dirty + close-guarded, autosave timer cancelled, and the
+            // watcher torn down (filePath→null re-runs this effect). Same
+            // primitive the sidebar trash uses.
+            fileStateRef.current.detachActiveFile();
+          } else {
+            await handleCloseTabRef.current(fileTabsRef.current.activeTabId);
+          }
+        } finally {
+          fileChangePromptOpen.current = false;
+        }
+        return;
+      }
+
       if (
         !shouldPromptForExternalChange(
           onDisk,
@@ -1238,19 +1335,32 @@ export function App() {
 
   const handleRecentFileSelect = useCallback(
     async (file: { name: string; path: string }) => {
-      try {
-        const existing = fileTabs.tabs.find((t) => t.filePath === file.path);
-        if (existing) {
-          handleSwitchTab(existing.id);
-          return;
-        }
-        fileTabs.openInTab(file.name, file.path, "");
-        await fileState.handleOpenByPath(file.path);
-      } catch (err) {
-        console.error("Failed to open recent file:", err);
+      const existing = fileTabs.tabs.find((t) => t.filePath === file.path);
+      if (existing) {
+        handleSwitchTab(existing.id);
+        return;
       }
+      // Read the content FIRST, then seed it into both the tab and the editor in
+      // one synchronous step (the proven open path — see the initial-load and
+      // single-instance handlers). The previous form passed "" to openInTab and
+      // relied on a separate handleOpenByPath read, leaving the new tab's content
+      // empty across the async gap. A failed read = the file is gone since it was
+      // added → drop it from Recent Files (this read replaces the existence check).
+      let content: string;
+      try {
+        content = await readFileByPath(file.path);
+      } catch {
+        removeRecentFile(file.path);
+        await messageDialog(`"${file.name}" no longer exists — removed from Recent Files.`, {
+          title: "File Not Found",
+          kind: "warning",
+        });
+        return;
+      }
+      fileTabs.openInTab(file.name, file.path, content);
+      await fileState.handleOpenByPath(file.path, content);
     },
-    [fileState.handleOpenByPath, fileTabs.tabs, fileTabs.openInTab, handleSwitchTab],
+    [fileState.handleOpenByPath, fileTabs.tabs, fileTabs.openInTab, handleSwitchTab, removeRecentFile],
   );
 
   // File-tree CRUD from the sidebar context menu. The data-safety rule: when the
@@ -1259,6 +1369,15 @@ export function App() {
   // tab's label in sync. All four ops go through Rust (file-system.ts).
   const handleFileAction = useCallback(
     async (action: FileTreeAction, entry: { kind: string; name: string; path: string } | null) => {
+      // Path ops are root-independent — handle them before the open-folder guard.
+      if (action === "copy-path") {
+        if (entry) await copyToClipboard(entry.path);
+        return;
+      }
+      if (action === "reveal") {
+        if (entry) await revealInFileManager(entry.path);
+        return;
+      }
       const root = fileState.dirRoot;
       if (!root) return;
       const showError = (msg: string) =>
@@ -1377,6 +1496,7 @@ export function App() {
         onOpenFolder={fileState.handleOpenFolder}
         onToggle={() => setSidebarCollapsed((c) => !c)}
         onRecentFileSelect={handleRecentFileSelect}
+        onRecentFileRemove={removeRecentFile}
         canEditTree={!!fileState.dirRoot}
         onFileAction={handleFileAction}
       />
@@ -1387,6 +1507,7 @@ export function App() {
           onSwitchTab={handleSwitchTab}
           onCloseTab={handleCloseTab}
           onNewTab={handleNewTab}
+          onTabAction={handleTabAction}
         />
         <Menubar
           editor={editor}

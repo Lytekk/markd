@@ -44,6 +44,27 @@ function StatDelta({
   return <span className={cls}>{delta > 0 ? `+${delta}` : `${delta}`}</span>;
 }
 
+// Download/export glyph shared by the HTML & PDF actions — the icon + bordered
+// `markd-status-action` styling signal "one-shot action", distinct from the
+// borderless toggles that fill in when active.
+const ExportIcon = () => (
+  <svg
+    width="12"
+    height="12"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.5"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M8 2v8" />
+    <path d="M5 7l3 3 3-3" />
+    <path d="M3 13h10" />
+  </svg>
+);
+
 export function StatusBar({
   fileName,
   filePath,
@@ -142,10 +163,13 @@ export function StatusBar({
         >
           {lineNumbers ? "Lines" : "No Lines"}
         </button>
-        <button onClick={onExportHtml} style={btnStyle} title="Export as HTML">
+        <span className="markd-status-divider" aria-hidden="true" />
+        <button onClick={onExportHtml} className="markd-status-action" title="Export as HTML">
+          <ExportIcon />
           HTML
         </button>
-        <button onClick={onExportPdf} style={btnStyle} title="Export as PDF">
+        <button onClick={onExportPdf} className="markd-status-action" title="Export as PDF">
+          <ExportIcon />
           PDF
         </button>
         <button onClick={onThemeChange} style={btnStyle} title="Toggle Theme">

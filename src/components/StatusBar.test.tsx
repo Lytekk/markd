@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, cleanup, act } from "@testing-library/react";
+import { render, screen, cleanup, act, fireEvent } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { StatusBar } from "./StatusBar";
 
@@ -148,5 +148,37 @@ describe("StatusBar word/char deltas", () => {
     sendStats(7, 33);
     expect(screen.getByText(/7 words/)).toBeTruthy();
     expect(screen.getByText(/33 chars/)).toBeTruthy();
+  });
+});
+
+// HTML/PDF EXPORT are one-shot actions, not on/off toggles. Sitting flush in the
+// toggle row they read as toggles (the reported confusion). They carry their own
+// `markd-status-action` class (bordered button look), never the toggle's
+// `status-btn-active` highlight, and a `markd-status-divider` fences them off.
+describe("StatusBar export actions look distinct from toggles", () => {
+  it("styles HTML/PDF as action buttons and never applies the toggle-active highlight", () => {
+    // Turn every toggle ON — proves the export buttons still never light up.
+    renderBar({ sourceMode: true, fullWidth: true, focusMode: true, lineNumbers: true });
+    const html = screen.getByTitle("Export as HTML");
+    const pdf = screen.getByTitle("Export as PDF");
+    expect(html.classList.contains("markd-status-action")).toBe(true);
+    expect(pdf.classList.contains("markd-status-action")).toBe(true);
+    expect(html.classList.contains("status-btn-active")).toBe(false);
+    expect(pdf.classList.contains("status-btn-active")).toBe(false);
+  });
+
+  it("fences the export actions off from the toggle group with a divider", () => {
+    const { container } = renderBar();
+    expect(container.querySelector(".markd-status-divider")).not.toBeNull();
+  });
+
+  it("still fires the export handlers on click", () => {
+    const onExportHtml = vi.fn();
+    const onExportPdf = vi.fn();
+    renderBar({ onExportHtml, onExportPdf });
+    fireEvent.click(screen.getByTitle("Export as HTML"));
+    fireEvent.click(screen.getByTitle("Export as PDF"));
+    expect(onExportHtml).toHaveBeenCalledTimes(1);
+    expect(onExportPdf).toHaveBeenCalledTimes(1);
   });
 });

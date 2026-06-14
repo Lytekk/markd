@@ -32,4 +32,8 @@ describe("Tauri capabilities (src-tauri/capabilities/default.json)", () => {
   it("grants dialog:default — askDialog()/messageDialog() need ask/message", () => {
     expect(perms).toContain("dialog:default");
   });
+
+  it("grants opener:allow-reveal-item-in-dir — the tab/file-tree 'Reveal in File Explorer' action needs it", () => {
+    expect(perms).toContain("opener:allow-reveal-item-in-dir");
+  });
 });

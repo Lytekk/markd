@@ -25,6 +25,21 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Day/Night cross-fade. `use-theme` adds `.theme-transition` to <html> ONLY for
+   the duration of a swap, then removes it — so colors fade gently (no eye shock)
+   without the transition ever lagging hovers or other UI afterward. `!important`
+   overrides element-specific `transition` declarations during the swap; scoped
+   to no-preference so reduced-motion users get an instant change. */
+@media (prefers-reduced-motion: no-preference) {
+  html.theme-transition,
+  html.theme-transition *,
+  html.theme-transition *::before,
+  html.theme-transition *::after {
+    transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease,
+      fill 0.3s ease, stroke 0.3s ease !important;
+  }
+}
+
 /* App Layout */
 .markd-app {
   display: flex;
@@ -940,6 +955,41 @@ body {
   opacity: 0.7;
 }
 
+/* Per-row × to drop a Recent Files entry — revealed on row hover / keyboard
+   focus, pinned to the right edge. */
+.markd-recent-remove {
+  margin-left: auto;
+  flex-shrink: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 4px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.markd-recent-files .markd-file-item:hover .markd-recent-remove,
+.markd-recent-remove:focus-visible {
+  opacity: 0.6;
+}
+
+.markd-recent-remove:hover {
+  opacity: 1;
+}
+
+/* Stale Recent Files entry — its file no longer exists on disk. */
+.markd-recent-missing .name {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+
+.markd-recent-missing .icon {
+  opacity: 0.4;
+}
+
 /* Focus Mode */
 .focus-mode #write > .focus-dimmed {
   opacity: 0.3;
@@ -961,6 +1011,37 @@ body {
   background: var(--select-text-bg-color) !important;
   color: var(--text-color) !important;
   border-radius: 3px;
+}
+
+/* Footer export actions (HTML / PDF): one-shot actions, NOT toggles. A bordered
+   button affordance + leading download icon distinguishes them from the
+   borderless toggles (which only fill in via .status-btn-active when on). */
+.markd-status-bar .markd-status-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  font-size: inherit;
+  color: inherit;
+  cursor: pointer;
+  background: none;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  opacity: 0.85;
+}
+
+.markd-status-bar .markd-status-action:hover {
+  background: var(--select-text-bg-color);
+  opacity: 1;
+}
+
+/* Thin vertical rule fencing the toggle group off from the export actions. */
+.markd-status-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 0;
+  background: var(--border-color);
+  opacity: 0.6;
 }
 
 /* Placeholder */
@@ -1573,7 +1654,11 @@ body {
 }
 
 .markd-line-number {
-  height: calc(var(--line-height) * 1em);
+  /* Block height must equal the textarea ROW height (--line-height ×
+     --font-size). Using `1em` resolved against the number's own 12px font
+     yielded a per-line deficit (e.g. 20.4px vs 27.2px) that accumulated into
+     visible drift after scrolling. The 12px glyph is centered within. */
+  height: calc(var(--line-height) * var(--font-size));
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -1604,6 +1689,16 @@ body {
   tab-size: 2;
   white-space: pre-wrap;
   word-wrap: break-word;
+}
+
+/* With line numbers ON, turn soft-wrap OFF so each logical line is exactly one
+   visual row — the gutter renders one number per logical line, so a wrapped line
+   (N rows, 1 number) would otherwise drift the numbers out of alignment. Long
+   lines scroll horizontally instead (code-editor convention). */
+.markd-source-editor.with-line-numbers .markd-source-textarea {
+  white-space: pre;
+  word-wrap: normal;
+  overflow-x: auto;
 }
 
 /* Source view honors Full Width like #write: collapse the centering padding to
