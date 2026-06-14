@@ -199,17 +199,34 @@ export function useFileTabs() {
     getDocJSONRef.current = fn;
   }, []);
 
+  // Authoritative "active buffer == its saved state" check (the editor's
+  // doc.eq(savedDoc) — same predicate the revert-check uses, NOT a lagging dirty
+  // flag). When true, the active tab's content is already savedContent, so leaving
+  // it can SKIP the costly markdown serialize (~tens of ms on a large doc). Default
+  // false (serialize) when unknown — never skip on uncertainty.
+  const isCleanRef = useRef<(() => boolean) | null>(null);
+  const registerIsClean = useCallback((fn: () => boolean) => {
+    isCleanRef.current = fn;
+  }, []);
+
   const activeTab: FileTab = useMemo(
     () => tabs.find((t) => t.id === activeTabId) ?? tabs[0]!,
     [tabs, activeTabId],
   );
 
   const snapshotActiveTab = useCallback(() => {
-    const md = getMarkdownRef.current?.() ?? "";
-    // Capture the doc as JSON alongside the markdown (cheap — ~0.2ms) so a later
-    // switch-back restores via JSON instead of re-parsing the markdown.
-    const docJSON = getDocJSONRef.current?.();
     const id = activeTabIdRef.current;
+    const current = tabsRef.current.find((t) => t.id === id);
+    // Skip the costly markdown serialize when the active buffer is unchanged from
+    // its saved state — content is already savedContent (the tab's existing
+    // content). Only a modified buffer needs re-serializing to capture edits.
+    const clean = isCleanRef.current?.() ?? false;
+    const md = clean
+      ? current?.content ?? ""
+      : getMarkdownRef.current?.() ?? current?.content ?? "";
+    // Capture the doc as JSON regardless (cheap — ~0.2ms, even on large docs) so a
+    // later switch-back restores via JSON instead of re-parsing the markdown.
+    const docJSON = getDocJSONRef.current?.();
     // Update the REF synchronously, not just queued state: callers (newTab /
     // openInTab / reopenLastClosed) immediately read tabsRef.current and issue
     // a non-functional setTabs — under React batching that replace would
@@ -226,9 +243,15 @@ export function useFileTabs() {
   const switchTab = useCallback(
     (tabId: string, departingScrollTop?: number) => {
       if (tabId === activeTabIdRef.current) return null;
-      const md = getMarkdownRef.current?.() ?? "";
-      const docJSON = getDocJSONRef.current?.();
       const prevId = activeTabIdRef.current;
+      const prevTab = tabsRef.current.find((t) => t.id === prevId);
+      // Skip the markdown serialize when the departing buffer is unchanged from
+      // saved (see snapshotActiveTab). getJSON stays cheap and is always captured.
+      const clean = isCleanRef.current?.() ?? false;
+      const md = clean
+        ? prevTab?.content ?? ""
+        : getMarkdownRef.current?.() ?? prevTab?.content ?? "";
+      const docJSON = getDocJSONRef.current?.();
       setTabs((prev) => {
         const updated = prev.map((t) =>
           t.id === prevId
@@ -340,7 +363,8 @@ export function useFileTabs() {
       const currentTabs = tabsRef.current;
       const closing = currentTabs.find((t) => t.id === tabId);
       if (closing && tabId === activeTabIdRef.current) {
-        const md = getMarkdownRef.current?.() ?? closing.content;
+        const clean = isCleanRef.current?.() ?? false;
+        const md = clean ? closing.content : getMarkdownRef.current?.() ?? closing.content;
         pushClosedTab({ ...closing, content: md });
       } else if (closing) {
         pushClosedTab(closing);
@@ -508,6 +532,7 @@ export function useFileTabs() {
     hydrateTab,
     registerGetMarkdown,
     registerGetJSON,
+    registerIsClean,
     closedStack,
     reopenLastClosed,
   };

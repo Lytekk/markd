@@ -238,3 +238,51 @@ describe("useFileTabs — unsaved-edit snapshots survive tab creation (batching 
     expect(result.current.tabs.find((t) => t.id === firstId)!.content).toBe("KEEP ME");
   });
 });
+
+describe("useFileTabs — skip markdown serialize when the buffer is clean", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("keeps the departing tab's existing content (skips getMarkdown) when clean, and still caches docJSON", () => {
+    const { result } = renderHook(() => useFileTabs());
+    act(() => { result.current.openInTab("a.md", "/tmp/a.md", "AAA"); });
+    act(() => { result.current.openInTab("b.md", "/tmp/b.md", "BBB"); });
+    let getMarkdownCalls = 0;
+    act(() => {
+      result.current.registerGetMarkdown(() => { getMarkdownCalls++; return "SERIALIZED"; });
+      result.current.registerGetJSON(() => ({ type: "doc", content: [{ type: "paragraph" }] }));
+      result.current.registerIsClean(() => true);
+    });
+    const aId = result.current.tabs.find((t) => t.filePath === "/tmp/a.md")!.id;
+    const bId = result.current.tabs.find((t) => t.filePath === "/tmp/b.md")!.id;
+    act(() => { result.current.switchTab(aId); }); // leaving b (active + clean)
+    const b = result.current.tabs.find((t) => t.id === bId)!;
+    expect(b.content).toBe("BBB"); // existing content kept, NOT the serialize
+    expect(getMarkdownCalls).toBe(0); // serialize skipped
+    expect(b.docJSON).toEqual({ type: "doc", content: [{ type: "paragraph" }] }); // JSON still cached
+  });
+
+  it("serializes via getMarkdown when the buffer is NOT clean", () => {
+    const { result } = renderHook(() => useFileTabs());
+    act(() => { result.current.openInTab("a.md", "/tmp/a.md", "AAA"); });
+    act(() => { result.current.openInTab("b.md", "/tmp/b.md", "BBB"); });
+    act(() => {
+      result.current.registerGetMarkdown(() => "SERIALIZED");
+      result.current.registerIsClean(() => false);
+    });
+    const aId = result.current.tabs.find((t) => t.filePath === "/tmp/a.md")!.id;
+    const bId = result.current.tabs.find((t) => t.filePath === "/tmp/b.md")!.id;
+    act(() => { result.current.switchTab(aId); });
+    expect(result.current.tabs.find((t) => t.id === bId)!.content).toBe("SERIALIZED");
+  });
+
+  it("defaults to serialize (getMarkdown) when no isClean is registered — the safe default", () => {
+    const { result } = renderHook(() => useFileTabs());
+    act(() => { result.current.openInTab("a.md", "/tmp/a.md", "AAA"); });
+    act(() => { result.current.openInTab("b.md", "/tmp/b.md", "BBB"); });
+    act(() => { result.current.registerGetMarkdown(() => "SERIALIZED"); }); // no registerIsClean
+    const aId = result.current.tabs.find((t) => t.filePath === "/tmp/a.md")!.id;
+    const bId = result.current.tabs.find((t) => t.filePath === "/tmp/b.md")!.id;
+    act(() => { result.current.switchTab(aId); });
+    expect(result.current.tabs.find((t) => t.id === bId)!.content).toBe("SERIALIZED");
+  });
+});

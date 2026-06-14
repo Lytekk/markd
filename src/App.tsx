@@ -179,12 +179,23 @@ export function App() {
     // The doc as PM JSON (body only — frontmatter lives in frontmatterRef), cached
     // per tab on switch-away for the fast JSON restore above.
     fileTabs.registerGetJSON(() => editor.getJSON());
+    // Authoritative "buffer == saved" check (same doc.eq predicate as the
+    // revert-check) so leaving a clean tab can skip the markdown serialize.
+    fileTabs.registerIsClean(() =>
+      docMatchesSaved(
+        editor.state.doc,
+        savedDocRef.current,
+        frontmatterRef.current,
+        savedFrontmatterRef.current,
+      ),
+    );
   }, [
     editor,
     fileState.registerGetMarkdown,
     fileState.registerSetContent,
     fileTabs.registerGetMarkdown,
     fileTabs.registerGetJSON,
+    fileTabs.registerIsClean,
   ]);
 
   // Capture the saved-state doc whenever savedContent changes (open / save /
