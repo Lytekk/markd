@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import type { Node as PMNode } from "@tiptap/pm/model";
 import { useEditor } from "@tiptap/react";
+import type { JSONContent } from "@tiptap/core";
 import { Markdown } from "tiptap-markdown";
 import { getExtensions } from "@/lib/editor-extensions";
 import { useFileState } from "@/hooks/use-file-state";
@@ -161,18 +162,30 @@ export function App() {
     fileState.registerGetMarkdown(() =>
       joinFrontmatter(frontmatterRef.current, editor.storage.markdown.getMarkdown()),
     );
-    fileState.registerSetContent((md: string, fileDir: string) => {
+    fileState.registerSetContent((md: string, fileDir: string, docJSON?: JSONContent) => {
       fileDirRef.current = fileDir;
       const { frontmatter, body } = splitFrontmatter(md);
       frontmatterRef.current = frontmatter;
       // loadEditorContent (NOT bare setContent): resets PM history so Ctrl+Z
       // can never pull the previous tab's doc into this one (see editor-load.ts).
-      loadEditorContent(editor, body);
+      // Fast path: when the tab carries a cached PM JSON doc (set on switch-away),
+      // load that — it skips the slow markdown re-parse (the large-doc switch lag).
+      // First load / post-external-change has no cache → parse the markdown body.
+      loadEditorContent(editor, docJSON ?? body);
     });
     fileTabs.registerGetMarkdown(() =>
       joinFrontmatter(frontmatterRef.current, editor.storage.markdown.getMarkdown()),
     );
-  }, [editor, fileState.registerGetMarkdown, fileState.registerSetContent, fileTabs.registerGetMarkdown]);
+    // The doc as PM JSON (body only — frontmatter lives in frontmatterRef), cached
+    // per tab on switch-away for the fast JSON restore above.
+    fileTabs.registerGetJSON(() => editor.getJSON());
+  }, [
+    editor,
+    fileState.registerGetMarkdown,
+    fileState.registerSetContent,
+    fileTabs.registerGetMarkdown,
+    fileTabs.registerGetJSON,
+  ]);
 
   // Capture the saved-state doc whenever savedContent changes (open / save /
   // tab switch). When the editor currently HOLDS the saved state, share its
@@ -548,6 +561,11 @@ export function App() {
             fileTabs.hydrateTab(target.id, content);
             target.content = content;
             target.savedContent = content;
+            // Disk-sourced content — drop any stale JSON cache so restoreState
+            // parses the fresh body (an empty-serializing doc keeps a truthy
+            // docJSON; without this, the stale empty doc would win and the editor
+            // would load BLANK over the real content — data loss).
+            target.docJSON = undefined;
           } catch { /* file gone */ }
         }
         fileState.restoreState(target);
@@ -617,6 +635,9 @@ export function App() {
             fileTabs.hydrateTab(switchTo.id, content);
             switchTo.content = content;
             switchTo.savedContent = content;
+            // See handleSwitchTab: disk-sourced content must drop the stale JSON
+            // cache or an empty-serializing tab loads BLANK over real content.
+            switchTo.docJSON = undefined;
           } catch { /* file gone */ }
         }
         fileState.restoreState(switchTo);

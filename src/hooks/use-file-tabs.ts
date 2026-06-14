@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useMemo, useEffect } from "react";
+import type { JSONContent } from "@tiptap/core";
 
 export interface FileTab {
   id: string;
@@ -8,6 +9,14 @@ export interface FileTab {
   isDirty: boolean;
   savedContent: string;
   scrollTop: number;
+  /**
+   * Session-only cache of `content`'s body as a ProseMirror JSON doc, captured
+   * when the tab is left. Restoring via JSON skips the slow markdown re-parse on
+   * switch-back. INVARIANT: present ⇒ it is getJSON() of the doc that `content`'s
+   * body parses to. Set together with `content` (snapshot/switch) or cleared
+   * (undefined) wherever content comes from disk (hydrate/open). NOT persisted.
+   */
+  docJSON?: JSONContent;
 }
 
 interface PersistedTab {
@@ -182,6 +191,14 @@ export function useFileTabs() {
     getMarkdownRef.current = fn;
   }, []);
 
+  // Returns the editor's current doc as ProseMirror JSON — captured alongside the
+  // markdown on every snapshot so a switch-back can restore via JSON (fast) instead
+  // of re-parsing markdown (slow on large docs).
+  const getDocJSONRef = useRef<(() => JSONContent) | null>(null);
+  const registerGetJSON = useCallback((fn: () => JSONContent) => {
+    getDocJSONRef.current = fn;
+  }, []);
+
   const activeTab: FileTab = useMemo(
     () => tabs.find((t) => t.id === activeTabId) ?? tabs[0]!,
     [tabs, activeTabId],
@@ -189,6 +206,9 @@ export function useFileTabs() {
 
   const snapshotActiveTab = useCallback(() => {
     const md = getMarkdownRef.current?.() ?? "";
+    // Capture the doc as JSON alongside the markdown (cheap — ~0.2ms) so a later
+    // switch-back restores via JSON instead of re-parsing the markdown.
+    const docJSON = getDocJSONRef.current?.();
     const id = activeTabIdRef.current;
     // Update the REF synchronously, not just queued state: callers (newTab /
     // openInTab / reopenLastClosed) immediately read tabsRef.current and issue
@@ -197,7 +217,7 @@ export function useFileTabs() {
     // edits (user-hit data loss; switchTab was immune because it snapshots
     // inside its own single functional update).
     tabsRef.current = tabsRef.current.map((t) =>
-      t.id === id ? { ...t, content: md } : t,
+      t.id === id ? { ...t, content: md, docJSON } : t,
     );
     setTabs(tabsRef.current);
     return md;
@@ -207,11 +227,12 @@ export function useFileTabs() {
     (tabId: string, departingScrollTop?: number) => {
       if (tabId === activeTabIdRef.current) return null;
       const md = getMarkdownRef.current?.() ?? "";
+      const docJSON = getDocJSONRef.current?.();
       const prevId = activeTabIdRef.current;
       setTabs((prev) => {
         const updated = prev.map((t) =>
           t.id === prevId
-            ? { ...t, content: md, scrollTop: departingScrollTop ?? t.scrollTop }
+            ? { ...t, content: md, docJSON, scrollTop: departingScrollTop ?? t.scrollTop }
             : t,
         );
         // Persist after structural mutation (schedule via microtask to read final state)
@@ -258,6 +279,7 @@ export function useFileTabs() {
           isDirty: false,
           savedContent: content,
           scrollTop: 0,
+          docJSON: undefined, // content replaced from disk — no matching editor doc yet
         };
         const newTabs = currentTabs.map((t) =>
           t.id === currentTab.id ? updated : t,
@@ -460,7 +482,9 @@ export function useFileTabs() {
     (tabId: string, content: string) => {
       setTabs((prev) =>
         prev.map((t) =>
-          t.id === tabId ? { ...t, content, savedContent: content, isDirty: false } : t,
+          t.id === tabId
+            ? { ...t, content, savedContent: content, isDirty: false, docJSON: undefined }
+            : t,
         ),
       );
     },
@@ -483,6 +507,7 @@ export function useFileTabs() {
     markTabSaved,
     hydrateTab,
     registerGetMarkdown,
+    registerGetJSON,
     closedStack,
     reopenLastClosed,
   };

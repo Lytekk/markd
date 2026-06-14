@@ -1,4 +1,4 @@
-import type { Editor } from "@tiptap/core";
+import type { Editor, JSONContent } from "@tiptap/core";
 import { EditorState, type Plugin } from "@tiptap/pm/state";
 
 /**
@@ -21,8 +21,12 @@ export function isHistoryPlugin(plugin: Plugin, state: EditorState): boolean {
  * the load boundary makes undo a no-op there, and undo-after-edits stops AT the
  * loaded doc. Extension storage (search term, focus mode, markdown serializer)
  * lives outside plugin state and survives.
+ *
+ * `body` is markdown (first load / open) OR a ProseMirror JSON doc (a tab's
+ * cached doc on switch-back). JSON skips the expensive markdown re-parse — see
+ * the per-tab docJSON cache in use-file-tabs.
  */
-export function loadEditorContent(editor: Editor, body: string): void {
+export function loadEditorContent(editor: Editor, body: string | JSONContent): void {
   editor.commands.setContent(body, false);
   const { view } = editor;
   const { state } = view;
