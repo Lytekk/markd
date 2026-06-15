@@ -44,10 +44,16 @@ export function minimalMarkdownEscape(
 
 function shouldEscape(str: string, i: number): boolean {
   const ch = str[i]!;
-  // Backtick opens code anywhere; backslash starts an escape; `[` can open a
-  // link/reference. Always escape.
-  if (ch === "`" || ch === "\\" || ch === "[") return true;
-  // `]` is inert when every `[` is escaped (we just guaranteed that).
+  // Backtick opens code anywhere; backslash starts an escape. Always escape.
+  if (ch === "`" || ch === "\\") return true;
+  // `[` opens a link/reference ONLY when a later `]` is immediately followed by
+  // `(` (inline link) or `[` (reference). Bare prose brackets — `[F#282]`,
+  // `[[wiki]]`, `[1.981,4.039]` — render literally, so escaping every `[` was
+  // pure diff-churn that damaged journal/spec docs on every save. (markd
+  // round-trip damage, repaired 2026-06-15.)
+  if (ch === "[") return /\]\(|\]\[/.test(str.slice(i));
+  // `]` stays inert: any link-OPENING `[` is escaped above, so no `]` can close
+  // a link.
   if (ch === "]") return false;
   // A single `~` is plain text; only `~~` opens strikethrough.
   if (ch === "~") return str[i - 1] === "~" || str[i + 1] === "~";

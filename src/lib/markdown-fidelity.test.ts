@@ -14,10 +14,23 @@ import {
 // ---------------------------------------------------------------------------
 
 describe("minimalMarkdownEscape", () => {
-  it("always escapes backtick, backslash and opening bracket", () => {
+  it("always escapes backtick and backslash", () => {
     expect(minimalMarkdownEscape("a ` b")).toBe("a \\` b");
     expect(minimalMarkdownEscape("a \\ b")).toBe("a \\\\ b");
-    expect(minimalMarkdownEscape("a [link] b")).toBe("a \\[link] b");
+  });
+
+  it("escapes `[` ONLY when it opens a link/reference — bare prose brackets are literal", () => {
+    // The over-escape bug: every `[` was escaped, churning `[F#282]` -> `\[F#282]`
+    // in journal/spec docs on every save. Bare brackets render literally.
+    expect(minimalMarkdownEscape("ref [F#282] here")).toBe("ref [F#282] here");
+    expect(minimalMarkdownEscape("a [link] b")).toBe("a [link] b");
+    expect(minimalMarkdownEscape("wiki [[subset-admission-verify]] x")).toBe(
+      "wiki [[subset-admission-verify]] x",
+    );
+    expect(minimalMarkdownEscape("ci [1.981,4.039] lo")).toBe("ci [1.981,4.039] lo");
+    // A real link in a TEXT node MUST stay escaped or it re-parses as a link (drift):
+    expect(minimalMarkdownEscape("see [x](y) now")).toBe("see \\[x](y) now");
+    expect(minimalMarkdownEscape("ref [a][b] def")).toBe("ref \\[a][b] def");
   });
 
   it("never escapes a closing bracket (inert without an unescaped opener)", () => {
