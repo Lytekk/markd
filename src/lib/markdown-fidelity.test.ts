@@ -47,9 +47,19 @@ describe("minimalMarkdownEscape", () => {
     expect(minimalMarkdownEscape("a _ b")).toBe("a _ b");
   });
 
-  it("escapes * and _ that touch non-whitespace (could open/close emphasis)", () => {
+  it("escapes * and _ that could pair into emphasis", () => {
+    // Multiple delimiters that flank and pair → genuine emphasis risk.
     expect(minimalMarkdownEscape("glob **/*.md pattern")).toBe("glob \\*\\*/\\*.md pattern");
     expect(minimalMarkdownEscape("literal *emph* text")).toBe("literal \\*emph\\* text");
+  });
+
+  it("leaves a LONE * or _ alone — no partner means no emphasis (glob/path/math)", () => {
+    // A single delimiter with no matching partner cannot form emphasis, so
+    // escaping it is pure churn that damaged spec docs (markd round-trip, 2026-06-15).
+    expect(minimalMarkdownEscape("/tmp/r3-*.md ledger")).toBe("/tmp/r3-*.md ledger");
+    expect(minimalMarkdownEscape("entry*(1-pct) sizing")).toBe("entry*(1-pct) sizing");
+    expect(minimalMarkdownEscape("a_b lone underscore")).toBe("a_b lone underscore");
+    expect(minimalMarkdownEscape("see foo_rr_gate flag")).toBe("see foo_rr_gate flag");
   });
 
   it("keeps the intraword underscore exception", () => {
