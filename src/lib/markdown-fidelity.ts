@@ -42,24 +42,71 @@ export function minimalMarkdownEscape(
   return out;
 }
 
+// CommonMark delimiter-run flanking. ASCII punctuation only — treating Unicode
+// punctuation as non-punct merely makes flanking MORE permissive (errs toward
+// escaping), which is the safe direction; it never under-escapes.
+const ASCII_PUNCT = /[!-/:-@[-`{-~]/;
+const isWs = (c: string | null): boolean => c !== null && /\s/.test(c);
+const isPunct = (c: string | null): boolean => c !== null && ASCII_PUNCT.test(c);
+
+/** Left-flanking: not followed by ws, and (not followed by punct OR preceded by ws/punct/edge). */
+function leftFlanking(prev: string | null, next: string | null): boolean {
+  if (next === null || isWs(next)) return false;
+  return !isPunct(next) || prev === null || isWs(prev) || isPunct(prev);
+}
+/** Right-flanking: not preceded by ws, and (not preceded by punct OR followed by ws/punct/edge). */
+function rightFlanking(prev: string | null, next: string | null): boolean {
+  if (prev === null || isWs(prev)) return false;
+  return !isPunct(prev) || next === null || isWs(next) || isPunct(next);
+}
+
 function shouldEscape(str: string, i: number): boolean {
   const ch = str[i]!;
-  // Backtick opens code anywhere; backslash starts an escape; `[` can open a
-  // link/reference. Always escape.
-  if (ch === "`" || ch === "\\" || ch === "[") return true;
-  // `]` is inert when every `[` is escaped (we just guaranteed that).
+  // Backtick opens code anywhere; backslash starts an escape. Always escape.
+  if (ch === "`" || ch === "\\") return true;
+  // `[` opens a link/reference ONLY when a later `]` is immediately followed by
+  // `(` (inline link) or `[` (reference). Bare prose brackets — `[F#282]`,
+  // `[[wiki]]`, `[1.981,4.039]` — render literally, so escaping every `[` was
+  // pure diff-churn that damaged journal/spec docs on every save. (markd
+  // round-trip damage, repaired 2026-06-15.)
+  if (ch === "[") return /\]\(|\]\[/.test(str.slice(i));
+  // `]` stays inert: any link-OPENING `[` is escaped above, so no `]` can close
+  // a link.
   if (ch === "]") return false;
   // A single `~` is plain text; only `~~` opens strikethrough.
   if (ch === "~") return str[i - 1] === "~" || str[i + 1] === "~";
-  // `*` / `_`: per CommonMark a delimiter followed/preceded by whitespace on
-  // both sides can never open or close emphasis. String edges count as
-  // unknown (the adjacent inline node could supply a flank) → escape.
+  // `*` / `_`: a LITERAL delimiter in a text node only re-parses as emphasis if
+  // it can flank (CommonMark) AND a matching partner delimiter exists to pair
+  // with. A lone glob/path/math delimiter — `r3-*.md`, `entry*(1-pct)`, `a_b`
+  // — has no partner, so escaping it was pure churn that damaged spec/journal
+  // docs on every save. (markd round-trip damage, repaired 2026-06-15.) esc()
+  // only ever sees text-node content; real emphasis the user typed is stored
+  // as an Em node (its delimiters gone), so any `*`/`_` here is a literal whose
+  // escape exists solely to block accidental re-parse.
   const prev = i > 0 ? str[i - 1]! : null;
   const next = i + 1 < str.length ? str[i + 1]! : null;
-  if (ch === "_" && prev?.match(/\w/) && next?.match(/\w/)) return false; // intraword _
-  const prevWs = prev !== null && /\s/.test(prev);
-  const nextWs = next !== null && /\s/.test(next);
-  return !(prevWs && nextWs);
+  const lf = leftFlanking(prev, next);
+  const rf = rightFlanking(prev, next);
+  // `_` carries CommonMark's intraword exception (open needs a non-right-flank
+  // or leading punct; close needs a non-left-flank or trailing punct) so
+  // `snake_case` never escapes; `*` opens/closes on bare flanking.
+  const canOpen = ch === "_" ? lf && (!rf || isPunct(prev)) : lf;
+  const canClose = ch === "_" ? rf && (!lf || isPunct(next)) : rf;
+  if (!canOpen && !canClose) return false; // cannot participate in emphasis
+  // At a string edge the partner could live in the adjacent inline node — be
+  // safe and escape (cross-node emphasis must not silently form on re-parse).
+  if (prev === null || next === null) return true;
+  // Interior delimiter: escape only if a real partner of the same char exists
+  // that flanks the complementary way (i.e. a genuine emphasis pair). O(n) scan
+  // over a text node's content — bounded, never the whole document.
+  for (let j = 0; j < str.length; j++) {
+    if (j === i || str[j] !== ch) continue;
+    const p = j > 0 ? str[j - 1]! : null;
+    const n = j + 1 < str.length ? str[j + 1]! : null;
+    if (canOpen && rightFlanking(p, n)) return true;
+    if (canClose && leftFlanking(p, n)) return true;
+  }
+  return false;
 }
 
 let escapingApplied = false;

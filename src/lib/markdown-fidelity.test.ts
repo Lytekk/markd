@@ -14,10 +14,23 @@ import {
 // ---------------------------------------------------------------------------
 
 describe("minimalMarkdownEscape", () => {
-  it("always escapes backtick, backslash and opening bracket", () => {
+  it("always escapes backtick and backslash", () => {
     expect(minimalMarkdownEscape("a ` b")).toBe("a \\` b");
     expect(minimalMarkdownEscape("a \\ b")).toBe("a \\\\ b");
-    expect(minimalMarkdownEscape("a [link] b")).toBe("a \\[link] b");
+  });
+
+  it("escapes `[` ONLY when it opens a link/reference — bare prose brackets are literal", () => {
+    // The over-escape bug: every `[` was escaped, churning `[F#282]` -> `\[F#282]`
+    // in journal/spec docs on every save. Bare brackets render literally.
+    expect(minimalMarkdownEscape("ref [F#282] here")).toBe("ref [F#282] here");
+    expect(minimalMarkdownEscape("a [link] b")).toBe("a [link] b");
+    expect(minimalMarkdownEscape("wiki [[subset-admission-verify]] x")).toBe(
+      "wiki [[subset-admission-verify]] x",
+    );
+    expect(minimalMarkdownEscape("ci [1.981,4.039] lo")).toBe("ci [1.981,4.039] lo");
+    // A real link in a TEXT node MUST stay escaped or it re-parses as a link (drift):
+    expect(minimalMarkdownEscape("see [x](y) now")).toBe("see \\[x](y) now");
+    expect(minimalMarkdownEscape("ref [a][b] def")).toBe("ref \\[a][b] def");
   });
 
   it("never escapes a closing bracket (inert without an unescaped opener)", () => {
@@ -34,9 +47,19 @@ describe("minimalMarkdownEscape", () => {
     expect(minimalMarkdownEscape("a _ b")).toBe("a _ b");
   });
 
-  it("escapes * and _ that touch non-whitespace (could open/close emphasis)", () => {
+  it("escapes * and _ that could pair into emphasis", () => {
+    // Multiple delimiters that flank and pair → genuine emphasis risk.
     expect(minimalMarkdownEscape("glob **/*.md pattern")).toBe("glob \\*\\*/\\*.md pattern");
     expect(minimalMarkdownEscape("literal *emph* text")).toBe("literal \\*emph\\* text");
+  });
+
+  it("leaves a LONE * or _ alone — no partner means no emphasis (glob/path/math)", () => {
+    // A single delimiter with no matching partner cannot form emphasis, so
+    // escaping it is pure churn that damaged spec docs (markd round-trip, 2026-06-15).
+    expect(minimalMarkdownEscape("/tmp/r3-*.md ledger")).toBe("/tmp/r3-*.md ledger");
+    expect(minimalMarkdownEscape("entry*(1-pct) sizing")).toBe("entry*(1-pct) sizing");
+    expect(minimalMarkdownEscape("a_b lone underscore")).toBe("a_b lone underscore");
+    expect(minimalMarkdownEscape("see foo_rr_gate flag")).toBe("see foo_rr_gate flag");
   });
 
   it("keeps the intraword underscore exception", () => {
