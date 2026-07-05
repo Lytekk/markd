@@ -174,6 +174,17 @@ export function App() {
     },
   });
 
+  // Single serialize point for the rendered editor's full markdown (frontmatter
+  // re-joined) — the registration accessors, source-mode entry serialize, and
+  // the saved-doc baseline effect all read through this.
+  const getEditorMarkdown = useCallback(
+    () =>
+      editor
+        ? joinFrontmatter(frontmatterRef.current, editor.storage.markdown.getMarkdown() as string)
+        : "",
+    [editor],
+  );
+
   // Register editor methods with file state. Every registration below answers
   // "what is the buffer's current content?" through the source-truth accessors:
   // in source mode the truth is the SourceEditor textarea, and serializing the
@@ -181,10 +192,8 @@ export function App() {
   // tab snapshots and the closed-tab stack (see source-truth.ts).
   useEffect(() => {
     if (!editor) return;
-    const editorMarkdown = () =>
-      joinFrontmatter(frontmatterRef.current, editor.storage.markdown.getMarkdown());
     fileState.registerGetMarkdown(() =>
-      currentMarkdown(sourceModeRef.current, sourceMarkdownRef.current, editorMarkdown),
+      currentMarkdown(sourceModeRef.current, sourceMarkdownRef.current, getEditorMarkdown),
     );
     fileState.registerSetContent(
       (md: string, fileDir: string, docJSON?: JSONContent, isDirty?: boolean) => {
@@ -218,7 +227,7 @@ export function App() {
       },
     );
     fileTabs.registerGetMarkdown(() =>
-      currentMarkdown(sourceModeRef.current, sourceMarkdownRef.current, editorMarkdown),
+      currentMarkdown(sourceModeRef.current, sourceMarkdownRef.current, getEditorMarkdown),
     );
     // The doc as PM JSON (body only — frontmatter lives in frontmatterRef), cached
     // per tab on switch-away for the fast JSON restore above. No cache in source
@@ -241,6 +250,7 @@ export function App() {
     );
   }, [
     editor,
+    getEditorMarkdown,
     fileState.registerGetMarkdown,
     fileState.registerSetContent,
     fileTabs.registerGetMarkdown,
@@ -257,15 +267,12 @@ export function App() {
     if (!editor) return;
     const { frontmatter, body } = splitFrontmatter(fileState.savedContent);
     savedFrontmatterRef.current = frontmatter;
-    const currentMd = joinFrontmatter(
-      frontmatterRef.current,
-      editor.storage.markdown.getMarkdown() as string,
-    );
+    const currentMd = getEditorMarkdown();
     savedDocRef.current =
       currentMd === fileState.savedContent
         ? editor.state.doc
         : parseSavedDoc(editor, body);
-  }, [editor, fileState.savedContent]);
+  }, [editor, fileState.savedContent, getEditorMarkdown]);
 
   // Track recent files when files are opened/saved
   useEffect(() => {
@@ -414,10 +421,10 @@ export function App() {
 
     if (!sourceMode) {
       // Switching TO source: serialize current editor content
-      const md = joinFrontmatter(
-        frontmatterRef.current,
-        editor.storage.markdown.getMarkdown() as string,
-      );
+      const md = getEditorMarkdown();
+      // The find panel drives the PM doc, which is hidden and inert from here —
+      // close it (its decorations/replaces would target the invisible editor).
+      setFindReplaceOpen(false);
       setSourceMarkdown(md);
       sourceEntryMdRef.current = md;
       sourceEntryDirtyRef.current = fileStateRef.current.isDirty;
@@ -442,7 +449,7 @@ export function App() {
       }
       setSourceMode(false);
     }
-  }, [editor, sourceMode, sourceMarkdown]);
+  }, [editor, sourceMode, sourceMarkdown, getEditorMarkdown]);
 
   // Handle source markdown changes — track dirty (string compares only: the
   // buffer is raw text, so revert-to-saved/entry detection is plain equality)
@@ -835,7 +842,7 @@ export function App() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey) {
-        if (e.key === "F3" && editor) {
+        if (e.key === "F3" && editor && !sourceModeRef.current) {
           e.preventDefault();
           const { from, to } = editor.state.selection;
           let term = "";
@@ -946,12 +953,15 @@ export function App() {
             break;
           case "f":
             e.preventDefault();
+            // Source mode: find/replace drives the hidden PM doc — inert there.
+            if (sourceModeRef.current) break;
             setFindReplaceShowReplace(false);
             setFindReplaceOpen(true);
             window.dispatchEvent(new Event("markd:find-focus"));
             break;
           case "h":
             e.preventDefault();
+            if (sourceModeRef.current) break;
             setFindReplaceShowReplace(true);
             setFindReplaceOpen(true);
             break;
@@ -1006,6 +1016,8 @@ export function App() {
             break;
           case "k":
             e.preventDefault();
+            // Source mode: the link editor mutates the hidden PM doc — inert.
+            if (sourceModeRef.current) break;
             void handleEditLink();
             break;
           case "e":
@@ -1042,7 +1054,7 @@ export function App() {
 
       if (e.key === "F3") {
         e.preventDefault();
-        if (!editor) return;
+        if (!editor || sourceModeRef.current) return;
         const storage = editor.storage.searchAndReplace;
         if (!storage.searchTerm && lastSearchTermRef.current) {
           editor.commands.setSearchTerm(lastSearchTermRef.current);
@@ -1587,7 +1599,7 @@ export function App() {
               </svg>
             </button>
           )}
-          <Toolbar editor={editor} heldModifier={heldModifier} />
+          <Toolbar editor={editor} heldModifier={heldModifier} disabled={sourceMode} />
         </div>
         <div className="markd-editor-content">
           {findReplaceOpen && (
@@ -1684,9 +1696,13 @@ export function App() {
           { id: "reopen-tab", label: "Reopen Closed Tab", hint: "Ctrl+Shift+T", keywords: "restore", run: handleReopenClosedTab },
           { id: "close-tab", label: "Close Tab", hint: "Ctrl+W", run: () => handleCloseTab(fileTabs.activeTabId) },
           { id: "close-all", label: "Close All Tabs", hint: "Ctrl+Shift+W", run: handleCloseAllTabs },
-          { id: "find", label: "Find", hint: "Ctrl+F", keywords: "search", run: () => { setFindReplaceShowReplace(false); setFindReplaceOpen(true); window.dispatchEvent(new Event("markd:find-focus")); } },
-          { id: "replace", label: "Find and Replace", hint: "Ctrl+H", keywords: "search substitute", run: () => { setFindReplaceShowReplace(true); setFindReplaceOpen(true); } },
-          { id: "link", label: "Add / Edit Link", hint: "Ctrl+K", keywords: "url href hyperlink anchor", run: handleEditLink },
+          // PM-bound commands — hidden while source mode owns the buffer
+          // (they'd search/mutate the invisible rendered doc).
+          ...(sourceMode ? [] : [
+            { id: "find", label: "Find", hint: "Ctrl+F", keywords: "search", run: () => { setFindReplaceShowReplace(false); setFindReplaceOpen(true); window.dispatchEvent(new Event("markd:find-focus")); } },
+            { id: "replace", label: "Find and Replace", hint: "Ctrl+H", keywords: "search substitute", run: () => { setFindReplaceShowReplace(true); setFindReplaceOpen(true); } },
+            { id: "link", label: "Add / Edit Link", hint: "Ctrl+K", keywords: "url href hyperlink anchor", run: handleEditLink },
+          ]),
           { id: "toggle-source", label: "Toggle Source / Rendered View", hint: "Ctrl+/", keywords: "markdown raw code", run: handleToggleSource },
           { id: "toggle-theme", label: "Toggle Theme (Day / Night)", keywords: "dark light appearance", run: handleThemeToggle },
           { id: "full-width", label: "Toggle Full Width", keywords: "column wide narrow", run: toggleFullWidth },

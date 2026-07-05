@@ -465,6 +465,13 @@ body {
   white-space: nowrap;
 }
 
+/* Source mode: formatting targets the hidden PM doc — visibly inert. */
+.markd-toolbar button:disabled {
+  opacity: 0.35;
+  cursor: default;
+  pointer-events: none;
+}
+
 .markd-toolbar button:hover {
   background: var(--item-hover-bg-color);
   color: var(--text-color);
