@@ -44,3 +44,35 @@ describe("useFileState openCount (baseline-reset signal)", () => {
     expect(result.current.openCount).toBe(2);
   });
 });
+
+describe("useFileState restoreState → setContent forwarding", () => {
+  it("forwards content, docJSON and the snapshot's isDirty (source-mode entry-dirty seed)", () => {
+    const { result } = renderHook(() => useFileState());
+    const calls: Array<[string, string, unknown, boolean | undefined]> = [];
+    act(() =>
+      result.current.registerSetContent((md, fileDir, docJSON, isDirty) => {
+        calls.push([md, fileDir, docJSON, isDirty]);
+      }),
+    );
+    const docJSON = { type: "doc", content: [] };
+    act(() =>
+      result.current.restoreState({
+        fileName: "b.md",
+        filePath: "/tmp/dir/b.md",
+        content: "edited",
+        isDirty: true,
+        savedContent: "saved",
+        docJSON,
+      }),
+    );
+    expect(calls).toHaveLength(1);
+    const [md, dir, json, isDirty] = calls[0]!;
+    expect(md).toBe("edited");
+    expect(dir).toBe("/tmp/dir");
+    expect(json).toBe(docJSON);
+    // A dirty tab arriving in source mode must seed entryWasDirty=true —
+    // otherwise reverting the textarea to the arrival snapshot would falsely
+    // clear dirty on a buffer that still differs from disk (close-guard bypass).
+    expect(isDirty).toBe(true);
+  });
+});

@@ -45,6 +45,7 @@ import { normalizeUrl, wordRangeAt } from "@/lib/links";
 import { splitFrontmatter, joinFrontmatter } from "@/lib/frontmatter";
 import { computeTextStats, type TextStats } from "@/lib/text-stats";
 import { canRevertClean, docMatchesSaved, parseSavedDoc, sourceModeIsDirty } from "@/lib/dirty-check";
+import { currentMarkdown, currentDocJSON, editorBufferIsClean } from "@/lib/source-truth";
 import { resolveSaveContent } from "@/lib/markdown-fidelity";
 import { loadEditorContent } from "@/lib/editor-load";
 import { tabDisplayInfo } from "@/lib/tab-display";
@@ -109,6 +110,18 @@ export function App() {
   // Dirty flag captured when entering source mode — reverting the textarea to
   // its entry snapshot restores it (see sourceModeIsDirty).
   const sourceEntryDirtyRef = useRef(false);
+  // savedContent captured when the entry snapshot was seeded — the entry
+  // branch of sourceModeIsDirty is only valid while savedContent still equals
+  // this (a source-mode save moves disk PAST the entry snapshot; reverting to
+  // entry then differs from disk and must stay dirty).
+  const sourceEntrySavedRef = useRef("");
+  // Ref mirrors of the source-mode state for the content-truth accessors and
+  // the setContent callback registered below — those are registered once per
+  // editor, so reading the state there would capture stale closures.
+  const sourceModeRef = useRef(sourceMode);
+  sourceModeRef.current = sourceMode;
+  const sourceMarkdownRef = useRef(sourceMarkdown);
+  sourceMarkdownRef.current = sourceMarkdown;
 
   const editor = useEditor({
     extensions: [
@@ -161,37 +174,69 @@ export function App() {
     },
   });
 
-  // Register editor methods with file state
+  // Register editor methods with file state. Every registration below answers
+  // "what is the buffer's current content?" through the source-truth accessors:
+  // in source mode the truth is the SourceEditor textarea, and serializing the
+  // stale PM editor here silently dropped textarea edits from saves, autosaves,
+  // tab snapshots and the closed-tab stack (see source-truth.ts).
   useEffect(() => {
     if (!editor) return;
+    const editorMarkdown = () =>
+      joinFrontmatter(frontmatterRef.current, editor.storage.markdown.getMarkdown());
     fileState.registerGetMarkdown(() =>
-      joinFrontmatter(frontmatterRef.current, editor.storage.markdown.getMarkdown()),
+      currentMarkdown(sourceModeRef.current, sourceMarkdownRef.current, editorMarkdown),
     );
-    fileState.registerSetContent((md: string, fileDir: string, docJSON?: JSONContent) => {
-      fileDirRef.current = fileDir;
-      const { frontmatter, body } = splitFrontmatter(md);
-      frontmatterRef.current = frontmatter;
-      // loadEditorContent (NOT bare setContent): resets PM history so Ctrl+Z
-      // can never pull the previous tab's doc into this one (see editor-load.ts).
-      // Fast path: when the tab carries a cached PM JSON doc (set on switch-away),
-      // load that — it skips the slow markdown re-parse (the large-doc switch lag).
-      // First load / post-external-change has no cache → parse the markdown body.
-      loadEditorContent(editor, docJSON ?? body);
-    });
+    fileState.registerSetContent(
+      (md: string, fileDir: string, docJSON?: JSONContent, isDirty?: boolean) => {
+        fileDirRef.current = fileDir;
+        const { frontmatter, body } = splitFrontmatter(md);
+        frontmatterRef.current = frontmatter;
+        // loadEditorContent (NOT bare setContent): resets PM history so Ctrl+Z
+        // can never pull the previous tab's doc into this one (see editor-load.ts).
+        // Fast path: when the tab carries a cached PM JSON doc (set on switch-away),
+        // load that — it skips the slow markdown re-parse (the large-doc switch lag).
+        // First load / post-external-change has no cache → parse the markdown body.
+        loadEditorContent(editor, docJSON ?? body);
+        // Source mode: the textarea is the visible buffer — re-derive it VERBATIM
+        // from the arriving content. Every load path funnels here (tab switch,
+        // new tab, open, reload, reopen), so without this the textarea keeps
+        // showing the DEPARTING tab's text and a later commit would bleed it
+        // into this tab.
+        if (sourceModeRef.current) {
+          setSourceMarkdown(md);
+          sourceEntryMdRef.current = md;
+          sourceEntryDirtyRef.current = isDirty ?? false;
+          // Departing tab's savedContent (the arriving one hasn't flushed yet)
+          // — conservative on purpose: a mismatch only DISABLES the entry
+          // forgiveness branch, and exact-clean arrivals are already covered
+          // by sourceModeIsDirty's md === savedContent branch.
+          sourceEntrySavedRef.current = fileStateRef.current.savedContent;
+          window.dispatchEvent(
+            new CustomEvent("markd:stats", { detail: computeTextStats(body) }),
+          );
+        }
+      },
+    );
     fileTabs.registerGetMarkdown(() =>
-      joinFrontmatter(frontmatterRef.current, editor.storage.markdown.getMarkdown()),
+      currentMarkdown(sourceModeRef.current, sourceMarkdownRef.current, editorMarkdown),
     );
     // The doc as PM JSON (body only — frontmatter lives in frontmatterRef), cached
-    // per tab on switch-away for the fast JSON restore above.
-    fileTabs.registerGetJSON(() => editor.getJSON());
+    // per tab on switch-away for the fast JSON restore above. No cache in source
+    // mode — the editor doc is stale relative to the textarea.
+    fileTabs.registerGetJSON(() =>
+      currentDocJSON(sourceModeRef.current, () => editor.getJSON()),
+    );
     // Authoritative "buffer == saved" check (same doc.eq predicate as the
     // revert-check) so leaving a clean tab can skip the markdown serialize.
+    // Never clean in source mode — the predicate can't see the textarea.
     fileTabs.registerIsClean(() =>
-      docMatchesSaved(
-        editor.state.doc,
-        savedDocRef.current,
-        frontmatterRef.current,
-        savedFrontmatterRef.current,
+      editorBufferIsClean(sourceModeRef.current, () =>
+        docMatchesSaved(
+          editor.state.doc,
+          savedDocRef.current,
+          frontmatterRef.current,
+          savedFrontmatterRef.current,
+        ),
       ),
     );
   }, [
@@ -376,6 +421,7 @@ export function App() {
       setSourceMarkdown(md);
       sourceEntryMdRef.current = md;
       sourceEntryDirtyRef.current = fileStateRef.current.isDirty;
+      sourceEntrySavedRef.current = fileStateRef.current.savedContent;
       // Footer counts switch to the raw-markdown basis the textarea shows.
       window.dispatchEvent(
         new CustomEvent("markd:stats", {
@@ -411,6 +457,7 @@ export function App() {
           fs.savedContent,
           sourceEntryMdRef.current,
           sourceEntryDirtyRef.current,
+          sourceEntrySavedRef.current,
         ) ||
         !canRevertClean(fs.filePath, fs.savedContent)
       ) {
@@ -557,15 +604,10 @@ export function App() {
       // against the arriving tab's state (it would be a no-op today, but
       // only incidentally — see dirty-check.ts).
       if (revertCheckTimerRef.current) clearTimeout(revertCheckTimerRef.current);
-      // In source mode the live edits live in the SourceEditor textarea
-      // (`sourceMarkdown`), not the ProseMirror editor — commit them back first so
-      // switchTab's getMarkdown snapshot captures them instead of stale editor
-      // content (otherwise the departing tab silently loses the textarea edits).
-      if (sourceMode && editor) {
-        const { frontmatter, body } = splitFrontmatter(sourceMarkdown);
-        frontmatterRef.current = frontmatter;
-        editor.commands.setContent(body, false);
-      }
+      // Source-mode textarea edits need no pre-commit here: the registered
+      // content-truth accessors (source-truth.ts) make switchTab's snapshot
+      // read the textarea verbatim, and the registered setContent callback
+      // re-derives the textarea for the arriving tab.
       const scrollEl = document.querySelector(".markd-editor-scroll") as HTMLElement | null;
       const departingScroll = scrollEl?.scrollTop ?? 0;
       const target = fileTabs.switchTab(tabId, departingScroll);
@@ -585,24 +627,13 @@ export function App() {
           } catch { /* file gone */ }
         }
         fileState.restoreState(target);
-        // restoreState synchronously repopulates the editor + frontmatterRef with
-        // the arriving tab; in source mode, re-derive the textarea from it so the
-        // SourceEditor shows the NEW tab's source, not the departing tab's.
-        if (sourceMode && editor) {
-          const md = joinFrontmatter(
-            frontmatterRef.current,
-            editor.storage.markdown.getMarkdown() as string,
-          );
-          setSourceMarkdown(md);
-          sourceEntryMdRef.current = md;
-        }
         requestAnimationFrame(() => {
           const el = document.querySelector(".markd-editor-scroll") as HTMLElement | null;
           if (el) el.scrollTop = target.scrollTop;
         });
       }
     },
-    [sourceMode, sourceMarkdown, editor, fileTabs.switchTab, fileTabs.hydrateTab, fileState.restoreState],
+    [fileTabs.switchTab, fileTabs.hydrateTab, fileState.restoreState],
   );
 
   const handleCloseTab = useCallback(

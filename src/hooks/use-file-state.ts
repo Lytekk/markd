@@ -50,7 +50,7 @@ export function useFileState() {
 
   const getMarkdownRef = useRef<(() => string) | null>(null);
   const setContentRef = useRef<
-    ((md: string, fileDir: string, docJSON?: JSONContent) => void) | null
+    ((md: string, fileDir: string, docJSON?: JSONContent, isDirty?: boolean) => void) | null
   >(null);
 
   const registerGetMarkdown = useCallback((fn: () => string) => {
@@ -58,7 +58,7 @@ export function useFileState() {
   }, []);
 
   const registerSetContent = useCallback(
-    (fn: (md: string, fileDir: string, docJSON?: JSONContent) => void) => {
+    (fn: (md: string, fileDir: string, docJSON?: JSONContent, isDirty?: boolean) => void) => {
       setContentRef.current = fn;
     },
     [],
@@ -211,6 +211,10 @@ export function useFileState() {
         snapshot.content,
         snapshot.filePath ? dirname(snapshot.filePath) : "",
         snapshot.docJSON,
+        // The arriving buffer's dirty flag — the setContent callback needs it
+        // to seed source mode's entry-dirty baseline (a dirty tab arriving in
+        // source mode must not inherit the previous tab's entry flag).
+        snapshot.isDirty,
       );
       setState((prev) => ({
         ...prev,

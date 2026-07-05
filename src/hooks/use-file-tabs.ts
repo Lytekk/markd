@@ -193,9 +193,10 @@ export function useFileTabs() {
 
   // Returns the editor's current doc as ProseMirror JSON — captured alongside the
   // markdown on every snapshot so a switch-back can restore via JSON (fast) instead
-  // of re-parsing markdown (slow on large docs).
-  const getDocJSONRef = useRef<(() => JSONContent) | null>(null);
-  const registerGetJSON = useCallback((fn: () => JSONContent) => {
+  // of re-parsing markdown (slow on large docs). May return undefined when no
+  // valid cache exists (source mode — the editor doc is stale vs the textarea).
+  const getDocJSONRef = useRef<(() => JSONContent | undefined) | null>(null);
+  const registerGetJSON = useCallback((fn: () => JSONContent | undefined) => {
     getDocJSONRef.current = fn;
   }, []);
 

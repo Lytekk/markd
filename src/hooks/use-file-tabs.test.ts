@@ -286,3 +286,37 @@ describe("useFileTabs — skip markdown serialize when the buffer is clean", () 
     expect(result.current.tabs.find((t) => t.id === bId)!.content).toBe("SERIALIZED");
   });
 });
+
+describe("useFileTabs — source-mode snapshots (content-truth accessors)", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("a getJSON returning undefined (source mode) overwrites a prior docJSON cache", () => {
+    const { result } = renderHook(() => useFileTabs());
+    act(() => { result.current.openInTab("a.md", "/tmp/a.md", "AAA"); });
+    act(() => { result.current.openInTab("b.md", "/tmp/b.md", "BBB"); });
+    // Rendered mode first: leaving b caches its PM JSON.
+    act(() => {
+      result.current.registerGetMarkdown(() => "RENDERED");
+      result.current.registerGetJSON(() => ({ type: "doc", content: [] }));
+      result.current.registerIsClean(() => false);
+    });
+    const aId = result.current.tabs.find((t) => t.filePath === "/tmp/a.md")!.id;
+    const bId = result.current.tabs.find((t) => t.filePath === "/tmp/b.md")!.id;
+    act(() => { result.current.switchTab(aId); }); // leaving b caches its JSON
+    expect(result.current.tabs.find((t) => t.id === bId)!.docJSON).toEqual({ type: "doc", content: [] });
+    // Source mode: App registers accessors that answer from the textarea and
+    // report NO cache (source-truth.ts). Leaving b again must DROP the stale
+    // cache — otherwise switch-back would restore the stale JSON over the
+    // verbatim textarea content (data loss via the fast path).
+    act(() => {
+      result.current.registerGetMarkdown(() => "TEXTAREA VERBATIM");
+      result.current.registerGetJSON(() => undefined);
+      result.current.registerIsClean(() => false);
+    });
+    act(() => { result.current.switchTab(bId); });
+    act(() => { result.current.switchTab(aId); }); // leave b in "source mode"
+    const b = result.current.tabs.find((t) => t.id === bId)!;
+    expect(b.content).toBe("TEXTAREA VERBATIM");
+    expect(b.docJSON).toBeUndefined();
+  });
+});
