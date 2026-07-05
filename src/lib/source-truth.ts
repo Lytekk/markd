@@ -39,6 +39,20 @@ export function currentDocJSON(
   return sourceMode ? undefined : editorJSON();
 }
 
+/**
+ * Normalize text for the textarea VIEW, matching the DOM's own value
+ * sanitization (CRLF and lone CR → LF; verified live 2026-07-05: setting
+ * 'a\r\nb' reads back 'a\nb'). Seeding the view un-normalized makes every
+ * state-computed offset (find ranges, outline jumps, backdrop segments)
+ * drift +1 per preceding line vs the textarea's real coordinates. The RAW
+ * bytes stay in savedContent — clean saves write it verbatim and dirty saves
+ * re-conform line endings (resolveSaveContent), so fidelity is unaffected;
+ * sourceModeIsDirty's entry branch absorbs the normalization delta.
+ */
+export function textareaText(md: string): string {
+  return md.replace(/\r\n?/g, "\n");
+}
+
 /** Clean-skip gate: never clean in source mode; the editor predicate can't see the textarea. */
 export function editorBufferIsClean(
   sourceMode: boolean,

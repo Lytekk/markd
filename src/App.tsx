@@ -45,7 +45,7 @@ import { normalizeUrl, wordRangeAt } from "@/lib/links";
 import { splitFrontmatter, joinFrontmatter } from "@/lib/frontmatter";
 import { computeTextStats, type TextStats } from "@/lib/text-stats";
 import { canRevertClean, docMatchesSaved, parseSavedDoc, sourceModeIsDirty } from "@/lib/dirty-check";
-import { currentMarkdown, currentDocJSON, editorBufferIsClean } from "@/lib/source-truth";
+import { currentMarkdown, currentDocJSON, editorBufferIsClean, textareaText } from "@/lib/source-truth";
 import { renderSourceHtml } from "@/lib/source-html";
 import { editorSearchBackend, textareaSearchBackend, type SearchBackend } from "@/lib/search-backend";
 import { wordAt, type TextRange } from "@/lib/text-search";
@@ -217,8 +217,11 @@ export function App() {
         // showing the DEPARTING tab's text and a later commit would bleed it
         // into this tab.
         if (sourceModeRef.current) {
-          setSourceMarkdown(md);
-          sourceEntryMdRef.current = md;
+          // textareaText: the DOM normalizes CRLF on write, so the view state
+          // must match or every state-computed offset drifts (source-truth.ts).
+          const viewMd = textareaText(md);
+          setSourceMarkdown(viewMd);
+          sourceEntryMdRef.current = viewMd;
           sourceEntryDirtyRef.current = isDirty ?? false;
           // Departing tab's savedContent (the arriving one hasn't flushed yet)
           // — conservative on purpose: a mismatch only DISABLES the entry
@@ -226,7 +229,9 @@ export function App() {
           // by sourceModeIsDirty's md === savedContent branch.
           sourceEntrySavedRef.current = fileStateRef.current.savedContent;
           window.dispatchEvent(
-            new CustomEvent("markd:stats", { detail: computeTextStats(body) }),
+            new CustomEvent("markd:stats", {
+              detail: computeTextStats(splitFrontmatter(viewMd).body),
+            }),
           );
         }
       },
