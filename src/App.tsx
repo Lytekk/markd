@@ -46,6 +46,11 @@ import { splitFrontmatter, joinFrontmatter } from "@/lib/frontmatter";
 import { computeTextStats, type TextStats } from "@/lib/text-stats";
 import { canRevertClean, docMatchesSaved, parseSavedDoc, sourceModeIsDirty } from "@/lib/dirty-check";
 import { currentMarkdown, currentDocJSON, editorBufferIsClean } from "@/lib/source-truth";
+import { renderSourceHtml } from "@/lib/source-html";
+import { editorSearchBackend, textareaSearchBackend, type SearchBackend } from "@/lib/search-backend";
+import { wordAt, type TextRange } from "@/lib/text-search";
+import { extractSourceHeadings } from "@/lib/source-outline";
+import { revealRange } from "@/lib/textarea-metrics";
 import { resolveSaveContent } from "@/lib/markdown-fidelity";
 import { loadEditorContent } from "@/lib/editor-load";
 import { tabDisplayInfo } from "@/lib/tab-display";
@@ -422,9 +427,8 @@ export function App() {
     if (!sourceMode) {
       // Switching TO source: serialize current editor content
       const md = getEditorMarkdown();
-      // The find panel drives the PM doc, which is hidden and inert from here —
-      // close it (its decorations/replaces would target the invisible editor).
-      setFindReplaceOpen(false);
+      // The find panel survives the toggle: it is keyed by (tab, mode), so it
+      // remounts onto the matching search backend with its state recalled.
       setSourceMarkdown(md);
       sourceEntryMdRef.current = md;
       sourceEntryDirtyRef.current = fileStateRef.current.isDirty;
@@ -511,6 +515,60 @@ export function App() {
     [sourceMode, sourceMarkdown, editor, fileState.markDirty],
   );
 
+  // Ref mirror so the search backend (created once per mode/tab) routes
+  // replaces through the live dirty/stats handler without stale closures.
+  const handleSourceMarkdownChangeRef = useRef(handleSourceMarkdownChange);
+  handleSourceMarkdownChangeRef.current = handleSourceMarkdownChange;
+
+  // Match ranges for the SourceEditor highlight backdrop (source mode only).
+  const [sourceSearchView, setSourceSearchView] = useState<{
+    ranges: TextRange[];
+    current: number;
+  } | null>(null);
+  useEffect(() => {
+    if (!sourceMode) setSourceSearchView(null);
+  }, [sourceMode]);
+
+  // One search backend per (mode, tab) — the find panel is keyed the same
+  // way, so its unmount clear() always targets the backend that owned the
+  // highlights. activeTabId is an intentional cache-bust: a fresh tab starts
+  // with a fresh search, matching the per-tab panel state recall.
+  const searchBackend = useMemo<SearchBackend | null>(() => {
+    if (sourceMode) {
+      return textareaSearchBackend({
+        getText: () => sourceMarkdownRef.current,
+        setText: (t) => handleSourceMarkdownChangeRef.current(t),
+        getTextarea: () =>
+          document.querySelector<HTMLTextAreaElement>(".markd-source-textarea"),
+        onResults: (ranges, current) => setSourceSearchView({ ranges, current }),
+      });
+    }
+    return editor ? editorSearchBackend(editor) : null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- activeTabId busts the cache on tab switch
+  }, [sourceMode, editor, fileTabs.activeTabId]);
+  const searchBackendRef = useRef(searchBackend);
+  searchBackendRef.current = searchBackend;
+
+  // Source-mode outline: parse headings live from the textarea buffer (the PM
+  // doc is stale there). Offsets shift by the frontmatter prefix so a click
+  // lands on the heading line in the FULL textarea text.
+  const sourceHeadings = useMemo(() => {
+    if (!sourceMode) return null;
+    const { body } = splitFrontmatter(sourceMarkdown);
+    const prefixLen = sourceMarkdown.length - body.length;
+    const heads = extractSourceHeadings(body);
+    return prefixLen === 0
+      ? heads
+      : heads.map((h) => ({ ...h, pos: h.pos + prefixLen }));
+  }, [sourceMode, sourceMarkdown]);
+
+  const handleSourceHeadingClick = useCallback((pos: number) => {
+    const ta = document.querySelector<HTMLTextAreaElement>(".markd-source-textarea");
+    if (!ta) return;
+    ta.focus();
+    revealRange(ta, { start: pos, end: pos });
+  }, []);
+
   // Window title
   useEffect(() => {
     document.title = `${fileState.fileName}${fileState.isDirty ? " \u2022" : ""} \u2014 Markd`;
@@ -522,7 +580,11 @@ export function App() {
   // (30s) covers named files; untitled docs rely on the user saving manually.
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (fileState.isDirty) e.preventDefault();
+      // Any tab's unsaved edits count — a background tab's dirty buffer is as
+      // lost on unload as the active one's (tabs read via ref at event time).
+      if (fileState.isDirty || fileTabsRef.current.tabs.some((t) => t.isDirty)) {
+        e.preventDefault();
+      }
     };
     window.addEventListener("beforeunload", handleBeforeUnload);
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
@@ -536,8 +598,15 @@ export function App() {
 
   const handleExportHtml = useCallback(async () => {
     if (!editor) return;
-    await exportAsHtml(editor.getHTML(), fileState.fileName);
-  }, [editor, fileState.fileName]);
+    // Source mode: export what the textarea holds — the editor doc is stale
+    // (entry-time). renderSourceHtml uses the same sanitized PM pipeline as
+    // getHTML; on a parse failure it returns null and we fall back to the
+    // editor rather than exporting nothing.
+    const html = sourceMode
+      ? renderSourceHtml(editor, splitFrontmatter(sourceMarkdown).body) ?? editor.getHTML()
+      : editor.getHTML();
+    await exportAsHtml(html, fileState.fileName);
+  }, [editor, sourceMode, sourceMarkdown, fileState.fileName]);
 
   // Sync tab state when fileState changes (after open/save/new operations).
   // Uses refs so the effect always reads the current activeTabId.
@@ -842,27 +911,31 @@ export function App() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey) {
-        if (e.key === "F3" && editor && !sourceModeRef.current) {
+        if (e.key === "F3") {
           e.preventDefault();
-          const { from, to } = editor.state.selection;
+          // Ctrl+F3: search the selection / word under the caret — from the
+          // textarea in source mode, from the PM doc in rendered mode.
           let term = "";
-          if (from !== to) {
-            term = editor.state.doc.textBetween(from, to);
-          } else {
-            const $pos = editor.state.doc.resolve(from);
-            const text = $pos.parent.textContent;
-            const offset = $pos.parentOffset;
-            let start = offset;
-            let end = offset;
-            while (start > 0 && /\w/.test(text[start - 1]!)) start--;
-            while (end < text.length && /\w/.test(text[end]!)) end++;
-            if (start !== end) {
-              term = text.slice(start, end);
+          if (sourceModeRef.current) {
+            const ta = document.querySelector<HTMLTextAreaElement>(".markd-source-textarea");
+            if (ta) {
+              term =
+                ta.selectionStart !== ta.selectionEnd
+                  ? ta.value.slice(ta.selectionStart, ta.selectionEnd)
+                  : wordAt(ta.value, ta.selectionStart);
+            }
+          } else if (editor) {
+            const { from, to } = editor.state.selection;
+            if (from !== to) {
+              term = editor.state.doc.textBetween(from, to);
+            } else {
+              const $pos = editor.state.doc.resolve(from);
+              term = wordAt($pos.parent.textContent, $pos.parentOffset);
             }
           }
           if (term) {
             // Seed the per-tab find state so the panel mounts prefilled with
-            // this term; the direct command covers the already-open case.
+            // this term; the find-seed event covers the already-open case.
             const prev = findStateMapRef.current.get(fileTabs.activeTabId);
             findStateMapRef.current.set(fileTabs.activeTabId, {
               searchTerm: term,
@@ -871,7 +944,7 @@ export function App() {
               useRegex: prev?.useRegex ?? false,
               wholeWord: prev?.wholeWord ?? false,
             });
-            editor.commands.setSearchTerm(term);
+            window.dispatchEvent(new CustomEvent("markd:find-seed", { detail: term }));
             setFindReplaceOpen(true);
             setFindReplaceShowReplace(false);
             window.dispatchEvent(new Event("markd:find-focus"));
@@ -953,15 +1026,12 @@ export function App() {
             break;
           case "f":
             e.preventDefault();
-            // Source mode: find/replace drives the hidden PM doc — inert there.
-            if (sourceModeRef.current) break;
             setFindReplaceShowReplace(false);
             setFindReplaceOpen(true);
             window.dispatchEvent(new Event("markd:find-focus"));
             break;
           case "h":
             e.preventDefault();
-            if (sourceModeRef.current) break;
             setFindReplaceShowReplace(true);
             setFindReplaceOpen(true);
             break;
@@ -1054,16 +1124,13 @@ export function App() {
 
       if (e.key === "F3") {
         e.preventDefault();
-        if (!editor || sourceModeRef.current) return;
-        const storage = editor.storage.searchAndReplace;
-        if (!storage.searchTerm && lastSearchTermRef.current) {
-          editor.commands.setSearchTerm(lastSearchTermRef.current);
-        }
-        if (e.shiftKey) {
-          editor.commands.findPrevious();
-        } else {
-          editor.commands.findNext();
-        }
+        // Backend-routed: works in both modes, panel open or closed (the
+        // backend retains the term; lastSearchTermRef covers a fresh backend).
+        const backend = searchBackendRef.current;
+        if (!backend) return;
+        const fallback = lastSearchTermRef.current || undefined;
+        if (e.shiftKey) backend.findPrevious(fallback);
+        else backend.findNext(fallback);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
@@ -1531,6 +1598,8 @@ export function App() {
         activeFilePath={fileState.filePath}
         collapsed={sidebarCollapsed}
         editor={editor}
+        sourceHeadings={sourceHeadings}
+        onSourceHeadingClick={handleSourceHeadingClick}
         recentFiles={recentFiles}
         activeTab={sidebarTab}
         onTabChange={setSidebarTab}
@@ -1604,8 +1673,8 @@ export function App() {
         <div className="markd-editor-content">
           {findReplaceOpen && (
             <FindReplace
-              key={fileTabs.activeTabId}
-              editor={editor}
+              key={`${fileTabs.activeTabId}:${sourceMode ? "src" : "wys"}`}
+              backend={searchBackend}
               showReplace={findReplaceShowReplace}
               onClose={handleCloseFindReplace}
               initialState={findStateMapRef.current.get(fileTabs.activeTabId)}
@@ -1619,6 +1688,8 @@ export function App() {
               markdown={sourceMarkdown}
               onMarkdownChange={handleSourceMarkdownChange}
               lineNumbers={lineNumbers}
+              searchRanges={sourceSearchView?.ranges ?? null}
+              searchCurrent={sourceSearchView?.current ?? -1}
             />
           ) : (
             <Editor
@@ -1696,11 +1767,11 @@ export function App() {
           { id: "reopen-tab", label: "Reopen Closed Tab", hint: "Ctrl+Shift+T", keywords: "restore", run: handleReopenClosedTab },
           { id: "close-tab", label: "Close Tab", hint: "Ctrl+W", run: () => handleCloseTab(fileTabs.activeTabId) },
           { id: "close-all", label: "Close All Tabs", hint: "Ctrl+Shift+W", run: handleCloseAllTabs },
-          // PM-bound commands — hidden while source mode owns the buffer
-          // (they'd search/mutate the invisible rendered doc).
+          { id: "find", label: "Find", hint: "Ctrl+F", keywords: "search", run: () => { setFindReplaceShowReplace(false); setFindReplaceOpen(true); window.dispatchEvent(new Event("markd:find-focus")); } },
+          { id: "replace", label: "Find and Replace", hint: "Ctrl+H", keywords: "search substitute", run: () => { setFindReplaceShowReplace(true); setFindReplaceOpen(true); } },
+          // Link editing stays PM-bound — hidden while source mode owns the
+          // buffer (it would mutate the invisible rendered doc).
           ...(sourceMode ? [] : [
-            { id: "find", label: "Find", hint: "Ctrl+F", keywords: "search", run: () => { setFindReplaceShowReplace(false); setFindReplaceOpen(true); window.dispatchEvent(new Event("markd:find-focus")); } },
-            { id: "replace", label: "Find and Replace", hint: "Ctrl+H", keywords: "search substitute", run: () => { setFindReplaceShowReplace(true); setFindReplaceOpen(true); } },
             { id: "link", label: "Add / Edit Link", hint: "Ctrl+K", keywords: "url href hyperlink anchor", run: handleEditLink },
           ]),
           { id: "toggle-source", label: "Toggle Source / Rendered View", hint: "Ctrl+/", keywords: "markdown raw code", run: handleToggleSource },

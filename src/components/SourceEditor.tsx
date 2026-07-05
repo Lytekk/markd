@@ -1,15 +1,50 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback, type ReactNode } from "react";
+import type { TextRange } from "@/lib/text-search";
 
 interface SourceEditorProps {
   markdown: string;
   onMarkdownChange: (md: string) => void;
   lineNumbers: boolean;
+  /** Find/replace match ranges — rendered by the highlight backdrop. */
+  searchRanges?: TextRange[] | null;
+  searchCurrent?: number;
 }
 
-export function SourceEditor({ markdown, onMarkdownChange, lineNumbers }: SourceEditorProps) {
+// The backdrop is a text twin painted behind the transparent textarea: same
+// metrics, transparent glyphs, only the <mark> backgrounds visible. A plain
+// textarea cannot style sub-ranges, and its selection is invisible while the
+// find panel keeps focus — this is the standard highlight-backdrop technique.
+function renderHighlightSegments(
+  text: string,
+  ranges: TextRange[],
+  current: number,
+): ReactNode[] {
+  const out: ReactNode[] = [];
+  let cursor = 0;
+  ranges.forEach((r, i) => {
+    if (r.start > cursor) out.push(text.slice(cursor, r.start));
+    out.push(
+      <mark key={i} className={i === current ? "markd-search-current" : undefined}>
+        {text.slice(r.start, r.end)}
+      </mark>,
+    );
+    cursor = r.end;
+  });
+  out.push(text.slice(cursor));
+  return out;
+}
+
+export function SourceEditor({
+  markdown,
+  onMarkdownChange,
+  lineNumbers,
+  searchRanges,
+  searchCurrent,
+}: SourceEditorProps) {
   const [value, setValue] = useState(markdown);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
+  const backdropRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setValue(markdown);
@@ -46,13 +81,48 @@ export function SourceEditor({ markdown, onMarkdownChange, lineNumbers }: Source
     [value, onMarkdownChange],
   );
 
-  const handleScroll = useCallback(() => {
-    if (gutterRef.current && textareaRef.current) {
-      gutterRef.current.scrollTop = textareaRef.current.scrollTop;
-    }
+  // Keep the backdrop's box and scroll in lockstep with the textarea. The
+  // right inset mirrors the textarea's SCROLLBAR width (offsetWidth −
+  // clientWidth): the scrollbar narrows the textarea's content box, and
+  // without the inset the two wrap at different widths — highlights drift
+  // vertically on any scrollable soft-wrapped doc (adversarial-review catch).
+  const syncBackdrop = useCallback(() => {
+    const ta = textareaRef.current;
+    const bd = backdropRef.current;
+    if (!ta || !bd) return;
+    bd.style.right = `${ta.offsetWidth - ta.clientWidth}px`;
+    bd.scrollTop = ta.scrollTop;
+    bd.scrollLeft = ta.scrollLeft;
   }, []);
 
+  const handleScroll = useCallback(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    if (gutterRef.current) gutterRef.current.scrollTop = ta.scrollTop;
+    syncBackdrop();
+  }, [syncBackdrop]);
+
+  // A freshly-mounted / re-rendered backdrop starts at scroll 0 while the
+  // textarea may be scrolled — resnap whenever its content changes (this also
+  // re-measures the scrollbar as content grows/shrinks past the overflow
+  // threshold).
+  useEffect(() => {
+    syncBackdrop();
+  }, [searchRanges, searchCurrent, value, syncBackdrop]);
+
   const lineCount = value.split("\n").length;
+
+  // Memoized so unrelated re-renders (line-number toggle, focus churn) don't
+  // rebuild the whole-document segment list; content/match changes still do —
+  // unavoidable, the text changed. Known bound (review-noted): with the panel
+  // open on very large docs this is O(doc length) per keystroke.
+  const highlightSegments = useMemo(
+    () =>
+      searchRanges && searchRanges.length > 0
+        ? renderHighlightSegments(value, searchRanges, searchCurrent ?? -1)
+        : null,
+    [value, searchRanges, searchCurrent],
+  );
 
   return (
     <div className={`markd-source-editor ${lineNumbers ? "with-line-numbers" : ""}`}>
@@ -63,6 +133,12 @@ export function SourceEditor({ markdown, onMarkdownChange, lineNumbers }: Source
               {i + 1}
             </div>
           ))}
+        </div>
+      )}
+      {highlightSegments && (
+        <div className="markd-source-backdrop" ref={backdropRef} aria-hidden="true">
+          {highlightSegments}
+          {"\n"}
         </div>
       )}
       <textarea
