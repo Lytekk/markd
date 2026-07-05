@@ -1659,11 +1659,6 @@ body {
   pointer-events: none;
 }
 
-.markd-source-editor.with-line-numbers .markd-source-backdrop {
-  white-space: pre;
-  word-wrap: normal;
-}
-
 [data-full-width="true"] .markd-source-backdrop {
   padding-left: 60px;
   padding-right: 60px;
@@ -1748,15 +1743,11 @@ body {
   word-wrap: break-word;
 }
 
-/* With line numbers ON, turn soft-wrap OFF so each logical line is exactly one
-   visual row — the gutter renders one number per logical line, so a wrapped line
-   (N rows, 1 number) would otherwise drift the numbers out of alignment. Long
-   lines scroll horizontally instead (code-editor convention). */
-.markd-source-editor.with-line-numbers .markd-source-textarea {
-  white-space: pre;
-  word-wrap: normal;
-  overflow-x: auto;
-}
+/* Line numbers coexist with soft-wrap (user-reported 2026-07-05: source must
+   wrap like the rendered view): each gutter row's height is MEASURED from the
+   wrapped text (SourceEditor measureLineTops), so a line spanning N visual
+   rows gets one number and an N-row-tall gutter cell. The fixed height on
+   .markd-line-number below is only the pre-measure fallback. */
 
 /* Source view honors Full Width like #write: collapse the centering padding to
    a fixed gutter so the column expands to fill the editor area. */
