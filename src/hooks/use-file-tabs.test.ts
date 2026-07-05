@@ -320,3 +320,35 @@ describe("useFileTabs — source-mode snapshots (content-truth accessors)", () =
     expect(b.docJSON).toBeUndefined();
   });
 });
+
+describe("useFileTabs — clean-skip snapshots store savedContent, not stale open-time content", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("switchTab clean path refreshes content to savedContent (post-save leave)", () => {
+    const { result } = renderHook(() => useFileTabs());
+    act(() => { result.current.openInTab("a.md", "/tmp/a.md", "AAA"); });
+    act(() => { result.current.openInTab("b.md", "/tmp/b.md", "BBB v1"); });
+    const aId = result.current.tabs.find((t) => t.filePath === "/tmp/a.md")!.id;
+    const bId = result.current.tabs.find((t) => t.filePath === "/tmp/b.md")!.id;
+    // User edits b, saves (savedContent advances; content still holds open-time
+    // text), buffer now equals saved → clean. Leaving must NOT snapshot the
+    // stale open-time content over the newer saved state.
+    act(() => { result.current.markTabSaved(bId, { savedContent: "BBB v2" }); });
+    act(() => {
+      result.current.registerGetMarkdown(() => { throw new Error("clean path must not serialize"); });
+      result.current.registerIsClean(() => true);
+    });
+    act(() => { result.current.switchTab(aId); });
+    expect(result.current.tabs.find((t) => t.id === bId)!.content).toBe("BBB v2");
+  });
+
+  it("snapshotActiveTab clean path (via newTab) refreshes content to savedContent", () => {
+    const { result } = renderHook(() => useFileTabs());
+    act(() => { result.current.openInTab("a.md", "/tmp/a.md", "AAA v1"); });
+    const aId = result.current.tabs.find((t) => t.filePath === "/tmp/a.md")!.id;
+    act(() => { result.current.markTabSaved(aId, { savedContent: "AAA v2" }); });
+    act(() => { result.current.registerIsClean(() => true); });
+    act(() => { result.current.newTab(); });
+    expect(result.current.tabs.find((t) => t.id === aId)!.content).toBe("AAA v2");
+  });
+});
