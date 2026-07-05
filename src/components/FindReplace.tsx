@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import type { Editor } from "@tiptap/react";
-import type { SearchState } from "@/lib/search-and-replace";
+import type { SearchBackend } from "@/lib/search-backend";
 
 /**
  * The find/replace panel's full UI state. App.tsx keeps one per tab
@@ -16,7 +15,9 @@ export interface FindUiState {
 }
 
 interface FindReplaceProps {
-  editor: Editor | null;
+  /** Where matches live: the PM editor (rendered) or the textarea (source).
+   * The panel is mode-agnostic — see search-backend.ts. */
+  backend: SearchBackend | null;
   showReplace: boolean;
   onClose: () => void;
   initialState?: FindUiState;
@@ -24,7 +25,7 @@ interface FindReplaceProps {
 }
 
 export function FindReplace({
-  editor,
+  backend,
   showReplace,
   onClose,
   initialState,
@@ -66,70 +67,73 @@ export function FindReplace({
     return () => window.removeEventListener("markd:find-focus", handleFindFocus);
   }, []);
 
-  // Update search on term change and notify App for F3 reuse
+  // Ctrl+F3 with the panel already open pushes the word under the caret in —
+  // the keyed remount path only reads initialState on mount.
   useEffect(() => {
-    if (!editor) return;
-    editor.commands.setSearchTerm(searchTerm);
+    const handleSeed = (e: Event) => {
+      const term = (e as CustomEvent<string>).detail;
+      if (typeof term === "string" && term) setSearchTerm(term);
+    };
+    window.addEventListener("markd:find-seed", handleSeed);
+    return () => window.removeEventListener("markd:find-seed", handleSeed);
+  }, []);
+
+  // One effect drives the backend for term + options (it diffs internally,
+  // so the cost matches the old per-option command effects). The search-term
+  // event keeps App's lastSearchTermRef fresh for F3 reuse.
+  useEffect(() => {
+    if (!backend) return;
+    backend.apply({ searchTerm, caseSensitive, useRegex, wholeWord });
+    // Meta transactions never re-render this panel — bump so the count reads
+    // the post-apply state now…
+    setSearchVersion((v) => v + 1);
+    // …and refresh once next frame: a mount-time apply can land inside the
+    // editor-view attach window (verified live — decorations only stick after
+    // the next tick when the panel mounts in the same commit as the editor).
+    const raf = requestAnimationFrame(() => {
+      backend.refresh();
+      setSearchVersion((v) => v + 1);
+    });
     if (searchTerm) {
       window.dispatchEvent(new CustomEvent("markd:search-term", { detail: searchTerm }));
     }
-  }, [editor, searchTerm]);
+    return () => cancelAnimationFrame(raf);
+  }, [backend, searchTerm, caseSensitive, useRegex, wholeWord]);
 
-  useEffect(() => {
-    if (!editor) return;
-    editor.commands.setCaseSensitive(caseSensitive);
-  }, [editor, caseSensitive]);
-
-  useEffect(() => {
-    if (!editor) return;
-    editor.commands.setUseRegex(useRegex);
-  }, [editor, useRegex]);
-
-  useEffect(() => {
-    if (!editor) return;
-    editor.commands.setWholeWord(wholeWord);
-  }, [editor, wholeWord]);
-
-  // Re-render when document changes so match count stays fresh
+  // Re-render when the buffer changes under us so the match count stays fresh
   const [, setSearchVersion] = useState(0);
   useEffect(() => {
-    if (!editor) return;
-    const onTransaction = ({ transaction }: { transaction: { docChanged: boolean } }) => {
-      if (transaction.docChanged) setSearchVersion((v) => v + 1);
-    };
-    editor.on("transaction", onTransaction);
-    return () => {
-      editor.off("transaction", onTransaction);
-    };
-  }, [editor]);
+    if (!backend) return;
+    return backend.subscribe(() => setSearchVersion((v) => v + 1));
+  }, [backend]);
 
-  // Clear decorations on unmount (preserve search term for F3 reuse)
+  // Clear highlights on unmount (the backend preserves the term for F3 reuse)
   useEffect(() => {
     return () => {
-      editor?.commands.clearDecorations();
+      backend?.clear();
     };
-  }, [editor]);
+  }, [backend]);
 
-  const storage = editor?.storage.searchAndReplace as SearchState | undefined;
-  const matchCount = storage?.results.length ?? 0;
-  const currentIndex = storage?.currentIndex ?? -1;
-  const regexError = storage?.regexError ?? null;
+  const view = backend?.getState() ?? { count: 0, currentIndex: -1, error: null };
+  const matchCount = view.count;
+  const currentIndex = view.currentIndex;
+  const regexError = view.error;
 
   const handleNext = useCallback(() => {
-    editor?.commands.nextMatch();
-  }, [editor]);
+    backend?.next();
+  }, [backend]);
 
   const handlePrevious = useCallback(() => {
-    editor?.commands.previousMatch();
-  }, [editor]);
+    backend?.prev();
+  }, [backend]);
 
   const handleReplace = useCallback(() => {
-    editor?.commands.replaceCurrentMatch(replaceTerm);
-  }, [editor, replaceTerm]);
+    backend?.replace(replaceTerm);
+  }, [backend, replaceTerm]);
 
   const handleReplaceAll = useCallback(() => {
-    editor?.commands.replaceAllMatches(replaceTerm);
-  }, [editor, replaceTerm]);
+    backend?.replaceAll(replaceTerm);
+  }, [backend, replaceTerm]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -147,7 +151,7 @@ export function FindReplace({
     [onClose, handleNext, handlePrevious],
   );
 
-  if (!editor) return null;
+  if (!backend) return null;
 
   return (
     <div className="markd-find-replace" role="search" aria-label="Find and replace" onKeyDown={handleKeyDown}>

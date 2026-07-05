@@ -193,9 +193,10 @@ export function useFileTabs() {
 
   // Returns the editor's current doc as ProseMirror JSON — captured alongside the
   // markdown on every snapshot so a switch-back can restore via JSON (fast) instead
-  // of re-parsing markdown (slow on large docs).
-  const getDocJSONRef = useRef<(() => JSONContent) | null>(null);
-  const registerGetJSON = useCallback((fn: () => JSONContent) => {
+  // of re-parsing markdown (slow on large docs). May return undefined when no
+  // valid cache exists (source mode — the editor doc is stale vs the textarea).
+  const getDocJSONRef = useRef<(() => JSONContent | undefined) | null>(null);
+  const registerGetJSON = useCallback((fn: () => JSONContent | undefined) => {
     getDocJSONRef.current = fn;
   }, []);
 
@@ -217,12 +218,14 @@ export function useFileTabs() {
   const snapshotActiveTab = useCallback(() => {
     const id = activeTabIdRef.current;
     const current = tabsRef.current.find((t) => t.id === id);
-    // Skip the costly markdown serialize when the active buffer is unchanged from
-    // its saved state — content is already savedContent (the tab's existing
-    // content). Only a modified buffer needs re-serializing to capture edits.
+    // Skip the costly markdown serialize when the active buffer is unchanged
+    // from its saved state. Clean ⇒ the buffer IS the saved state, whose byte
+    // truth is savedContent — store THAT, not the tab's old content: after an
+    // edit→save, content still holds the open-time text (markTabSaved only
+    // advances savedContent), and snapshotting it would regress the tab.
     const clean = isCleanRef.current?.() ?? false;
     const md = clean
-      ? current?.content ?? ""
+      ? current?.savedContent ?? current?.content ?? ""
       : getMarkdownRef.current?.() ?? current?.content ?? "";
     // Capture the doc as JSON regardless (cheap — ~0.2ms, even on large docs) so a
     // later switch-back restores via JSON instead of re-parsing the markdown.
@@ -246,10 +249,11 @@ export function useFileTabs() {
       const prevId = activeTabIdRef.current;
       const prevTab = tabsRef.current.find((t) => t.id === prevId);
       // Skip the markdown serialize when the departing buffer is unchanged from
-      // saved (see snapshotActiveTab). getJSON stays cheap and is always captured.
+      // saved (see snapshotActiveTab — clean stores savedContent, the byte truth).
+      // getJSON stays cheap and is always captured.
       const clean = isCleanRef.current?.() ?? false;
       const md = clean
-        ? prevTab?.content ?? ""
+        ? prevTab?.savedContent ?? prevTab?.content ?? ""
         : getMarkdownRef.current?.() ?? prevTab?.content ?? "";
       const docJSON = getDocJSONRef.current?.();
       setTabs((prev) => {
@@ -364,7 +368,7 @@ export function useFileTabs() {
       const closing = currentTabs.find((t) => t.id === tabId);
       if (closing && tabId === activeTabIdRef.current) {
         const clean = isCleanRef.current?.() ?? false;
-        const md = clean ? closing.content : getMarkdownRef.current?.() ?? closing.content;
+        const md = clean ? closing.savedContent : getMarkdownRef.current?.() ?? closing.content;
         pushClosedTab({ ...closing, content: md });
       } else if (closing) {
         pushClosedTab(closing);

@@ -7,12 +7,18 @@ import { flashWhenInView } from "@/lib/heading-flash";
 
 interface OutlinePanelProps {
   editor: Editor | null;
+  /** Source mode: headings parsed live from the textarea buffer (the PM doc
+   * is stale there). Click-to-jump goes through onSourceHeadingClick; drag
+   * reorder and Alt+arrows are PM-bound and disabled. */
+  sourceHeadings?: HeadingEntry[] | null;
+  onSourceHeadingClick?: (pos: number) => void;
 }
 
 const COLLAPSED_KEY = "markd-outline-collapsed";
 
-export function OutlinePanel({ editor }: OutlinePanelProps) {
-  const [headings, setHeadings] = useState<HeadingEntry[]>([]);
+export function OutlinePanel({ editor, sourceHeadings, onSourceHeadingClick }: OutlinePanelProps) {
+  const [pmHeadings, setPmHeadings] = useState<HeadingEntry[]>([]);
+  const headings = sourceHeadings ?? pmHeadings;
   const [activeHeadingIndex, setActiveHeadingIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
@@ -62,7 +68,7 @@ export function OutlinePanel({ editor }: OutlinePanelProps) {
 
     const update = () => {
       const h = extractHeadings(editor);
-      setHeadings(h);
+      setPmHeadings(h);
       headingsRef.current = h;
     };
     update();
@@ -141,6 +147,13 @@ export function OutlinePanel({ editor }: OutlinePanelProps) {
 
   const handleClick = useCallback(
     (index: number, pos: number) => {
+      // Source mode: jump the textarea caret — the PM scroll/flash machinery
+      // below targets a detached view there.
+      if (sourceHeadings) {
+        setActiveHeadingIndex(index);
+        onSourceHeadingClick?.(pos);
+        return;
+      }
       if (!editor) return;
 
       // Highlight the clicked row at once and hold the scroll-spy back for the
@@ -193,7 +206,9 @@ export function OutlinePanel({ editor }: OutlinePanelProps) {
       }
       element?.scrollIntoView({ behavior: "smooth", block: "center" });
     },
-    [editor],
+    // sourceHeadings/onSourceHeadingClick in deps: a stale null here silently
+    // routed source-mode clicks to the PM branch (caught live 2026-07-05).
+    [editor, sourceHeadings, onSourceHeadingClick],
   );
 
   const handleDragStart = useCallback((e: React.DragEvent, index: number) => {
@@ -233,6 +248,7 @@ export function OutlinePanel({ editor }: OutlinePanelProps) {
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent, index: number) => {
+      if (sourceHeadings) return; // moveSection is PM-bound
       if (!e.altKey) return;
       if (e.key === "ArrowUp" && index > 0) {
         e.preventDefault();
@@ -242,7 +258,7 @@ export function OutlinePanel({ editor }: OutlinePanelProps) {
         editor?.commands.moveSection(index, index + 1);
       }
     },
-    [editor, headings.length],
+    [editor, headings.length, sourceHeadings],
   );
 
   if (headings.length === 0) {
@@ -269,7 +285,7 @@ export function OutlinePanel({ editor }: OutlinePanelProps) {
             onClick={() => handleClick(index, heading.pos)}
             aria-current={index === activeHeadingIndex ? "true" : undefined}
             ref={index === activeHeadingIndex ? activeItemRef : undefined}
-            draggable
+            draggable={!sourceHeadings}
             onDragStart={(e) => handleDragStart(e, index)}
             onDragEnd={handleDragEnd}
             onDragEnter={(e) => handleDragEnter(e, index)}

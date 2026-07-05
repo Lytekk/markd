@@ -63,14 +63,22 @@ export function canRevertClean(filePath: string | null, savedContent: string): b
  * markdown, so a clean doc's entry snapshot may differ from savedContent
  * byte-wise — matching it means "back where source mode started", not
  * necessarily "matches disk"). Anything else → dirty.
+ *
+ * The entry branch is only honored while `savedContent` still equals
+ * `entrySavedContent` (its value when the entry snapshot was seeded). Once a
+ * save happens in source mode, savedContent belongs to a NEWER state and a
+ * buffer matching the PRE-save entry no longer matches disk — honoring the
+ * stale entry flag there falsely reported clean and let the close guard
+ * silently discard a reverted buffer (adversarial-review confirmed).
  */
 export function sourceModeIsDirty(
   md: string,
   savedContent: string,
   entryMd: string,
   entryWasDirty: boolean,
+  entrySavedContent: string,
 ): boolean {
   if (md === savedContent) return false;
-  if (md === entryMd) return entryWasDirty;
+  if (md === entryMd && savedContent === entrySavedContent) return entryWasDirty;
   return true;
 }

@@ -465,6 +465,13 @@ body {
   white-space: nowrap;
 }
 
+/* Source mode: formatting targets the hidden PM doc — visibly inert. */
+.markd-toolbar button:disabled {
+  opacity: 0.35;
+  cursor: default;
+  pointer-events: none;
+}
+
 .markd-toolbar button:hover {
   background: var(--item-hover-bg-color);
   color: var(--text-color);
@@ -1624,6 +1631,52 @@ body {
   flex: 1;
   overflow: hidden;
   display: flex;
+  /* Anchor for the search-highlight backdrop (and the line gutter). */
+  position: relative;
+}
+
+/* Search-highlight backdrop: a text twin painted behind the TRANSPARENT
+   textarea — transparent glyphs, only <mark> backgrounds visible. Its box,
+   font and white-space rules must mirror the source textarea's (including
+   the full-width and line-numbers variants below) or highlights drift off
+   the glyphs. Scroll is synced from the textarea in SourceEditor.tsx.
+   NOTE: don't name the textarea's class in this comment — base.test.ts's
+   ruleBody() resolves selectors by first substring occurrence. */
+.markd-source-backdrop {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  padding: 30px max(60px, calc((100% - var(--editor-max-width, 860px)) / 2)) 100px;
+  transition: padding 0.25s ease;
+  box-sizing: border-box;
+  font-family: var(--monospace);
+  font-size: var(--font-size);
+  line-height: var(--line-height);
+  tab-size: 2;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  color: transparent;
+  pointer-events: none;
+}
+
+.markd-source-editor.with-line-numbers .markd-source-backdrop {
+  white-space: pre;
+  word-wrap: normal;
+}
+
+[data-full-width="true"] .markd-source-backdrop {
+  padding-left: 60px;
+  padding-right: 60px;
+}
+
+.markd-source-backdrop mark {
+  color: transparent;
+  background-color: rgba(255, 215, 0, 0.5);
+  border-radius: 2px;
+}
+
+.markd-source-backdrop mark.markd-search-current {
+  background-color: rgba(255, 165, 0, 0.75);
 }
 
 .markd-source-editor.with-line-numbers {
@@ -1670,6 +1723,10 @@ body {
   flex: 1;
   width: 100%;
   margin: 0;
+  /* Above the search backdrop; background stays transparent so the backdrop's
+     highlight marks show through. */
+  position: relative;
+  z-index: 1;
   /* The 860px reading column is created by adaptive horizontal padding rather
      than a max-width clamp, so the textarea spans the full area and its
      vertical scrollbar sits at the window edge — matching rendered mode

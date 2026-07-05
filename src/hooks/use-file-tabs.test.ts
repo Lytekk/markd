@@ -286,3 +286,69 @@ describe("useFileTabs — skip markdown serialize when the buffer is clean", () 
     expect(result.current.tabs.find((t) => t.id === bId)!.content).toBe("SERIALIZED");
   });
 });
+
+describe("useFileTabs — source-mode snapshots (content-truth accessors)", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("a getJSON returning undefined (source mode) overwrites a prior docJSON cache", () => {
+    const { result } = renderHook(() => useFileTabs());
+    act(() => { result.current.openInTab("a.md", "/tmp/a.md", "AAA"); });
+    act(() => { result.current.openInTab("b.md", "/tmp/b.md", "BBB"); });
+    // Rendered mode first: leaving b caches its PM JSON.
+    act(() => {
+      result.current.registerGetMarkdown(() => "RENDERED");
+      result.current.registerGetJSON(() => ({ type: "doc", content: [] }));
+      result.current.registerIsClean(() => false);
+    });
+    const aId = result.current.tabs.find((t) => t.filePath === "/tmp/a.md")!.id;
+    const bId = result.current.tabs.find((t) => t.filePath === "/tmp/b.md")!.id;
+    act(() => { result.current.switchTab(aId); }); // leaving b caches its JSON
+    expect(result.current.tabs.find((t) => t.id === bId)!.docJSON).toEqual({ type: "doc", content: [] });
+    // Source mode: App registers accessors that answer from the textarea and
+    // report NO cache (source-truth.ts). Leaving b again must DROP the stale
+    // cache — otherwise switch-back would restore the stale JSON over the
+    // verbatim textarea content (data loss via the fast path).
+    act(() => {
+      result.current.registerGetMarkdown(() => "TEXTAREA VERBATIM");
+      result.current.registerGetJSON(() => undefined);
+      result.current.registerIsClean(() => false);
+    });
+    act(() => { result.current.switchTab(bId); });
+    act(() => { result.current.switchTab(aId); }); // leave b in "source mode"
+    const b = result.current.tabs.find((t) => t.id === bId)!;
+    expect(b.content).toBe("TEXTAREA VERBATIM");
+    expect(b.docJSON).toBeUndefined();
+  });
+});
+
+describe("useFileTabs — clean-skip snapshots store savedContent, not stale open-time content", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("switchTab clean path refreshes content to savedContent (post-save leave)", () => {
+    const { result } = renderHook(() => useFileTabs());
+    act(() => { result.current.openInTab("a.md", "/tmp/a.md", "AAA"); });
+    act(() => { result.current.openInTab("b.md", "/tmp/b.md", "BBB v1"); });
+    const aId = result.current.tabs.find((t) => t.filePath === "/tmp/a.md")!.id;
+    const bId = result.current.tabs.find((t) => t.filePath === "/tmp/b.md")!.id;
+    // User edits b, saves (savedContent advances; content still holds open-time
+    // text), buffer now equals saved → clean. Leaving must NOT snapshot the
+    // stale open-time content over the newer saved state.
+    act(() => { result.current.markTabSaved(bId, { savedContent: "BBB v2" }); });
+    act(() => {
+      result.current.registerGetMarkdown(() => { throw new Error("clean path must not serialize"); });
+      result.current.registerIsClean(() => true);
+    });
+    act(() => { result.current.switchTab(aId); });
+    expect(result.current.tabs.find((t) => t.id === bId)!.content).toBe("BBB v2");
+  });
+
+  it("snapshotActiveTab clean path (via newTab) refreshes content to savedContent", () => {
+    const { result } = renderHook(() => useFileTabs());
+    act(() => { result.current.openInTab("a.md", "/tmp/a.md", "AAA v1"); });
+    const aId = result.current.tabs.find((t) => t.filePath === "/tmp/a.md")!.id;
+    act(() => { result.current.markTabSaved(aId, { savedContent: "AAA v2" }); });
+    act(() => { result.current.registerIsClean(() => true); });
+    act(() => { result.current.newTab(); });
+    expect(result.current.tabs.find((t) => t.id === aId)!.content).toBe("AAA v2");
+  });
+});

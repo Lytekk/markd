@@ -3,6 +3,7 @@ import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { Editor as TiptapEditor } from "@tiptap/core";
 import { getExtensions } from "@/lib/editor-extensions";
 import { FindReplace, type FindUiState } from "./FindReplace";
+import { editorSearchBackend } from "@/lib/search-backend";
 
 let editor: TiptapEditor;
 
@@ -40,7 +41,7 @@ describe("FindReplace per-tab state recall", () => {
   it("prefills find and replace inputs from initialState", () => {
     render(
       <FindReplace
-        editor={editor}
+        backend={editorSearchBackend(editor)}
         showReplace={true}
         onClose={() => {}}
         initialState={savedState}
@@ -53,7 +54,7 @@ describe("FindReplace per-tab state recall", () => {
   it("restores option toggles from initialState", () => {
     render(
       <FindReplace
-        editor={editor}
+        backend={editorSearchBackend(editor)}
         showReplace={false}
         onClose={() => {}}
         initialState={{ ...savedState, useRegex: true, wholeWord: true }}
@@ -67,7 +68,7 @@ describe("FindReplace per-tab state recall", () => {
   it("applies the initial search term to the editor on mount (decorations live)", () => {
     render(
       <FindReplace
-        editor={editor}
+        backend={editorSearchBackend(editor)}
         showReplace={false}
         onClose={() => {}}
         initialState={savedState}
@@ -80,7 +81,7 @@ describe("FindReplace per-tab state recall", () => {
     const onStateChange = vi.fn();
     render(
       <FindReplace
-        editor={editor}
+        backend={editorSearchBackend(editor)}
         showReplace={false}
         onClose={() => {}}
         initialState={savedState}
@@ -97,7 +98,7 @@ describe("FindReplace per-tab state recall", () => {
   });
 
   it("starts empty when no initialState is given (back-compat)", () => {
-    render(<FindReplace editor={editor} showReplace={false} onClose={() => {}} />);
+    render(<FindReplace backend={editorSearchBackend(editor)} showReplace={false} onClose={() => {}} />);
     expect((screen.getByPlaceholderText("Find...") as HTMLInputElement).value).toBe("");
   });
 });

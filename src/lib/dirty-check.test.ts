@@ -120,15 +120,32 @@ describe("canRevertClean", () => {
 
 describe("sourceModeIsDirty", () => {
   it("is clean when the buffer matches the saved file exactly", () => {
-    expect(sourceModeIsDirty("abc", "abc", "entry", true)).toBe(false);
+    expect(sourceModeIsDirty("abc", "abc", "entry", true, "abc")).toBe(false);
   });
 
   it("restores the entry dirty flag when the buffer returns to its entry state", () => {
-    expect(sourceModeIsDirty("entry", "saved", "entry", false)).toBe(false);
-    expect(sourceModeIsDirty("entry", "saved", "entry", true)).toBe(true);
+    expect(sourceModeIsDirty("entry", "saved", "entry", false, "saved")).toBe(false);
+    expect(sourceModeIsDirty("entry", "saved", "entry", true, "saved")).toBe(true);
   });
 
   it("is dirty when the buffer matches neither saved nor entry", () => {
-    expect(sourceModeIsDirty("x", "saved", "entry", false)).toBe(true);
+    expect(sourceModeIsDirty("x", "saved", "entry", false, "saved")).toBe(true);
+  });
+
+  it("invalidates the entry branch once savedContent changed since entry (post-save revert)", () => {
+    // Adversarial-review confirmed data-loss path: enter source mode at D
+    // (disk D) → edit to E → Ctrl+S (disk now E, savedContent=E) → undo the
+    // textarea back to exactly D. Buffer D ≠ disk E — reporting "clean" here
+    // lies in the UI and lets the close guard silently discard the revert.
+    expect(sourceModeIsDirty("D", "E", "D", false, "D")).toBe(true);
+    // Same shape with an entry-dirty snapshot — still dirty, not entry-flag.
+    expect(sourceModeIsDirty("D", "E", "D", true, "D")).toBe(true);
+  });
+
+  it("still honors the entry branch when savedContent is unchanged since entry", () => {
+    // The forgiveness exists for serialize-normalization: a clean doc's entry
+    // snapshot may differ from savedContent byte-wise. No save since entry →
+    // entrySavedContent === savedContent → branch stays live.
+    expect(sourceModeIsDirty("norm", "raw", "norm", false, "raw")).toBe(false);
   });
 });

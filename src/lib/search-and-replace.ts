@@ -1,4 +1,5 @@
 import { Extension, type Editor } from "@tiptap/core";
+import { buildSearchRegex } from "@/lib/text-search";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Node as PmNode } from "@tiptap/pm/model";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
@@ -23,10 +24,6 @@ export interface SearchOptions {
   caseSensitive: boolean;
   useRegex: boolean;
   wholeWord: boolean;
-}
-
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 const searchPluginKey = new PluginKey("searchAndReplace");
@@ -75,19 +72,10 @@ export function findMatches(
   const haystack = chars.join("");
   const results: SearchResult[] = [];
 
-  let regex: RegExp;
-  try {
-    const flags = opts.caseSensitive ? "g" : "gi";
-    if (opts.useRegex) {
-      regex = new RegExp(opts.searchTerm, flags);
-    } else if (opts.wholeWord) {
-      regex = new RegExp(`\\b${escapeRegex(opts.searchTerm)}\\b`, flags);
-    } else {
-      regex = new RegExp(escapeRegex(opts.searchTerm), flags);
-    }
-  } catch (e) {
-    return { results: [], error: e instanceof Error ? e.message : "Invalid regex" };
-  }
+  // Shared with the source-mode textarea backend — one builder, one meaning
+  // of "a match" across both modes (text-search.ts).
+  const { regex, error } = buildSearchRegex(opts);
+  if (!regex) return { results: [], error };
 
   let match: RegExpExecArray | null;
   while ((match = regex.exec(haystack)) !== null) {

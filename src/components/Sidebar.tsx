@@ -3,6 +3,7 @@ import type { Editor } from "@tiptap/react";
 import type { FileEntry } from "@/lib/file-system";
 import { pathExists } from "@/lib/file-system";
 import type { RecentFile } from "@/hooks/use-recent-files";
+import type { HeadingEntry } from "@/lib/section-commands";
 import { OutlinePanel } from "@/components/OutlinePanel";
 
 type SidebarTab = "files" | "outline";
@@ -28,6 +29,9 @@ interface SidebarProps {
   /** True when the tree is editable (a folder is open in a Tauri build). */
   canEditTree?: boolean;
   onFileAction?: (action: FileTreeAction, entry: FileEntry | null) => void;
+  /** Source mode: live headings from the textarea (see OutlinePanel). */
+  sourceHeadings?: HeadingEntry[] | null;
+  onSourceHeadingClick?: (pos: number) => void;
 }
 
 export function Sidebar({
@@ -47,6 +51,8 @@ export function Sidebar({
   onRecentFileRemove,
   canEditTree,
   onFileAction,
+  sourceHeadings,
+  onSourceHeadingClick,
 }: SidebarProps) {
   const [treeMenu, setTreeMenu] = useState<{ x: number; y: number; entry: FileEntry | null } | null>(null);
 
@@ -169,7 +175,7 @@ export function Sidebar({
         </div>
       ) : (
         <div className="markd-file-tree">
-          <OutlinePanel editor={editor} />
+          <OutlinePanel editor={editor} sourceHeadings={sourceHeadings} onSourceHeadingClick={onSourceHeadingClick} />
         </div>
       )}
       {treeMenu && (

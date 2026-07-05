@@ -4,6 +4,9 @@ import type { Editor } from "@tiptap/react";
 interface ToolbarProps {
   editor: Editor | null;
   heldModifier: "ctrl" | "alt" | null;
+  /** Source mode: the buttons drive the (hidden, stale) ProseMirror doc, so
+   * they must not accept input while the textarea owns the buffer. */
+  disabled?: boolean;
 }
 
 interface ToolbarButton {
@@ -219,12 +222,12 @@ const BUTTONS: (ToolbarButton | "separator")[] = [
   },
 ];
 
-export function Toolbar({ editor, heldModifier }: ToolbarProps) {
+export function Toolbar({ editor, heldModifier, disabled = false }: ToolbarProps) {
   const handleClick = useCallback(
     (btn: ToolbarButton) => {
-      if (editor) btn.action(editor);
+      if (editor && !disabled) btn.action(editor);
     },
-    [editor],
+    [editor, disabled],
   );
 
   if (!editor) return null;
@@ -235,12 +238,13 @@ export function Toolbar({ editor, heldModifier }: ToolbarProps) {
         if (btn === "separator") {
           return <div key={i} className="separator" />;
         }
-        const active = btn.isActive?.(editor) ?? false;
+        const active = !disabled && (btn.isActive?.(editor) ?? false);
         return (
           <button
             key={btn.label}
-            title={formatTitle(btn.label, btn.shortcut)}
+            title={disabled ? `${btn.label} — rendered mode only` : formatTitle(btn.label, btn.shortcut)}
             className={active ? "active" : ""}
+            disabled={disabled}
             onClick={() => handleClick(btn)}
           >
             {btn.icon}

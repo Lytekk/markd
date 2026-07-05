@@ -20,11 +20,11 @@ Published publicly because it solves a real problem and a few people asked. If i
 - Tab session persistence — tabs and scroll position survive Ctrl+R refresh and app restarts
 - Per-tab scroll position remembered across tab switches
 - External file modification detection — prompts to reload when a file changes on disk
-- Recent files, folder-tree sidebar, outline panel with scroll-aware active heading highlight, and collapsible heading sections
+- Recent files, folder-tree sidebar, outline panel with scroll-aware active heading highlight, and collapsible heading sections — the outline stays live in source mode too (parsed from the raw markdown, click to jump)
 - Create, rename, and delete files/folders from the file-tree right-click menu (delete moves to the OS recycle bin, so it's recoverable)
 - Drag-to-reorder document sections from the outline sidebar (or keyboard Alt+Up/Down)
-- Find + replace (Ctrl+F / Ctrl+H) with regex, whole-word, and case-sensitive toggles — each tab remembers its last search, so reopening the panel picks up where you left off
-- F3 / Shift+F3 to find next/previous without reopening the panel; Ctrl+F3 to select word and search
+- Find + replace (Ctrl+F / Ctrl+H) with regex, whole-word, and case-sensitive toggles — each tab remembers its last search, so reopening the panel picks up where you left off; works in source mode too, with in-text match highlighting, and the panel survives toggling between views
+- F3 / Shift+F3 to find next/previous without reopening the panel; Ctrl+F3 to select word and search (both also work in source mode)
 - Ctrl+R to reload active tab from disk; Ctrl+Shift+R to reload all tabs; Ctrl+Shift+S to save all
 - Alt+1 / Alt+2 to switch sidebar between Files and Outline tabs
 - Hotkey hint ribbon — hold Ctrl to see toolbar shortcuts, hold Alt to see sidebar shortcuts
