@@ -127,10 +127,19 @@ describe("base.css layout", () => {
   // With wrapping on, one logical line spans N textarea rows but only one gutter
   // number — drift. When line numbers are on we turn wrapping off so a logical
   // line is exactly one row (long lines scroll horizontally, code-editor style).
-  test("line-numbered source disables soft-wrap so each line maps to one gutter number", () => {
+  test("line-numbered source KEEPS soft-wrap — gutter rows are measured per line, not fixed", () => {
+    // User-reported (2026-07-05): source mode must wrap like the rendered
+    // view even with line numbers on. The old wrap-off rule is gone; gutter
+    // alignment now comes from measured variable-height rows (SourceEditor +
+    // textarea-metrics measureLineTops), so no rule may reintroduce nowrap.
     const body = ruleBody(".markd-source-editor.with-line-numbers .markd-source-textarea");
-    expect(body, "missing wrap-off rule for line-numbered source").not.toBeNull();
-    expect(body).toMatch(/white-space:\s*pre\s*;/);
+    if (body !== null) {
+      expect(body).not.toMatch(/white-space:\s*pre\s*;/);
+    }
+    const backdrop = ruleBody(".markd-source-editor.with-line-numbers .markd-source-backdrop");
+    if (backdrop !== null) {
+      expect(backdrop).not.toMatch(/white-space:\s*pre\s*;/);
+    }
   });
 
   test("footer export actions carry a VISIBLE button border so they don't read as toggles", () => {

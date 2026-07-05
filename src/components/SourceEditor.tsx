@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useCallback, type ReactNode } from "react";
 import type { TextRange } from "@/lib/text-search";
+import { lineStartOffsets, measureLineTops } from "@/lib/textarea-metrics";
 
 interface SourceEditorProps {
   markdown: string;
@@ -112,6 +113,37 @@ export function SourceEditor({
 
   const lineCount = value.split("\n").length;
 
+  // Measured gutter row heights: soft-wrap stays ON with line numbers (a
+  // user-visible wrap-off was the old behavior — reported 2026-07-05), so a
+  // logical line can span several visual rows; its number cell gets the
+  // line's MEASURED height. One debounced mirror pass per edit burst, only
+  // while line numbers are on; the CSS fixed height covers the pre-measure
+  // frame and the (irrelevant) last line.
+  const [rowHeights, setRowHeights] = useState<number[] | null>(null);
+  const measureGutter = useCallback(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    const tops = measureLineTops(ta, lineStartOffsets(ta.value));
+    setRowHeights(tops.map((t, i) => (i + 1 < tops.length ? tops[i + 1]! - t : 0)));
+  }, []);
+  useEffect(() => {
+    if (!lineNumbers) {
+      setRowHeights(null);
+      return;
+    }
+    const id = window.setTimeout(measureGutter, 80);
+    return () => window.clearTimeout(id);
+  }, [lineNumbers, value, measureGutter]);
+  useEffect(() => {
+    // Width changes re-wrap the text (full-width toggle, window resize).
+    if (!lineNumbers || typeof ResizeObserver === "undefined") return;
+    const ta = textareaRef.current;
+    if (!ta) return;
+    const ro = new ResizeObserver(() => measureGutter());
+    ro.observe(ta);
+    return () => ro.disconnect();
+  }, [lineNumbers, measureGutter]);
+
   // Memoized so unrelated re-renders (line-number toggle, focus churn) don't
   // rebuild the whole-document segment list; content/match changes still do —
   // unavoidable, the text changed. Known bound (review-noted): with the panel
@@ -129,7 +161,11 @@ export function SourceEditor({
       {lineNumbers && (
         <div className="markd-line-gutter" ref={gutterRef}>
           {Array.from({ length: lineCount }, (_, i) => (
-            <div key={i} className="markd-line-number">
+            <div
+              key={i}
+              className="markd-line-number"
+              style={rowHeights?.[i] ? { height: rowHeights[i] } : undefined}
+            >
               {i + 1}
             </div>
           ))}
