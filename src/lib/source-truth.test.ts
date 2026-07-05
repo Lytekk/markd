@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { currentMarkdown, currentDocJSON, editorBufferIsClean } from "./source-truth";
+import { currentMarkdown, currentDocJSON, editorBufferIsClean, textareaText } from "./source-truth";
 
 // These accessors are the single seam through which every consumer asks "what
 // is the buffer's current content?" — tab snapshots (newTab / openInTab /
@@ -50,5 +50,19 @@ describe("editorBufferIsClean", () => {
   it("delegates to the doc.eq predicate in rendered mode", () => {
     expect(editorBufferIsClean(false, () => true)).toBe(true);
     expect(editorBufferIsClean(false, () => false)).toBe(false);
+  });
+});
+
+describe("textareaText", () => {
+  it("normalizes CRLF and lone CR to LF — matching the DOM textarea's own value sanitization", () => {
+    // Verified live 2026-07-05: ta.value = 'a\r\nb' reads back 'a\nb', so any
+    // offset computed on un-normalized state drifts +1 per preceding line vs
+    // setSelectionRange coordinates (find ranges, outline jumps, backdrop).
+    expect(textareaText("a\r\nb\rc\nd")).toBe("a\nb\nc\nd");
+  });
+
+  it("leaves LF-only text untouched (byte-identity for the common case)", () => {
+    const md = "# h\n\nbody\n";
+    expect(textareaText(md)).toBe(md);
   });
 });
