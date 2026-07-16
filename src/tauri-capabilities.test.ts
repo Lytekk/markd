@@ -7,18 +7,17 @@ import { readFileSync } from "node:fs";
 // swallowed by a catch, so the feature is silently dead. These static assertions
 // fail loudly in CI instead.
 //
-// Note: the external-file-modification watcher does NOT appear here because it is a
-// custom Rust command (notify crate) that bypasses the fs-plugin ACL, like
-// read_file/write_file — so it needs no fs capability at all.
+// Native filesystem commands enforce Tauri's runtime fs scope themselves. The
+// renderer must not receive direct fs-plugin permissions that could bypass the
+// hardened atomic write and no-clobber operations.
 const caps = JSON.parse(
   readFileSync("src-tauri/capabilities/default.json", "utf8"),
 ) as { permissions: string[] };
 const perms = caps.permissions;
 
 describe("Tauri capabilities (src-tauri/capabilities/default.json)", () => {
-  it("grants the fs-plugin read/write commands the app invokes directly", () => {
-    expect(perms).toContain("fs:allow-read-text-file");
-    expect(perms).toContain("fs:allow-write-text-file");
+  it("does not grant direct fs-plugin commands to the renderer", () => {
+    expect(perms.some((permission) => permission.startsWith("fs:"))).toBe(false);
   });
 
   it("grants core:event:allow-listen — single-instance + file-change listeners need it", () => {

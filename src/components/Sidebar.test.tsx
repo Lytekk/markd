@@ -1,9 +1,18 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
-import { RecentFilesList } from "./Sidebar";
+import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
+
+vi.mock("@/lib/file-system", () => ({
+  pathExists: vi.fn(),
+}));
+
+import { Sidebar, RecentFilesList } from "./Sidebar";
+import { pathExists } from "@/lib/file-system";
 import type { RecentFile } from "@/hooks/use-recent-files";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.mocked(pathExists).mockReset();
+});
 
 const files: RecentFile[] = [
   { name: "a.md", path: "/p/a.md", timestamp: 2 },
@@ -41,5 +50,37 @@ describe("RecentFilesList", () => {
     const items = container.querySelectorAll(".markd-file-item");
     expect(items[0]!.classList.contains("markd-recent-missing")).toBe(false);
     expect(items[1]!.classList.contains("markd-recent-missing")).toBe(true);
+  });
+
+  it("keeps other recent-file existence checks when one path is unauthorized", async () => {
+    vi.mocked(pathExists).mockImplementation((path) => {
+      if (path === "/p/a.md") return Promise.resolve(false);
+      return Promise.reject(new Error("MARKD_PATH_NOT_AUTHORIZED"));
+    });
+
+    const { container } = render(
+      <Sidebar
+        tree={[]}
+        activeFile=""
+        activeFilePath={null}
+        collapsed={false}
+        editor={null}
+        recentFiles={files}
+        activeTab="files"
+        onTabChange={vi.fn()}
+        heldModifier={null}
+        onFileSelect={vi.fn()}
+        onOpenFolder={vi.fn()}
+        onToggle={vi.fn()}
+        onRecentFileSelect={vi.fn()}
+        onRecentFileRemove={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      const items = container.querySelectorAll(".markd-file-item");
+      expect(items[0]!.classList.contains("markd-recent-missing")).toBe(true);
+      expect(items[1]!.classList.contains("markd-recent-missing")).toBe(false);
+    });
   });
 });
