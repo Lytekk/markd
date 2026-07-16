@@ -30,7 +30,7 @@ import { copyToClipboard } from "@/lib/code-block-enhance";
 import { revealInFileManager } from "@/lib/reveal";
 import { useZoom } from "@/hooks/use-zoom";
 import { TabBar, type TabAction } from "@/components/TabBar";
-import { createFile, createFolder, exportAsHtml, exportAsPdf, pathExists, readFileByPath, renamePath, saveToFile, trashPath } from "@/lib/file-system";
+import { createFile, createFolder, exportAsHtml, exportAsPdf, openFile, pathExists, readFileByPath, renamePath, saveFileAs, saveToFile, trashPath } from "@/lib/file-system";
 import { ensureMdExtension, joinPath, parentPath, targetDirForEntry, validateName } from "@/lib/file-tree-ops";
 import {
   shouldCheckForUpdate,
@@ -51,9 +51,10 @@ import { editorSearchBackend, textareaSearchBackend, type SearchBackend } from "
 import { wordAt, type TextRange } from "@/lib/text-search";
 import { extractSourceHeadings } from "@/lib/source-outline";
 import { revealRange } from "@/lib/textarea-metrics";
-import { resolveSaveContent } from "@/lib/markdown-fidelity";
 import { loadEditorContent } from "@/lib/editor-load";
 import { tabDisplayInfo } from "@/lib/tab-display";
+import { saveBackgroundTab } from "@/lib/background-tab-save";
+import { createLatestRequestGuard } from "@/lib/latest-request";
 
 function isTauri(): boolean {
   // Tauri v2 exposes the IPC bridge as __TAURI_INTERNALS__ by default;
@@ -92,6 +93,17 @@ export function App() {
   const fileState = useFileState();
   const { recentFiles, addRecentFile, removeRecentFile } = useRecentFiles();
   const fileTabs = useFileTabs();
+  const bufferLoadGuardRef = useRef(createLatestRequestGuard());
+  // Stable mirrors let asynchronous callbacks and TipTap transactions operate
+  // on the current buffer rather than a render-time closure.
+  const fileTabsRef = useRef(fileTabs);
+  fileTabsRef.current = fileTabs;
+  const fileStateRef = useRef(fileState);
+  fileStateRef.current = fileState;
+  // The generic fileState→tab mirror must not race an explicit active save.
+  // Save owners settle their captured tab revision themselves; mirrors only
+  // cover loads and autosaves that have no caller-held tab ownership.
+  const activeSaveOwnerRef = useRef<{ tabId: string; revision: number } | null>(null);
 
   // Directory of the currently-open file. Read by ResolvedImage at renderHTML
   // time, so it must be updated BEFORE setContent runs — do it synchronously
@@ -142,6 +154,7 @@ export function App() {
     content: "",
     onUpdate: ({ editor: ed }) => {
       fileState.markDirty();
+      fileTabsRef.current.markTabDirty();
       // Debounced revert check: if the doc returns to the saved baseline
       // (undo past every change), clear the dirty flag — nothing to save.
       if (revertCheckTimerRef.current) clearTimeout(revertCheckTimerRef.current);
@@ -293,10 +306,6 @@ export function App() {
 
   // Stable refs — used by event listeners and one-shot effects to avoid
   // stale closures and dependency-driven re-registration loops.
-  const fileTabsRef = useRef(fileTabs);
-  fileTabsRef.current = fileTabs;
-  const fileStateRef = useRef(fileState);
-  fileStateRef.current = fileState;
   // Latest handleCloseTab, callable from the [filePath]-keyed watcher effect
   // (which must not list it as a dep). Assigned just after its definition below.
   const handleCloseTabRef = useRef<(tabId: string) => Promise<void> | void>(() => {});
@@ -319,10 +328,11 @@ export function App() {
     }
 
     (async () => {
+      const request = bufferLoadGuardRef.current.begin();
       try {
         const { invoke } = await import("@tauri-apps/api/core");
         const file = await invoke<OpenedFile | null>("get_opened_file");
-        if (!file) return;
+        if (!file || !bufferLoadGuardRef.current.isCurrent(request)) return;
         fileTabsRef.current.openInTab(file.name, file.path, file.content);
         fileStateRef.current.handleOpenByPath(file.path, file.content);
       } catch {
@@ -339,6 +349,7 @@ export function App() {
     hydrationDone.current = true;
 
     (async () => {
+      const request = bufferLoadGuardRef.current.begin();
       const ft = fileTabsRef.current;
       const fs = fileStateRef.current;
       const tabs = ft.tabs;
@@ -350,28 +361,34 @@ export function App() {
       // Hydrate active tab first — sets editor content directly
       const activeTab = needsHydration.find((t) => t.id === activeId);
       if (activeTab && activeTab.filePath) {
+        const revision = ft.getTabRevision(activeTab.id);
         try {
           const content = await readFileByPath(activeTab.filePath);
-          ft.hydrateTab(activeTab.id, content);
+          if (!bufferLoadGuardRef.current.isCurrent(request)) return;
+          if (!ft.hydrateTab(activeTab.id, content, revision)) return;
           fs.handleOpenByPath(activeTab.filePath, content);
           requestAnimationFrame(() => {
+            if (!bufferLoadGuardRef.current.isCurrent(request)) return;
             const el = document.querySelector(".markd-editor-scroll") as HTMLElement | null;
             if (el) el.scrollTop = activeTab.scrollTop;
           });
         } catch {
-          ft.closeTab(activeTab.id);
+          if (bufferLoadGuardRef.current.isCurrent(request)) ft.closeTab(activeTab.id);
         }
       }
 
       // Hydrate background tabs — update content in state without switching
       for (const tab of needsHydration) {
+        if (!bufferLoadGuardRef.current.isCurrent(request)) return;
         if (tab.id === activeId) continue;
         if (!tab.filePath) continue;
+        const revision = ft.getTabRevision(tab.id);
         try {
           const content = await readFileByPath(tab.filePath);
-          ft.hydrateTab(tab.id, content);
+          if (!bufferLoadGuardRef.current.isCurrent(request)) return;
+          ft.hydrateTab(tab.id, content, revision);
         } catch {
-          ft.closeTab(tab.id);
+          if (bufferLoadGuardRef.current.isCurrent(request)) ft.closeTab(tab.id);
         }
       }
 
@@ -381,7 +398,7 @@ export function App() {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
         const file = await invoke<{ path: string; name: string; content: string } | null>("get_opened_file");
-        if (file) {
+        if (file && bufferLoadGuardRef.current.isCurrent(request)) {
           fileTabsRef.current.openInTab(file.name, file.path, file.content);
           fileStateRef.current.handleOpenByPath(file.path, file.content);
         }
@@ -403,19 +420,36 @@ export function App() {
       unlisten = await listen<string>("open-file-in-tab", async (event) => {
         const ft = fileTabsRef.current;
         const fs = fileStateRef.current;
+        const request = bufferLoadGuardRef.current.begin();
         const filePath = event.payload;
         const existing = ft.tabs.find((t) => t.filePath === filePath);
         if (existing) {
+          let ready = existing;
+          if (!existing.content) {
+            const revision = ft.getTabRevision(existing.id);
+            try {
+              const content = await readFileByPath(filePath);
+              if (!bufferLoadGuardRef.current.isCurrent(request)) return;
+              if (!ft.hydrateTab(existing.id, content, revision)) return;
+              ready = { ...existing, content, savedContent: content, isDirty: false, docJSON: undefined };
+            } catch {
+              return;
+            }
+          }
+          if (!bufferLoadGuardRef.current.isCurrent(request)) return;
           const target = ft.switchTab(existing.id);
-          if (target) fs.restoreState(target);
+          if (target) fs.restoreState(ready);
           return;
         }
-        ft.openInTab(
-          filePath.split(/[/\\]/).pop() ?? "untitled.md",
-          filePath,
-          "",
-        );
-        await fs.handleOpenByPath(filePath);
+        try {
+          const content = await readFileByPath(filePath);
+          if (!bufferLoadGuardRef.current.isCurrent(request)) return;
+          const name = filePath.split(/[/\\]/).pop() ?? "untitled.md";
+          ft.openInTab(name, filePath, content);
+          await fs.handleOpenByPath(filePath, content);
+        } catch {
+          // The file may have been removed between the OS event and this read.
+        }
       });
     })();
 
@@ -467,20 +501,20 @@ export function App() {
     (md: string) => {
       setSourceMarkdown(md);
       const fs = fileStateRef.current;
-      if (
+      // Every textarea mutation advances the save revision, even if it happens
+      // to return to the saved bytes and clears dirty immediately afterward.
+      // Otherwise an in-flight write could settle the newer buffer as clean.
+      fileState.markDirty();
+      fileTabsRef.current.markTabDirty();
+      const isDirty =
         sourceModeIsDirty(
           md,
           fs.savedContent,
           sourceEntryMdRef.current,
           sourceEntryDirtyRef.current,
           sourceEntrySavedRef.current,
-        ) ||
-        !canRevertClean(fs.filePath, fs.savedContent)
-      ) {
-        fileState.markDirty();
-      } else {
-        fileState.markClean();
-      }
+        ) || !canRevertClean(fs.filePath, fs.savedContent);
+      if (!isDirty) fileState.markClean();
       window.dispatchEvent(
         new CustomEvent("markd:stats", {
           detail: computeTextStats(splitFrontmatter(md).body),
@@ -505,6 +539,7 @@ export function App() {
         const { text: next, caret: caretPos } = spliceSnippetText(sourceMarkdown, sel.start, sel.end, body);
         setSourceMarkdown(next);
         fileState.markDirty();
+        fileTabsRef.current.markTabDirty();
         requestAnimationFrame(() => {
           const t = document.querySelector(".markd-source-textarea") as HTMLTextAreaElement | null;
           if (t) {
@@ -617,6 +652,7 @@ export function App() {
   // Uses refs so the effect always reads the current activeTabId.
   useEffect(() => {
     const ft = fileTabsRef.current;
+    if (activeSaveOwnerRef.current?.tabId === ft.activeTabId) return;
     ft.markTabSaved(ft.activeTabId, {
       filePath: fileState.filePath,
       fileName: fileState.fileName,
@@ -681,6 +717,44 @@ export function App() {
 
   const handleSwitchTab = useCallback(
     async (tabId: string) => {
+      const request = bufferLoadGuardRef.current.begin();
+      const target = fileTabsRef.current.tabs.find((tab) => tab.id === tabId);
+      if (!target || target.id === fileTabsRef.current.activeTabId) return;
+
+      // Never make an unloaded tab active before its content is ready. Doing so
+      // leaves the old editor buffer visible under the new tab id; a second
+      // click then snapshots that old buffer into the wrong tab. The request
+      // guard also makes an older slow/UNC read inert after a newer selection.
+      let ready = target;
+      if (!target.content && target.filePath) {
+        try {
+          const content = await readFileByPath(target.filePath);
+          if (!bufferLoadGuardRef.current.isCurrent(request)) return;
+          fileTabsRef.current.hydrateTab(target.id, content);
+          ready = {
+            ...target,
+            content,
+            savedContent: content,
+            isDirty: false,
+            docJSON: undefined,
+          };
+        } catch {
+          if (bufferLoadGuardRef.current.isCurrent(request)) {
+            await messageDialog(`"${target.fileName}" could not be opened.`, {
+              title: "File Open Failed",
+              kind: "error",
+            });
+          }
+          return;
+        }
+      }
+      if (
+        !bufferLoadGuardRef.current.isCurrent(request) ||
+        !fileTabsRef.current.tabs.some((tab) => tab.id === tabId)
+      ) {
+        return;
+      }
+
       // Defensive: don't let the departing tab's pending revert check fire
       // against the arriving tab's state (it would be a no-op today, but
       // only incidentally — see dirty-check.ts).
@@ -691,35 +765,44 @@ export function App() {
       // re-derives the textarea for the arriving tab.
       const scrollEl = document.querySelector(".markd-editor-scroll") as HTMLElement | null;
       const departingScroll = scrollEl?.scrollTop ?? 0;
-      const target = fileTabs.switchTab(tabId, departingScroll);
-      if (target) {
-        // Re-read from disk if tab content is empty (not yet hydrated)
-        if (!target.content && target.filePath) {
-          try {
-            const content = await readFileByPath(target.filePath);
-            fileTabs.hydrateTab(target.id, content);
-            target.content = content;
-            target.savedContent = content;
-            // Disk-sourced content — drop any stale JSON cache so restoreState
-            // parses the fresh body (an empty-serializing doc keeps a truthy
-            // docJSON; without this, the stale empty doc would win and the editor
-            // would load BLANK over the real content — data loss).
-            target.docJSON = undefined;
-          } catch { /* file gone */ }
-        }
-        fileState.restoreState(target);
-        requestAnimationFrame(() => {
-          const el = document.querySelector(".markd-editor-scroll") as HTMLElement | null;
-          if (el) el.scrollTop = target.scrollTop;
-        });
-      }
+      const switched = fileTabsRef.current.switchTab(tabId, departingScroll);
+      if (!switched) return;
+      fileStateRef.current.restoreState(ready);
+      requestAnimationFrame(() => {
+        if (!bufferLoadGuardRef.current.isCurrent(request)) return;
+        const el = document.querySelector(".markd-editor-scroll") as HTMLElement | null;
+        if (el) el.scrollTop = ready.scrollTop;
+      });
     },
-    [fileTabs.switchTab, fileTabs.hydrateTab, fileState.restoreState],
+    [],
   );
+
+  const saveActiveTab = useCallback(async (saveAs = false): Promise<boolean> => {
+    const ft = fileTabsRef.current;
+    const fs = fileStateRef.current;
+    const tabId = ft.activeTabId;
+    const revision = ft.getTabRevision(tabId);
+    const owner = { tabId, revision };
+    activeSaveOwnerRef.current = owner;
+    try {
+      if (!await (saveAs ? fs.handleSaveAs() : fs.handleSave())) return false;
+      const current = fs.getCurrentState();
+      return ft.markTabSaved(tabId, {
+        filePath: current.filePath,
+        fileName: current.fileName,
+        savedContent: current.savedContent,
+        expectedRevision: revision,
+      });
+    } finally {
+      if (activeSaveOwnerRef.current === owner) activeSaveOwnerRef.current = null;
+    }
+  }, []);
+  const saveActiveTabAs = useCallback(() => saveActiveTab(true), [saveActiveTab]);
 
   const handleCloseTab = useCallback(
     async (tabId: string) => {
-      const tab = fileTabs.tabs.find((t) => t.id === tabId);
+      const request = bufferLoadGuardRef.current.begin();
+      const tab = fileTabsRef.current.tabs.find((t) => t.id === tabId);
       if (tab && tab.isDirty) {
         const choice = await confirmModal({
           title: "Unsaved Changes",
@@ -732,50 +815,74 @@ export function App() {
           ],
         });
         if (choice === "save") {
-          if (tabId === fileTabs.activeTabId) {
-            const saved = await fileState.handleSave();
+          if (tabId === fileTabsRef.current.activeTabId) {
+            const saved = await saveActiveTab();
             if (!saved) return;
-          } else if (tab.filePath) {
-            // Background tab (closed via its × / middle-click without being
-            // active): handleSave() operates on the ACTIVE file — it would
-            // save the wrong buffer and discard this one. Write the closing
-            // tab's own content directly.
-            const ok = await saveToFile(
-              tab.filePath,
-              resolveSaveContent(true, tab.savedContent, () => tab.content),
-            );
-            if (!ok) return;
           } else {
-            // Untitled background tab: no path to write without focusing it —
-            // abort the close rather than lose the buffer.
-            return;
+            const revision = fileTabsRef.current.getTabRevision(tab.id);
+            const saved = await saveBackgroundTab(tab, { saveToFile, saveFileAs }, () => (
+              bufferLoadGuardRef.current.isCurrent(request) &&
+              fileTabsRef.current.getTabRevision(tab.id) === revision
+            ));
+            if (!saved) return;
+            if (!fileTabsRef.current.markTabSaved(tab.id, { ...saved, expectedRevision: revision })) {
+              return;
+            }
           }
         } else if (choice !== "discard") {
           return; // Cancel or dismissed — abort the close.
         }
       }
-      const { switchTo } = fileTabs.closeTab(tabId);
-      if (switchTo) {
-        // Re-read from disk if tab content is empty (not yet hydrated from localStorage restore)
-        if (!switchTo.content && switchTo.filePath) {
-          try {
-            const content = await readFileByPath(switchTo.filePath);
-            fileTabs.hydrateTab(switchTo.id, content);
-            switchTo.content = content;
-            switchTo.savedContent = content;
-            // See handleSwitchTab: disk-sourced content must drop the stale JSON
-            // cache or an empty-serializing tab loads BLANK over real content.
-            switchTo.docJSON = undefined;
-          } catch { /* file gone */ }
+      if (
+        !bufferLoadGuardRef.current.isCurrent(request) ||
+        !fileTabsRef.current.tabs.some((candidate) => candidate.id === tabId)
+      ) {
+        return;
+      }
+
+      const currentTabs = fileTabsRef.current.tabs;
+      const closingActive = tabId === fileTabsRef.current.activeTabId;
+      const closeIndex = currentTabs.findIndex((candidate) => candidate.id === tabId);
+      const remaining = currentTabs.filter((candidate) => candidate.id !== tabId);
+      const planned = closingActive && remaining.length > 0
+        ? remaining[Math.min(closeIndex, remaining.length - 1)] ?? null
+        : null;
+      let ready = planned;
+      if (planned && !planned.content && planned.filePath) {
+        try {
+          const content = await readFileByPath(planned.filePath);
+          if (!bufferLoadGuardRef.current.isCurrent(request)) return;
+          fileTabsRef.current.hydrateTab(planned.id, content);
+          ready = {
+            ...planned,
+            content,
+            savedContent: content,
+            isDirty: false,
+            docJSON: undefined,
+          };
+        } catch {
+          if (bufferLoadGuardRef.current.isCurrent(request)) {
+            await messageDialog(`"${planned.fileName}" could not be opened.`, {
+              title: "File Open Failed",
+              kind: "error",
+            });
+          }
+          return;
         }
-        fileState.restoreState(switchTo);
+      }
+      if (!bufferLoadGuardRef.current.isCurrent(request)) return;
+
+      const { switchTo } = fileTabsRef.current.closeTab(tabId);
+      if (switchTo) {
+        fileStateRef.current.restoreState(ready ?? switchTo);
         requestAnimationFrame(() => {
+          if (!bufferLoadGuardRef.current.isCurrent(request)) return;
           const el = document.querySelector(".markd-editor-scroll") as HTMLElement | null;
-          if (el) el.scrollTop = switchTo.scrollTop;
+          if (el) el.scrollTop = (ready ?? switchTo).scrollTop;
         });
       }
     },
-    [fileTabs.tabs, fileTabs.closeTab, fileTabs.hydrateTab, fileState.handleSave, fileState.restoreState],
+    [saveActiveTab],
   );
   handleCloseTabRef.current = handleCloseTab;
 
@@ -795,10 +902,36 @@ export function App() {
       }
     },
     [handleCloseTab],
-  );;
+  );
+
+  const saveAllDirtyTabs = useCallback(async (): Promise<boolean> => {
+    const ft = fileTabsRef.current;
+    const activeTabId = ft.activeTabId;
+    const activeTab = ft.tabs.find((tab) => tab.id === activeTabId);
+    // Save the active buffer before any awaited background write. handleSave is
+    // revision-bound inside useFileState; a tab switch or edit during the write
+    // returns false rather than accidentally saving whichever tab is current.
+    if (activeTab?.isDirty) {
+      if (!await saveActiveTab()) return false;
+    }
+
+    // Each inactive write carries its tab revision through the await. A stale
+    // completion is a failed Save All, never permission to close a newer buffer.
+    const dirtyTabs = ft.tabs.filter((tab) => tab.isDirty && tab.id !== activeTabId);
+    for (const tab of dirtyTabs) {
+      const revision = ft.getTabRevision(tab.id);
+      const saved = await saveBackgroundTab(tab, { saveToFile, saveFileAs }, () => (
+        fileTabsRef.current.getTabRevision(tab.id) === revision
+      ));
+      if (!saved) return false;
+      if (!ft.markTabSaved(tab.id, { ...saved, expectedRevision: revision })) return false;
+    }
+    return !fileTabsRef.current.tabs.some((tab) => tab.isDirty) &&
+      !fileStateRef.current.getCurrentState().isDirty;
+  }, [saveActiveTab]);
 
   const handleCloseAllTabs = useCallback(async () => {
-    const dirtyTabs = fileTabs.tabs.filter((t) => t.isDirty);
+    const dirtyTabs = fileTabsRef.current.tabs.filter((t) => t.isDirty);
     if (dirtyTabs.length > 0) {
       const choice = await confirmModal({
         title: "Unsaved Changes",
@@ -811,53 +944,78 @@ export function App() {
         ],
       });
       if (choice === "save") {
-        for (const tab of dirtyTabs) {
-          if (!tab.filePath) continue;
-          if (tab.id === fileTabs.activeTabId) {
-            const saved = await fileState.handleSave();
-            if (!saved) return;
-          } else {
-            await saveToFile(tab.filePath, resolveSaveContent(true, tab.savedContent, () => tab.content));
-          }
-        }
+        if (!await saveAllDirtyTabs()) return;
       } else if (choice !== "discard") {
         return; // Cancel or dismissed — abort the close.
       }
     }
-    const { switchTo } = fileTabs.closeAllTabs();
-    fileState.restoreState(switchTo);
-  }, [fileTabs.tabs, fileTabs.activeTabId, fileTabs.closeAllTabs, fileState.handleSave, fileState.restoreState]);
+    bufferLoadGuardRef.current.invalidate();
+    const { switchTo } = fileTabsRef.current.closeAllTabs();
+    fileStateRef.current.restoreState(switchTo);
+  }, [saveAllDirtyTabs]);
 
   const handleNewTab = useCallback(() => {
-    fileTabs.newTab();
-    fileState.handleNew();
+    bufferLoadGuardRef.current.invalidate();
+    fileTabsRef.current.newTab();
+    fileStateRef.current.handleNew();
     requestAnimationFrame(() => {
       const el = document.querySelector(".markd-editor-scroll") as HTMLElement | null;
       if (el) el.scrollTop = 0;
     });
-  }, [fileTabs.newTab, fileState.handleNew]);
+  }, []);
+
+  const handleOpenFile = useCallback(async () => {
+    const request = bufferLoadGuardRef.current.begin();
+    let opened: Awaited<ReturnType<typeof openFile>>;
+    try {
+      opened = await openFile();
+    } catch {
+      if (bufferLoadGuardRef.current.isCurrent(request)) {
+        await messageDialog("The selected file could not be opened.", {
+          title: "File Open Failed",
+          kind: "error",
+        });
+      }
+      return;
+    }
+    if (!opened || !bufferLoadGuardRef.current.isCurrent(request)) return;
+
+    const existing = fileTabsRef.current.tabs.find((tab) => tab.filePath === opened.path);
+    if (existing) {
+      await handleSwitchTab(existing.id);
+      return;
+    }
+    fileTabsRef.current.openInTab(opened.name, opened.path, opened.content);
+    await fileStateRef.current.handleOpenByPath(opened.path, opened.content);
+  }, [handleSwitchTab]);
 
   const handleReopenClosedTab = useCallback(async () => {
-    const { tab } = fileTabs.reopenLastClosed();
+    const request = bufferLoadGuardRef.current.begin();
+    const { tab } = fileTabsRef.current.reopenLastClosed();
     if (!tab) return;
     // Untitled tabs are inserted directly by reopenLastClosed; hydrate the editor.
     if (!tab.filePath) {
-      fileState.restoreState(tab);
+      fileStateRef.current.restoreState(tab);
       return;
     }
     // Named file — read from disk and route through openInTab.
     try {
       const content = await readFileByPath(tab.filePath);
-      const { tab: inserted } = fileTabs.openInTab(tab.fileName, tab.filePath, content);
-      fileState.restoreState(inserted);
+      if (!bufferLoadGuardRef.current.isCurrent(request)) {
+        fileTabsRef.current.restoreClosedTab(tab);
+        return;
+      }
+      const { tab: inserted } = fileTabsRef.current.openInTab(tab.fileName, tab.filePath, content);
+      fileStateRef.current.restoreState(inserted);
       requestAnimationFrame(() => {
+        if (!bufferLoadGuardRef.current.isCurrent(request)) return;
         const el = document.querySelector(".markd-editor-scroll") as HTMLElement | null;
         if (el) el.scrollTop = tab.scrollTop;
       });
     } catch {
       // File is gone — silently drop. The stack entry is already popped.
     }
-  }, [fileTabs.reopenLastClosed, fileTabs.openInTab, fileState.restoreState]);
+  }, []);
 
   const cycleTab = useCallback(
     (direction: 1 | -1) => {
@@ -963,24 +1121,9 @@ export function App() {
             e.preventDefault();
             if (e.shiftKey) {
               // Ctrl+Shift+S: save all dirty tabs
-              const allTabs = fileTabsRef.current.tabs;
-              const active = fileTabsRef.current.activeTabId;
-              (async () => {
-                for (const tab of allTabs) {
-                  if (!tab.isDirty || !tab.filePath) continue;
-                  if (tab.id === active) {
-                    await fileState.handleSave();
-                  } else {
-                    // Background-tab content is a serialized snapshot —
-                    // conform it to the file's newline/line-ending convention.
-                    const md = resolveSaveContent(true, tab.savedContent, () => tab.content);
-                    const ok = await saveToFile(tab.filePath, md);
-                    if (ok) fileTabsRef.current.markTabSaved(tab.id, { savedContent: md });
-                  }
-                }
-              })();
+              void saveAllDirtyTabs();
             } else {
-              fileState.handleSave();
+              void saveActiveTab();
             }
             break;
           case "r":
@@ -988,15 +1131,19 @@ export function App() {
             if (e.shiftKey) {
               // Ctrl+Shift+R: reload all tabs from disk
               (async () => {
+                const request = bufferLoadGuardRef.current.begin();
                 const ft = fileTabsRef.current;
                 const fs = fileStateRef.current;
-                for (const tab of ft.tabs) {
+                const activeTabId = ft.activeTabId;
+                const tabs = ft.tabs.map((tab) => ({ tab, revision: ft.getTabRevision(tab.id) }));
+                for (const { tab, revision } of tabs) {
                   if (!tab.filePath) continue;
                   try {
                     const content = await readFileByPath(tab.filePath);
-                    ft.hydrateTab(tab.id, content);
-                    if (tab.id === ft.activeTabId) {
-                      fs.handleOpenByPath(tab.filePath, content);
+                    if (!bufferLoadGuardRef.current.isCurrent(request)) return;
+                    if (!ft.hydrateTab(tab.id, content, revision)) continue;
+                    if (tab.id === activeTabId && ft.activeTabId === activeTabId) {
+                      await fs.handleOpenByPath(tab.filePath, content);
                     }
                   } catch { /* file gone */ }
                 }
@@ -1008,10 +1155,18 @@ export function App() {
               );
               if (active?.filePath) {
                 (async () => {
+                  const request = bufferLoadGuardRef.current.begin();
+                  const revision = fileTabsRef.current.getTabRevision(active.id);
                   try {
                     const content = await readFileByPath(active.filePath!);
-                    fileTabsRef.current.hydrateTab(active.id, content);
-                    fileStateRef.current.handleOpenByPath(active.filePath!, content);
+                    if (
+                      !bufferLoadGuardRef.current.isCurrent(request) ||
+                      fileTabsRef.current.activeTabId !== active.id ||
+                      !fileTabsRef.current.hydrateTab(active.id, content, revision)
+                    ) {
+                      return;
+                    }
+                    await fileStateRef.current.handleOpenByPath(active.filePath!, content);
                   } catch { /* file gone */ }
                 })();
               }
@@ -1019,11 +1174,11 @@ export function App() {
             break;
           case "o":
             e.preventDefault();
-            fileState.handleOpen();
+            void handleOpenFile();
             break;
           case "n":
             e.preventDefault();
-            fileState.handleNew();
+            handleNewTab();
             break;
           case "\\":
             e.preventDefault();
@@ -1141,10 +1296,9 @@ export function App() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [
-    fileState.handleSave,
-    fileState.handleSaveAs,
-    fileState.handleOpen,
-    fileState.handleNew,
+    saveAllDirtyTabs,
+    saveActiveTab,
+    handleOpenFile,
     handleToggleSource,
     handleCloseTab,
     handleCloseAllTabs,
@@ -1275,8 +1429,19 @@ export function App() {
           { title: "File Changed on Disk", kind: "warning" },
         );
         if (reload) {
-          fileTabsRef.current.hydrateTab(fileTabsRef.current.activeTabId, onDisk);
-          fileStateRef.current.handleOpenByPath(filePath, onDisk);
+          const request = bufferLoadGuardRef.current.begin();
+          const ft = fileTabsRef.current;
+          const activeTabId = ft.activeTabId;
+          const revision = ft.getTabRevision(activeTabId);
+          if (
+            cancelled ||
+            fileStateRef.current.filePath !== filePath ||
+            !bufferLoadGuardRef.current.isCurrent(request) ||
+            !ft.hydrateTab(activeTabId, onDisk, revision)
+          ) {
+            return;
+          }
+          await fileStateRef.current.handleOpenByPath(filePath, onDisk);
         }
       } finally {
         // Reset in finally so a thrown dialog can't permanently wedge the watcher.
@@ -1433,26 +1598,37 @@ export function App() {
   const handleFileSelectWithTabs = useCallback(
     async (entry: { kind: string; name: string; path: string }) => {
       if (entry.kind !== "file") return;
-      const existing = fileTabs.tabs.find((t) => t.filePath === entry.path);
+      const request = bufferLoadGuardRef.current.begin();
+      const existing = fileTabsRef.current.tabs.find((t) => t.filePath === entry.path);
       if (existing) {
-        handleSwitchTab(existing.id);
+        await handleSwitchTab(existing.id);
         return;
       }
-      const { tab, isNew } = fileTabs.openInTab(entry.name, entry.path, "");
+      let content: string;
       try {
-        await fileState.handleOpenByPath(entry.path);
+        content = await readFileByPath(entry.path);
       } catch {
-        if (isNew) fileTabs.closeTab(tab.id);
+        if (bufferLoadGuardRef.current.isCurrent(request)) {
+          await messageDialog(`"${entry.name}" could not be opened.`, {
+            title: "File Open Failed",
+            kind: "error",
+          });
+        }
+        return;
       }
+      if (!bufferLoadGuardRef.current.isCurrent(request)) return;
+      fileTabsRef.current.openInTab(entry.name, entry.path, content);
+      await fileStateRef.current.handleOpenByPath(entry.path, content);
     },
-    [fileTabs.tabs, fileTabs.openInTab, handleSwitchTab, fileState.handleOpenByPath],
+    [handleSwitchTab],
   );
 
   const handleRecentFileSelect = useCallback(
     async (file: { name: string; path: string }) => {
-      const existing = fileTabs.tabs.find((t) => t.filePath === file.path);
+      const request = bufferLoadGuardRef.current.begin();
+      const existing = fileTabsRef.current.tabs.find((t) => t.filePath === file.path);
       if (existing) {
-        handleSwitchTab(existing.id);
+        await handleSwitchTab(existing.id);
         return;
       }
       // Read the content FIRST, then seed it into both the tab and the editor in
@@ -1465,6 +1641,7 @@ export function App() {
       try {
         content = await readFileByPath(file.path);
       } catch {
+        if (!bufferLoadGuardRef.current.isCurrent(request)) return;
         removeRecentFile(file.path);
         await messageDialog(`"${file.name}" no longer exists — removed from Recent Files.`, {
           title: "File Not Found",
@@ -1472,10 +1649,11 @@ export function App() {
         });
         return;
       }
-      fileTabs.openInTab(file.name, file.path, content);
-      await fileState.handleOpenByPath(file.path, content);
+      if (!bufferLoadGuardRef.current.isCurrent(request)) return;
+      fileTabsRef.current.openInTab(file.name, file.path, content);
+      await fileStateRef.current.handleOpenByPath(file.path, content);
     },
-    [fileState.handleOpenByPath, fileTabs.tabs, fileTabs.openInTab, handleSwitchTab, removeRecentFile],
+    [handleSwitchTab, removeRecentFile],
   );
 
   // File-tree CRUD from the sidebar context menu. The data-safety rule: when the
@@ -1634,11 +1812,11 @@ export function App() {
           fullWidth={fullWidth}
           activeTheme={activeTheme}
           themes={themes}
-          onNew={fileState.handleNew}
-          onOpen={fileState.handleOpen}
+          onNew={handleNewTab}
+          onOpen={handleOpenFile}
           onOpenFolder={fileState.handleOpenFolder}
-          onSave={fileState.handleSave}
-          onSaveAs={fileState.handleSaveAs}
+          onSave={saveActiveTab}
+          onSaveAs={saveActiveTabAs}
           onExportHtml={handleExportHtml}
           onExportPdf={exportAsPdf}
           onFind={() => {
@@ -1760,15 +1938,15 @@ export function App() {
         open={commandPaletteOpen}
         onClose={() => setCommandPaletteOpen(false)}
         commands={[
-          { id: "new", label: "New File", hint: "Ctrl+N", keywords: "create blank", run: fileState.handleNew },
+          { id: "new", label: "New File", hint: "Ctrl+N", keywords: "create blank", run: handleNewTab },
           { id: "new-tab", label: "New Tab", hint: "Ctrl+T", run: handleNewTab },
           { id: "switch-tab", label: "Switch Tab…", hint: "Ctrl+Shift+E", keywords: "go to file quick open buffer change", run: () => setTabSwitcherOpen(true) },
           { id: "insert-snippet", label: "Insert Snippet…", hint: "Ctrl+Space", keywords: "template shortcut macro abbreviation typed", run: () => setSnippetPickerOpen(true) },
           { id: "manage-snippets", label: "Manage Snippets…", keywords: "customize edit add delete snippet template shortcut", run: () => { setSnippetManagerAdd(false); setSnippetManagerOpen(true); } },
-          { id: "open", label: "Open File…", hint: "Ctrl+O", keywords: "load", run: fileState.handleOpen },
+          { id: "open", label: "Open File…", hint: "Ctrl+O", keywords: "load", run: handleOpenFile },
           { id: "open-folder", label: "Open Folder…", keywords: "directory workspace", run: fileState.handleOpenFolder },
-          { id: "save", label: "Save", hint: "Ctrl+S", run: fileState.handleSave },
-          { id: "save-as", label: "Save As…", hint: "Ctrl+Shift+S", run: fileState.handleSaveAs },
+          { id: "save", label: "Save", hint: "Ctrl+S", run: saveActiveTab },
+          { id: "save-as", label: "Save As…", hint: "Ctrl+Shift+S", run: saveActiveTabAs },
           { id: "reopen-tab", label: "Reopen Closed Tab", hint: "Ctrl+Shift+T", keywords: "restore", run: handleReopenClosedTab },
           { id: "close-tab", label: "Close Tab", hint: "Ctrl+W", run: () => handleCloseTab(fileTabs.activeTabId) },
           { id: "close-all", label: "Close All Tabs", hint: "Ctrl+Shift+W", run: handleCloseAllTabs },

@@ -161,6 +161,16 @@ export function useFileTabs() {
   tabsRef.current = tabs;
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
+  // Content ownership is independent of render state: advancing this revision
+  // on every mutation lets an async background write prove it still owns the
+  // snapshot it captured without forcing the whole editor to re-render per key.
+  const tabRevisionRef = useRef(new Map(tabs.map((tab) => [tab.id, 0])));
+  const getTabRevision = useCallback((id: string) => tabRevisionRef.current.get(id) ?? 0, []);
+  const advanceTabRevision = useCallback((id: string) => {
+    const next = (tabRevisionRef.current.get(id) ?? 0) + 1;
+    tabRevisionRef.current.set(id, next);
+    return next;
+  }, []);
 
   // Quick-switch MRU: tab ids most-recently-active first. Session-only (a ref,
   // not persisted — no value across reload, no write on every switch). Every tab
@@ -169,6 +179,7 @@ export function useFileTabs() {
   const mruRef = useRef<string[]>([activeTabId]);
   const activate = useCallback((id: string) => {
     mruRef.current = [id, ...mruRef.current.filter((x) => x !== id)];
+    activeTabIdRef.current = id;
     setActiveTabId(id);
   }, []);
   const getMru = useCallback(() => mruRef.current.slice(), []);
@@ -177,11 +188,23 @@ export function useFileTabs() {
   // active file's path is owned by useFileState; this keeps the snapshot tabs
   // and the TabBar label in sync).
   const updateTabPath = useCallback((id: string, newPath: string, newName: string) => {
-    setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, filePath: newPath, fileName: newName } : t)));
-  }, []);
+    advanceTabRevision(id);
+    const updated = tabsRef.current.map((t) => (
+      t.id === id ? { ...t, filePath: newPath, fileName: newName } : t
+    ));
+    tabsRef.current = updated;
+    setTabs(updated);
+    queueMicrotask(() => persistTabs(updated, activeTabIdRef.current));
+  }, [advanceTabRevision]);
   useEffect(() => {
     const ids = new Set(tabs.map((t) => t.id));
     mruRef.current = mruRef.current.filter((id) => ids.has(id));
+    for (const id of ids) {
+      if (!tabRevisionRef.current.has(id)) tabRevisionRef.current.set(id, 0);
+    }
+    for (const id of tabRevisionRef.current.keys()) {
+      if (!ids.has(id)) tabRevisionRef.current.delete(id);
+    }
   }, [tabs]);
   const [closedStack, setClosedStack] = useState<ClosedTab[]>(() => loadClosedStack());
   const closedStackRef = useRef(closedStack);
@@ -230,6 +253,7 @@ export function useFileTabs() {
     // Capture the doc as JSON regardless (cheap — ~0.2ms, even on large docs) so a
     // later switch-back restores via JSON instead of re-parsing the markdown.
     const docJSON = getDocJSONRef.current?.();
+    if (current?.content !== md) advanceTabRevision(id);
     // Update the REF synchronously, not just queued state: callers (newTab /
     // openInTab / reopenLastClosed) immediately read tabsRef.current and issue
     // a non-functional setTabs — under React batching that replace would
@@ -241,7 +265,7 @@ export function useFileTabs() {
     );
     setTabs(tabsRef.current);
     return md;
-  }, []);
+  }, [advanceTabRevision]);
 
   const switchTab = useCallback(
     (tabId: string, departingScrollTop?: number) => {
@@ -256,21 +280,21 @@ export function useFileTabs() {
         ? prevTab?.savedContent ?? prevTab?.content ?? ""
         : getMarkdownRef.current?.() ?? prevTab?.content ?? "";
       const docJSON = getDocJSONRef.current?.();
-      setTabs((prev) => {
-        const updated = prev.map((t) =>
-          t.id === prevId
-            ? { ...t, content: md, docJSON, scrollTop: departingScrollTop ?? t.scrollTop }
-            : t,
-        );
-        // Persist after structural mutation (schedule via microtask to read final state)
-        queueMicrotask(() => persistTabs(updated, tabId));
-        return updated;
-      });
+      if (prevTab?.content !== md) advanceTabRevision(prevId);
+      const updated = tabsRef.current.map((t) =>
+        t.id === prevId
+          ? { ...t, content: md, docJSON, scrollTop: departingScrollTop ?? t.scrollTop }
+          : t,
+      );
+      tabsRef.current = updated;
+      setTabs(updated);
+      // Persist after structural mutation (schedule via microtask to read final state)
+      queueMicrotask(() => persistTabs(updated, tabId));
       activate(tabId);
-      const target = tabsRef.current.find((t) => t.id === tabId);
+      const target = updated.find((t) => t.id === tabId);
       return target ?? null;
     },
-    [],
+    [advanceTabRevision],
   );
 
   const openInTab = useCallback(
@@ -298,6 +322,7 @@ export function useFileTabs() {
         !currentTab.isDirty &&
         currentTab.content === "";
       if (isUntitledEmpty) {
+        advanceTabRevision(currentTab.id);
         const updated: FileTab = {
           ...currentTab,
           fileName,
@@ -311,6 +336,7 @@ export function useFileTabs() {
         const newTabs = currentTabs.map((t) =>
           t.id === currentTab.id ? updated : t,
         );
+        tabsRef.current = newTabs;
         setTabs(newTabs);
         queueMicrotask(() => persistTabs(newTabs, currentTab.id));
         return { tab: updated, isNew: false };
@@ -322,12 +348,13 @@ export function useFileTabs() {
         savedContent: content,
       });
       const newTabs = [...currentTabs, tab];
+      tabsRef.current = newTabs;
       setTabs(newTabs);
       activate(tab.id);
       queueMicrotask(() => persistTabs(newTabs, tab.id));
       return { tab, isNew: true };
     },
-    [snapshotActiveTab],
+    [advanceTabRevision, snapshotActiveTab],
   );
 
   const newTab = useCallback((): FileTab => {
@@ -335,6 +362,7 @@ export function useFileTabs() {
     const tab = createTab();
     const currentTabs = tabsRef.current;
     const newTabs = [...currentTabs, tab];
+    tabsRef.current = newTabs;
     setTabs(newTabs);
     activate(tab.id);
     queueMicrotask(() => persistTabs(newTabs, tab.id));
@@ -375,6 +403,7 @@ export function useFileTabs() {
       }
       if (currentTabs.length <= 1) {
         const fresh = createTab();
+        tabsRef.current = [fresh];
         setTabs([fresh]);
         activate(fresh.id);
         queueMicrotask(() => persistTabs([fresh], fresh.id));
@@ -386,10 +415,12 @@ export function useFileTabs() {
         const nextIdx = Math.min(idx, remaining.length - 1);
         const next = remaining[nextIdx]!;
         activate(next.id);
+        tabsRef.current = remaining;
         setTabs(remaining);
         queueMicrotask(() => persistTabs(remaining, next.id));
         return { switchTo: next };
       }
+      tabsRef.current = remaining;
       setTabs(remaining);
       queueMicrotask(() => persistTabs(remaining, activeTabIdRef.current));
       return { switchTo: null };
@@ -399,6 +430,7 @@ export function useFileTabs() {
 
   const closeAllTabs = useCallback((): { switchTo: FileTab } => {
     const fresh = createTab();
+    tabsRef.current = [fresh];
     setTabs([fresh]);
     activate(fresh.id);
     queueMicrotask(() => persistTabs([fresh], fresh.id));
@@ -428,6 +460,7 @@ export function useFileTabs() {
         isDirty: (entry.content ?? "") !== "",
       });
       const newTabs = [...tabsRef.current, tab];
+      tabsRef.current = newTabs;
       setTabs(newTabs);
       activate(tab.id);
       queueMicrotask(() => persistTabs(newTabs, tab.id));
@@ -449,14 +482,36 @@ export function useFileTabs() {
     };
   }, [snapshotActiveTab]);
 
+  // Named reopen reads can be superseded by a newer buffer intent. Requeue the
+  // popped entry in that case so Ctrl+Shift+T never silently loses recovery
+  // history merely because its asynchronous read was correctly discarded.
+  const restoreClosedTab = useCallback((tab: FileTab) => {
+    const entry: ClosedTab = {
+      id: tab.id,
+      fileName: tab.fileName,
+      filePath: tab.filePath,
+      scrollTop: tab.scrollTop,
+      content: tab.filePath ? null : tab.content,
+    };
+    setClosedStack((prev) => {
+      if (prev.some((candidate) => candidate.id === entry.id)) return prev;
+      const next = [...prev, entry].slice(-CLOSED_STACK_CAP);
+      persistClosedStack(next);
+      return next;
+    });
+  }, []);
+
   const markTabDirty = useCallback(
     (tabId?: string) => {
       const id = tabId ?? activeTabIdRef.current;
-      setTabs((prev) =>
-        prev.map((t) => (t.id === id ? { ...t, isDirty: true } : t)),
-      );
+      advanceTabRevision(id);
+      const current = tabsRef.current.find((tab) => tab.id === id);
+      if (current?.isDirty) return;
+      const updated = tabsRef.current.map((t) => (t.id === id ? { ...t, isDirty: true } : t));
+      tabsRef.current = updated;
+      setTabs(updated);
     },
-    [],
+    [advanceTabRevision],
   );
 
   // Inverse of markTabDirty — clears the flag when the buffer returns to the
@@ -465,9 +520,11 @@ export function useFileTabs() {
   const markTabClean = useCallback(
     (tabId?: string) => {
       const id = tabId ?? activeTabIdRef.current;
-      setTabs((prev) =>
-        prev.map((t) => (t.id === id && t.isDirty ? { ...t, isDirty: false } : t)),
-      );
+      const updated = tabsRef.current.map((t) => (
+        t.id === id && t.isDirty ? { ...t, isDirty: false } : t
+      ));
+      tabsRef.current = updated;
+      setTabs(updated);
     },
     [],
   );
@@ -479,10 +536,32 @@ export function useFileTabs() {
         filePath?: string | null;
         fileName?: string;
         savedContent: string;
+        expectedRevision?: number;
       },
     ) => {
-      setTabs((prev) => {
-        const updated = prev.map((t) =>
+      const current = tabsRef.current.find((tab) => tab.id === tabId);
+      if (!current) return false;
+      if (
+        updates.expectedRevision !== undefined &&
+        getTabRevision(tabId) !== updates.expectedRevision
+      ) {
+        return false;
+      }
+      const nextFilePath = updates.filePath !== undefined ? updates.filePath : current.filePath;
+      const nextFileName = updates.fileName !== undefined ? updates.fileName : current.fileName;
+      // Effects can mirror a save that an owning call already settled. That is
+      // an observation, not a content transition, so it must not invalidate a
+      // pending owner by advancing the revision again.
+      if (
+        !current.isDirty &&
+        current.savedContent === updates.savedContent &&
+        current.filePath === nextFilePath &&
+        current.fileName === nextFileName
+      ) {
+        return true;
+      }
+      advanceTabRevision(tabId);
+      const updated = tabsRef.current.map((t) =>
           t.id === tabId
             ? {
                 ...t,
@@ -497,26 +576,36 @@ export function useFileTabs() {
               }
             : t,
         );
-        // Persist after save — filePath may have changed (Save As)
-        queueMicrotask(() => persistTabs(updated, activeTabIdRef.current));
-        return updated;
-      });
+      tabsRef.current = updated;
+      setTabs(updated);
+      // Persist after save — filePath may have changed (Save As)
+      queueMicrotask(() => persistTabs(updated, activeTabIdRef.current));
+      return true;
     },
-    [],
+    [advanceTabRevision, getTabRevision],
   );
 
   // Update a tab's content without switching to it — used for background hydration
   const hydrateTab = useCallback(
-    (tabId: string, content: string) => {
-      setTabs((prev) =>
-        prev.map((t) =>
+    (tabId: string, content: string, expectedRevision?: number) => {
+      if (!tabsRef.current.some((tab) => tab.id === tabId)) return false;
+      if (
+        expectedRevision !== undefined &&
+        getTabRevision(tabId) !== expectedRevision
+      ) {
+        return false;
+      }
+      advanceTabRevision(tabId);
+      const updated = tabsRef.current.map((t) =>
           t.id === tabId
             ? { ...t, content, savedContent: content, isDirty: false, docJSON: undefined }
             : t,
-        ),
       );
+      tabsRef.current = updated;
+      setTabs(updated);
+      return true;
     },
-    [],
+    [advanceTabRevision, getTabRevision],
   );
 
   return {
@@ -524,6 +613,7 @@ export function useFileTabs() {
     activeTab,
     activeTabId,
     getMru,
+    getTabRevision,
     updateTabPath,
     switchTab,
     openInTab,
@@ -539,5 +629,6 @@ export function useFileTabs() {
     registerIsClean,
     closedStack,
     reopenLastClosed,
+    restoreClosedTab,
   };
 }

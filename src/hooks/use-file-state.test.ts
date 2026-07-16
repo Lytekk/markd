@@ -1,6 +1,29 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useFileState } from "./use-file-state";
+
+const { saveToFileMock, saveFileAsMock } = vi.hoisted(() => ({
+  saveToFileMock: vi.fn(),
+  saveFileAsMock: vi.fn(),
+}));
+
+vi.mock("@/lib/file-system", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/file-system")>();
+  return {
+    ...actual,
+    saveToFile: saveToFileMock,
+    saveFileAs: saveFileAsMock,
+  };
+});
+
+beforeEach(() => {
+  saveToFileMock.mockReset();
+  saveFileAsMock.mockReset();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("useFileState dirty lifecycle", () => {
   it("markDirty sets isDirty and markClean clears it", () => {
@@ -74,5 +97,210 @@ describe("useFileState restoreState → setContent forwarding", () => {
     // otherwise reverting the textarea to the arrival snapshot would falsely
     // clear dirty on a buffer that still differs from disk (close-guard bypass).
     expect(isDirty).toBe(true);
+  });
+});
+
+describe("useFileState save ownership", () => {
+  it("does not let a completed save mutate a buffer restored while the write was pending", async () => {
+    let finishWrite: ((ok: boolean) => void) | undefined;
+    saveToFileMock.mockImplementation(
+      () => new Promise<boolean>((resolve) => {
+        finishWrite = resolve;
+      }),
+    );
+    const { result } = renderHook(() => useFileState());
+    let markdown = "A edited";
+    act(() => result.current.registerGetMarkdown(() => markdown));
+    await act(async () => {
+      await result.current.handleOpenByPath("/tmp/a.md", "A saved");
+    });
+    act(() => result.current.markDirty());
+
+    const pendingSave = result.current.handleSave();
+    act(() => {
+      result.current.restoreState({
+        fileName: "b.md",
+        filePath: "/tmp/b.md",
+        content: "B edited",
+        isDirty: true,
+        savedContent: "B saved",
+      });
+    });
+    markdown = "B edited";
+    finishWrite?.(true);
+    await act(async () => {
+      await pendingSave;
+    });
+
+    expect(result.current.filePath).toBe("/tmp/b.md");
+    expect(result.current.savedContent).toBe("B saved");
+    expect(result.current.isDirty).toBe(true);
+  });
+
+  it("keeps the buffer dirty when the user edits again during a pending save", async () => {
+    let finishWrite: ((ok: boolean) => void) | undefined;
+    saveToFileMock.mockImplementation(
+      () => new Promise<boolean>((resolve) => {
+        finishWrite = resolve;
+      }),
+    );
+    const { result } = renderHook(() => useFileState());
+    let markdown = "first edit";
+    act(() => result.current.registerGetMarkdown(() => markdown));
+    await act(async () => {
+      await result.current.handleOpenByPath("/tmp/a.md", "saved");
+    });
+    act(() => result.current.markDirty());
+
+    const pendingSave = result.current.handleSave();
+    markdown = "second edit";
+    act(() => result.current.markDirty());
+    finishWrite?.(true);
+    await act(async () => {
+      await pendingSave;
+    });
+
+    expect(result.current.savedContent).toBe("saved");
+    expect(result.current.isDirty).toBe(true);
+  });
+
+  it("queues a newer save behind an older write so disk bytes cannot land out of order", async () => {
+    let finishFirst: ((ok: boolean) => void) | undefined;
+    let finishSecond: ((ok: boolean) => void) | undefined;
+    saveToFileMock
+      .mockImplementationOnce(
+        () => new Promise<boolean>((resolve) => {
+          finishFirst = resolve;
+        }),
+      )
+      .mockImplementationOnce(
+        () => new Promise<boolean>((resolve) => {
+          finishSecond = resolve;
+        }),
+      );
+    const { result } = renderHook(() => useFileState());
+    let markdown = "first edit";
+    act(() => result.current.registerGetMarkdown(() => markdown));
+    await act(async () => {
+      await result.current.handleOpenByPath("/tmp/a.md", "saved");
+    });
+
+    act(() => result.current.markDirty());
+    const firstSave = result.current.handleSave();
+    expect(saveToFileMock).toHaveBeenCalledWith("/tmp/a.md", "first edit");
+
+    markdown = "second edit";
+    act(() => result.current.markDirty());
+    const secondSave = result.current.handleSave();
+    // The second write must not start until the first has settled. Otherwise a
+    // slow first write can land after the newer bytes and corrupt the file.
+    expect(saveToFileMock).toHaveBeenCalledTimes(1);
+
+    finishFirst?.(true);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(saveToFileMock).toHaveBeenLastCalledWith("/tmp/a.md", "second edit");
+
+    finishSecond?.(true);
+    await act(async () => {
+      await expect(firstSave).resolves.toBe(false);
+      await expect(secondSave).resolves.toBe(true);
+    });
+    expect(result.current.savedContent).toBe("second edit");
+    expect(result.current.isDirty).toBe(false);
+  });
+
+  it("restarts the autosave debounce for every subsequent edit", async () => {
+    vi.useFakeTimers();
+    saveToFileMock.mockResolvedValue(true);
+    const { result } = renderHook(() => useFileState());
+    let markdown = "first edit";
+    act(() => result.current.registerGetMarkdown(() => markdown));
+    await act(async () => {
+      await result.current.handleOpenByPath("/tmp/a.md", "saved");
+    });
+
+    act(() => result.current.markDirty());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(29_000);
+    });
+    markdown = "second edit";
+    act(() => result.current.markDirty());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(saveToFileMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(29_000);
+    });
+    expect(saveToFileMock).toHaveBeenCalledWith("/tmp/a.md", "second edit");
+  });
+
+  it("arms autosave when a dirty named tab becomes the active buffer", async () => {
+    vi.useFakeTimers();
+    saveToFileMock.mockResolvedValue(true);
+    const { result } = renderHook(() => useFileState());
+    act(() => result.current.registerGetMarkdown(() => "edited"));
+    act(() => {
+      result.current.restoreState({
+        fileName: "a.md",
+        filePath: "/tmp/a.md",
+        content: "edited",
+        isDirty: true,
+        savedContent: "saved",
+      });
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(saveToFileMock).toHaveBeenCalledWith("/tmp/a.md", "edited");
+  });
+
+  it("keeps an autosave retry armed when a manual save fails", async () => {
+    vi.useFakeTimers();
+    saveToFileMock
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    const { result } = renderHook(() => useFileState());
+    act(() => result.current.registerGetMarkdown(() => "edited"));
+    await act(async () => {
+      await result.current.handleOpenByPath("/tmp/a.md", "saved");
+    });
+    act(() => result.current.markDirty());
+
+    await act(async () => {
+      await expect(result.current.handleSave()).resolves.toBe(false);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(saveToFileMock).toHaveBeenCalledTimes(2);
+    expect(saveToFileMock).toHaveBeenLastCalledWith("/tmp/a.md", "edited");
+  });
+
+  it("retries a failed autosave while the same buffer revision remains dirty", async () => {
+    vi.useFakeTimers();
+    saveToFileMock
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    const { result } = renderHook(() => useFileState());
+    act(() => result.current.registerGetMarkdown(() => "edited"));
+    await act(async () => {
+      await result.current.handleOpenByPath("/tmp/a.md", "saved");
+    });
+    act(() => result.current.markDirty());
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(saveToFileMock).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(saveToFileMock).toHaveBeenCalledTimes(2);
+    expect(result.current.isDirty).toBe(false);
   });
 });
