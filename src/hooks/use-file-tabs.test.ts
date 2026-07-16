@@ -105,6 +105,29 @@ describe("useFileTabs — reopen closed tab", () => {
     expect(reopened.tab).toBeNull();
   });
 
+  it("restores a popped named entry when its disk reopen is superseded", () => {
+    const { result } = renderHook(() => useFileTabs());
+    act(() => {
+      result.current.openInTab("doc.md", "/tmp/doc.md", "hello");
+    });
+    const docId = result.current.tabs.find((tab) => tab.filePath === "/tmp/doc.md")!.id;
+    act(() => {
+      result.current.closeTab(docId);
+    });
+    let reopened: ReturnType<typeof result.current.reopenLastClosed> = { tab: null };
+    act(() => {
+      reopened = result.current.reopenLastClosed();
+    });
+    act(() => {
+      result.current.restoreClosedTab(reopened.tab!);
+    });
+
+    expect(result.current.closedStack).toContainEqual(expect.objectContaining({
+      id: docId,
+      filePath: "/tmp/doc.md",
+    }));
+  });
+
   it("caps the in-memory closed stack at CLOSED_STACK_CAP", () => {
     const { result } = renderHook(() => useFileTabs());
     for (let i = 0; i < 12; i++) {
@@ -173,6 +196,23 @@ describe("useFileTabs — updateTabPath (file renamed/moved on disk)", () => {
     const b = result.current.tabs.find((t) => t.filePath === "/tmp/b.md");
     expect(b!.fileName).toBe("b.md");
   });
+
+  it("persists a renamed background tab so restart hydration follows its new path", async () => {
+    const { result } = renderHook(() => useFileTabs());
+    act(() => { result.current.openInTab("a.md", "/tmp/a.md", "A"); });
+    const id = result.current.tabs.find((t) => t.filePath === "/tmp/a.md")!.id;
+    act(() => { result.current.updateTabPath(id, "/tmp/renamed.md", "renamed.md"); });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const persisted = JSON.parse(localStorage.getItem("markd-tabs")!);
+    expect(persisted.tabs).toContainEqual(expect.objectContaining({
+      id,
+      filePath: "/tmp/renamed.md",
+      fileName: "renamed.md",
+    }));
+  });
 });
 
 describe("useFileTabs — markTabClean (revert-to-saved clears the indicator)", () => {
@@ -198,6 +238,41 @@ describe("useFileTabs — markTabClean (revert-to-saved clears the indicator)", 
     expect(result.current.tabs.find((t) => t.id === aId)!.isDirty).toBe(true);
     const activeId = result.current.activeTabId;
     expect(result.current.tabs.find((t) => t.id === activeId)!.isDirty).toBe(false);
+  });
+});
+
+describe("useFileTabs — background write ownership", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("refuses to settle a background save after that tab changed", () => {
+    const { result } = renderHook(() => useFileTabs());
+    act(() => { result.current.openInTab("a.md", "/tmp/a.md", "A"); });
+    const id = result.current.tabs.find((tab) => tab.filePath === "/tmp/a.md")!.id;
+    const revision = result.current.getTabRevision(id);
+
+    act(() => { result.current.markTabDirty(id); });
+    let saved = true;
+    act(() => {
+      saved = result.current.markTabSaved(id, {
+        savedContent: "A",
+        expectedRevision: revision,
+      });
+    });
+
+    expect(saved).toBe(false);
+    expect(result.current.tabs.find((tab) => tab.id === id)!.isDirty).toBe(true);
+  });
+
+  it("does not advance ownership when a saved-state mirror repeats settled data", () => {
+    const { result } = renderHook(() => useFileTabs());
+    act(() => { result.current.openInTab("a.md", "/tmp/a.md", "A"); });
+    const id = result.current.tabs.find((tab) => tab.filePath === "/tmp/a.md")!.id;
+
+    act(() => { result.current.markTabSaved(id, { savedContent: "A" }); });
+    const settledRevision = result.current.getTabRevision(id);
+    act(() => { result.current.markTabSaved(id, { savedContent: "A" }); });
+
+    expect(result.current.getTabRevision(id)).toBe(settledRevision);
   });
 });
 

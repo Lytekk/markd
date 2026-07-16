@@ -10,6 +10,7 @@ import {
   saveFileAs,
   readFileByPath,
 } from "@/lib/file-system";
+import { queueFileWrite } from "@/lib/file-write-queue";
 
 function dirname(filePath: string): string {
   const lastSep = Math.max(filePath.lastIndexOf("/"), filePath.lastIndexOf("\\"));
@@ -17,6 +18,8 @@ function dirname(filePath: string): string {
 }
 
 const AUTO_SAVE_DELAY_MS = 30_000;
+const AUTO_SAVE_RETRY_DELAY_MS = 5_000;
+const AUTO_SAVE_MAX_RETRIES = 3;
 
 export interface FileState {
   fileName: string;
@@ -36,17 +39,42 @@ export interface FileState {
   openCount: number;
 }
 
+const INITIAL_FILE_STATE: FileState = {
+  fileName: "Untitled",
+  filePath: null,
+  isDirty: false,
+  dirTree: [],
+  dirRoot: null,
+  savedContent: "",
+  lastSaved: null,
+  openCount: 0,
+};
+
 export function useFileState() {
-  const [state, setState] = useState<FileState>({
-    fileName: "Untitled",
-    filePath: null,
-    isDirty: false,
-    dirTree: [],
-    dirRoot: null,
-    savedContent: "",
-    lastSaved: null,
-    openCount: 0,
-  });
+  const stateRef = useRef<FileState>(INITIAL_FILE_STATE);
+  const [state, setState] = useState<FileState>(() => stateRef.current);
+  const updateState = useCallback((updater: (current: FileState) => FileState) => {
+    const next = updater(stateRef.current);
+    stateRef.current = next;
+    setState(next);
+    return next;
+  }, []);
+
+  // Every buffer replacement and editor mutation advances this generation. A
+  // filesystem write is allowed to settle state only if it still owns the exact
+  // buffer revision it captured; otherwise it wrote an older snapshot and the
+  // visible buffer must stay dirty for a later save.
+  const contentRevisionRef = useRef(0);
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleAutoSaveRef = useRef<(revision: number, filePath: string | null, attempt?: number) => void>(
+    () => {},
+  );
+  const clearAutoSave = useCallback(() => {
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+  }, []);
 
   const getMarkdownRef = useRef<(() => string) | null>(null);
   const setContentRef = useRef<
@@ -64,23 +92,93 @@ export function useFileState() {
     [],
   );
 
+  const getCurrentState = useCallback(() => stateRef.current, []);
+
+  const scheduleAutoSave = useCallback(
+    (revision: number, filePath: string | null, attempt = 0) => {
+      clearAutoSave();
+      if (!filePath) return;
+
+      autoSaveTimerRef.current = setTimeout(() => {
+        void (async () => {
+          const current = stateRef.current;
+          if (
+            contentRevisionRef.current !== revision ||
+            !current.isDirty ||
+            current.filePath !== filePath
+          ) {
+            return;
+          }
+          const md = resolveSaveContent(
+            true,
+            current.savedContent,
+            () => getMarkdownRef.current?.() ?? "",
+          );
+          const ok = await queueFileWrite(filePath, async () => {
+            if (
+              contentRevisionRef.current !== revision ||
+              stateRef.current.filePath !== filePath
+            ) {
+              return null;
+            }
+            return saveToFile(filePath, md);
+          });
+          if (ok === null) return;
+          if (
+            contentRevisionRef.current !== revision ||
+            stateRef.current.filePath !== filePath
+          ) {
+            return;
+          }
+          if (!ok) {
+            if (attempt < AUTO_SAVE_MAX_RETRIES && stateRef.current.isDirty) {
+              scheduleAutoSaveRef.current(revision, filePath, attempt + 1);
+            } else {
+              console.error("[autosave] failed; document remains unsaved");
+            }
+            return;
+          }
+          contentRevisionRef.current += 1;
+          clearAutoSave();
+          updateState((prev) => ({
+            ...prev,
+            isDirty: false,
+            savedContent: md,
+            lastSaved: Date.now(),
+          }));
+        })();
+      }, attempt === 0 ? AUTO_SAVE_DELAY_MS : AUTO_SAVE_RETRY_DELAY_MS);
+    },
+    [clearAutoSave, updateState],
+  );
+  scheduleAutoSaveRef.current = scheduleAutoSave;
+
   const markDirty = useCallback(() => {
-    setState((prev) => (prev.isDirty ? prev : { ...prev, isDirty: true }));
-  }, []);
+    const revision = ++contentRevisionRef.current;
+    const filePath = stateRef.current.filePath;
+    updateState((prev) => (prev.isDirty ? prev : { ...prev, isDirty: true }));
+    // Reset the debounce on EVERY edit. Depending only on isDirty would arm it
+    // once, then save a stale mid-typing snapshot 30 seconds later.
+    scheduleAutoSave(revision, filePath);
+  }, [scheduleAutoSave, updateState]);
 
   // Inverse of markDirty — used when the buffer returns to the saved state
   // (Ctrl+Z back to the last save), so the dirty indicator can clear without
   // an actual save.
   const markClean = useCallback(() => {
-    setState((prev) => (prev.isDirty ? { ...prev, isDirty: false } : prev));
-  }, []);
+    contentRevisionRef.current += 1;
+    clearAutoSave();
+    updateState((prev) => (prev.isDirty ? { ...prev, isDirty: false } : prev));
+  }, [clearAutoSave, updateState]);
 
   const handleOpen = useCallback(async () => {
     const result = await openFile();
     if (!result) return;
 
+    contentRevisionRef.current += 1;
+    clearAutoSave();
     setContentRef.current?.(result.content, dirname(result.path));
-    setState((prev) => ({
+    updateState((prev) => ({
       ...prev,
       fileName: result.name,
       filePath: result.path,
@@ -88,38 +186,69 @@ export function useFileState() {
       savedContent: result.content,
       openCount: prev.openCount + 1,
     }));
-  }, []);
+  }, [clearAutoSave, updateState]);
 
   const handleOpenFolder = useCallback(async () => {
     const result = await openDirectory();
     if (!result) return;
-    setState((prev) => ({
+    updateState((prev) => ({
       ...prev,
       dirTree: result.tree,
       dirRoot: result.path,
     }));
-  }, []);
+  }, [updateState]);
 
   const handleSave = useCallback(async () => {
     // Round-trip fidelity: a clean buffer writes savedContent VERBATIM (no
     // re-serialization → no normalization churn on untouched files); a dirty
     // buffer serializes with the source's trailing-newline convention.
+    const snapshot = stateRef.current;
+    const revision = contentRevisionRef.current;
     const md = resolveSaveContent(
-      state.isDirty,
-      state.savedContent,
+      snapshot.isDirty,
+      snapshot.savedContent,
       () => getMarkdownRef.current?.() ?? "",
     );
+    clearAutoSave();
 
-    if (state.filePath) {
-      const ok = await saveToFile(state.filePath, md);
-      if (ok) setState((prev) => ({ ...prev, isDirty: false, savedContent: md, lastSaved: Date.now() }));
-      return ok;
+    const filePath = snapshot.filePath;
+    if (filePath) {
+      const ok = await queueFileWrite(filePath, async () => {
+        if (
+          contentRevisionRef.current !== revision ||
+          stateRef.current.filePath !== filePath
+        ) {
+          return null;
+        }
+        return saveToFile(filePath, md);
+      });
+      if (ok === null) return false;
+      if (
+        contentRevisionRef.current !== revision ||
+        stateRef.current.filePath !== filePath
+      ) {
+        return false;
+      }
+      if (!ok) {
+        if (stateRef.current.isDirty) scheduleAutoSave(revision, filePath);
+        return false;
+      }
+      contentRevisionRef.current += 1;
+      updateState((prev) => ({ ...prev, isDirty: false, savedContent: md, lastSaved: Date.now() }));
+      return true;
     }
 
     // No path yet — save as
-    const result = await saveFileAs(md, state.fileName);
+    const result = await saveFileAs(md, snapshot.fileName);
+    if (
+      contentRevisionRef.current !== revision ||
+      stateRef.current.filePath !== snapshot.filePath
+    ) {
+      return false;
+    }
     if (result) {
-      setState((prev) => ({
+      contentRevisionRef.current += 1;
+      updateState((prev) => ({
         ...prev,
         filePath: result.path,
         fileName: result.name,
@@ -129,18 +258,31 @@ export function useFileState() {
       }));
       return true;
     }
+    if (snapshot.filePath && stateRef.current.isDirty) {
+      scheduleAutoSave(revision, snapshot.filePath);
+    }
     return false;
-  }, [state.filePath, state.fileName, state.isDirty, state.savedContent]);
+  }, [clearAutoSave, scheduleAutoSave, updateState]);
 
   const handleSaveAs = useCallback(async () => {
+    const snapshot = stateRef.current;
+    const revision = contentRevisionRef.current;
     const md = resolveSaveContent(
-      state.isDirty,
-      state.savedContent,
+      snapshot.isDirty,
+      snapshot.savedContent,
       () => getMarkdownRef.current?.() ?? "",
     );
-    const result = await saveFileAs(md, state.fileName);
+    clearAutoSave();
+    const result = await saveFileAs(md, snapshot.fileName);
+    if (
+      contentRevisionRef.current !== revision ||
+      stateRef.current.filePath !== snapshot.filePath
+    ) {
+      return false;
+    }
     if (result) {
-      setState((prev) => ({
+      contentRevisionRef.current += 1;
+      updateState((prev) => ({
         ...prev,
         filePath: result.path,
         fileName: result.name,
@@ -148,15 +290,22 @@ export function useFileState() {
         savedContent: md,
         lastSaved: Date.now(),
       }));
+      return true;
     }
-  }, [state.fileName, state.isDirty, state.savedContent]);
+    if (snapshot.filePath && stateRef.current.isDirty) {
+      scheduleAutoSave(revision, snapshot.filePath);
+    }
+    return false;
+  }, [clearAutoSave, scheduleAutoSave, updateState]);
 
   const handleFileSelect = useCallback(async (entry: FileEntry) => {
     if (entry.kind !== "file") return;
     const content = await readFileByPath(entry.path);
 
+    contentRevisionRef.current += 1;
+    clearAutoSave();
     setContentRef.current?.(content, dirname(entry.path));
-    setState((prev) => ({
+    updateState((prev) => ({
       ...prev,
       fileName: entry.name,
       filePath: entry.path,
@@ -164,11 +313,13 @@ export function useFileState() {
       savedContent: content,
       openCount: prev.openCount + 1,
     }));
-  }, []);
+  }, [clearAutoSave, updateState]);
 
   const handleNew = useCallback(() => {
+    contentRevisionRef.current += 1;
+    clearAutoSave();
     setContentRef.current?.("", "");
-    setState((prev) => ({
+    updateState((prev) => ({
       fileName: "Untitled",
       filePath: null,
       isDirty: false,
@@ -178,14 +329,16 @@ export function useFileState() {
       lastSaved: null,
       openCount: prev.openCount + 1,
     }));
-  }, []);
+  }, [clearAutoSave, updateState]);
 
   const handleOpenByPath = useCallback(async (filePath: string, preloadedContent?: string) => {
     const content = preloadedContent ?? await readFileByPath(filePath);
     const name = filePath.split(/[/\\]/).pop() ?? "untitled.md";
 
+    contentRevisionRef.current += 1;
+    clearAutoSave();
     setContentRef.current?.(content, dirname(filePath));
-    setState((prev) => ({
+    updateState((prev) => ({
       ...prev,
       fileName: name,
       filePath,
@@ -193,7 +346,7 @@ export function useFileState() {
       savedContent: content,
       openCount: prev.openCount + 1,
     }));
-  }, []);
+  }, [clearAutoSave, updateState]);
 
   // Restore state from a tab snapshot — sets editor content + file state without FS reads.
   const restoreState = useCallback(
@@ -207,6 +360,8 @@ export function useFileState() {
       /** Cached PM JSON of content's body — restore via this (fast) when present. */
       docJSON?: JSONContent;
     }) => {
+      const revision = ++contentRevisionRef.current;
+      clearAutoSave();
       setContentRef.current?.(
         snapshot.content,
         snapshot.filePath ? dirname(snapshot.filePath) : "",
@@ -216,7 +371,7 @@ export function useFileState() {
         // source mode must not inherit the previous tab's entry flag).
         snapshot.isDirty,
       );
-      setState((prev) => ({
+      updateState((prev) => ({
         ...prev,
         fileName: snapshot.fileName,
         filePath: snapshot.filePath,
@@ -224,67 +379,41 @@ export function useFileState() {
         savedContent: snapshot.savedContent,
         lastSaved: snapshot.lastSaved ?? null,
       }));
+      if (snapshot.isDirty) scheduleAutoSave(revision, snapshot.filePath);
     },
-    [],
+    [clearAutoSave, scheduleAutoSave, updateState],
   );
 
   // Re-read the opened folder into the tree (after a create/rename/trash).
   const refreshTree = useCallback(async () => {
-    if (!state.dirRoot) return;
-    const tree = await readDirTree(state.dirRoot);
-    setState((prev) => ({ ...prev, dirTree: tree }));
-  }, [state.dirRoot]);
+    const root = stateRef.current.dirRoot;
+    if (!root) return;
+    const tree = await readDirTree(root);
+    if (stateRef.current.dirRoot !== root) return;
+    updateState((prev) => ({ ...prev, dirTree: tree }));
+  }, [updateState]);
 
   // Rename of the ACTIVE file: point state (and the autosave target) at the new
   // path so autosave writes to the new file, never resurrecting a ghost at the
   // old path.
   const updateActiveFilePath = useCallback((newPath: string, newName: string) => {
-    setState((prev) => ({ ...prev, filePath: newPath, fileName: newName }));
-  }, []);
+    const revision = ++contentRevisionRef.current;
+    const wasDirty = stateRef.current.isDirty;
+    clearAutoSave();
+    updateState((prev) => ({ ...prev, filePath: newPath, fileName: newName }));
+    if (wasDirty) scheduleAutoSave(revision, newPath);
+  }, [clearAutoSave, scheduleAutoSave, updateState]);
 
   // Trash of the ACTIVE file: detach from disk (filePath -> null) so the autosave
   // effect (gated on filePath) clears its timer and can't recreate the trashed
   // file. Content stays in the editor as an unsaved buffer.
   const detachActiveFile = useCallback(() => {
-    setState((prev) => ({ ...prev, filePath: null, isDirty: true }));
-  }, []);
+    contentRevisionRef.current += 1;
+    clearAutoSave();
+    updateState((prev) => ({ ...prev, filePath: null, isDirty: true }));
+  }, [clearAutoSave, updateState]);
 
-  // Auto-save: debounce 30s after last edit, only if file has a path
-  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    if (autoSaveTimerRef.current) {
-      clearTimeout(autoSaveTimerRef.current);
-      autoSaveTimerRef.current = null;
-    }
-
-    if (state.isDirty && state.filePath) {
-      autoSaveTimerRef.current = setTimeout(async () => {
-        // Autosave only arms while dirty → always serializes; conform to the
-        // source's newline/line-ending conventions like the manual save path.
-        const md = resolveSaveContent(
-          true,
-          state.savedContent,
-          () => getMarkdownRef.current?.() ?? "",
-        );
-        const ok = await saveToFile(state.filePath!, md);
-        if (ok) {
-          setState((prev) => ({
-            ...prev,
-            isDirty: false,
-            savedContent: md,
-            lastSaved: Date.now(),
-          }));
-        }
-      }, AUTO_SAVE_DELAY_MS);
-    }
-
-    return () => {
-      if (autoSaveTimerRef.current) {
-        clearTimeout(autoSaveTimerRef.current);
-      }
-    };
-  }, [state.isDirty, state.filePath]);
+  useEffect(() => clearAutoSave, [clearAutoSave]);
 
   return {
     ...state,
@@ -299,6 +428,7 @@ export function useFileState() {
     handleOpenByPath,
     registerGetMarkdown,
     registerSetContent,
+    getCurrentState,
     restoreState,
     refreshTree,
     updateActiveFilePath,
