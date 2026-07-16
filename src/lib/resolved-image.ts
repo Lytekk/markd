@@ -12,6 +12,8 @@ export interface ResolvedImageOptions extends ImageOptions {
  * writes the original relative path back to disk.
  *
  * Requires `app.security.assetProtocol.enable = true` in tauri.conf.json.
+ * Local assets are available only when their file or containing folder was
+ * explicitly authorized through a native dialog or OS file-open event.
  */
 export const ResolvedImage = Image.extend<ResolvedImageOptions>({
   addOptions() {
@@ -27,9 +29,13 @@ export const ResolvedImage = Image.extend<ResolvedImageOptions>({
   },
 });
 
-function resolveImageSrc(src: string, fileDir: string): string {
+export function resolveImageSrc(src: string, fileDir: string): string {
   if (!src) return src;
-  if (/^(https?:|data:|asset:|file:|tauri:|blob:)/i.test(src)) return src;
+  // Never let markdown provide a local-protocol URL directly: that would make
+  // the document content an ambient filesystem authority. Generated asset URLs
+  // come only from convertFileSrc below after Tauri has checked its scope.
+  if (/^(asset:|file:|tauri:)/i.test(src)) return "";
+  if (/^(https?:|data:|blob:)/i.test(src)) return src;
   if (!fileDir) return src;
 
   const absolute = isAbsolute(src) ? src : joinPath(fileDir, src);

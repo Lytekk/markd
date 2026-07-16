@@ -68,7 +68,15 @@ export function Sidebar({
     let cancelled = false;
     void (async () => {
       const checks = await Promise.all(
-        recentFiles.map(async (f) => [f.path, await pathExists(f.path)] as const),
+        recentFiles.map(async (f) => {
+          try {
+            return [f.path, await pathExists(f.path)] as const;
+          } catch {
+            // An unauthorized or transient path probe is not evidence that the
+            // recent file was deleted. Leave it available for user reauthorization.
+            return [f.path, true] as const;
+          }
+        }),
       );
       if (cancelled) return;
       setMissingRecent(new Set(checks.filter(([, exists]) => !exists).map(([p]) => p)));

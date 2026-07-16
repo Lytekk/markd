@@ -9,6 +9,7 @@ export interface FileEntry {
 }
 
 const MD_EXTENSIONS = [".md", ".markdown", ".mdx", ".txt"];
+const PATH_AUTHORIZATION_ERROR_CODE = "MARKD_PATH_NOT_AUTHORIZED";
 
 function isMarkdownFile(name: string): boolean {
   return MD_EXTENSIONS.some((ext) => name.toLowerCase().endsWith(ext));
@@ -20,18 +21,24 @@ export function isTauri(): boolean {
   return "__TAURI_INTERNALS__" in window || "__TAURI__" in window;
 }
 
+/** True only for the stable, user-safe error emitted by the native scope gate. */
+export function isPathAuthorizationError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes(PATH_AUTHORIZATION_ERROR_CODE);
+}
+
 // ── Tauri implementations ──────────────────────────────────────────
 
-async function tauriOpenFile(): Promise<{
+async function tauriOpenFile(defaultPath?: string): Promise<{
   content: string;
   path: string;
   name: string;
 } | null> {
   const { open } = await import("@tauri-apps/plugin-dialog");
-  const { readTextFile } = await import("@tauri-apps/plugin-fs");
 
   const selected = await open({
     multiple: false,
+    defaultPath,
     filters: [
       { name: "Markdown & Text", extensions: ["md", "markdown", "mdx", "txt"] },
       { name: "All Files", extensions: ["*"] },
@@ -40,7 +47,8 @@ async function tauriOpenFile(): Promise<{
 
   if (!selected) return null;
   const path = typeof selected === "string" ? selected : String(selected);
-  const content = await readTextFile(path);
+  const { invoke } = await import("@tauri-apps/api/core");
+  const content = await invoke<string>("read_file", { path });
   const name = path.split(/[/\\]/).pop() ?? "untitled.md";
   return { content, path, name };
 }
@@ -51,14 +59,7 @@ async function tauriSaveFile(path: string, content: string): Promise<boolean> {
     await invoke("write_file", { path, content });
     return true;
   } catch {
-    // Fallback to plugin
-    try {
-      const { writeTextFile } = await import("@tauri-apps/plugin-fs");
-      await writeTextFile(path, content);
-      return true;
-    } catch {
-      return false;
-    }
+    return false;
   }
 }
 
@@ -74,8 +75,8 @@ async function tauriSaveFileAs(
   });
 
   if (!path) return null;
-  // Route through tauriSaveFile so the write goes via the atomic write_file
-  // command (temp + rename), with the same plugin fallback.
+  // Route through tauriSaveFile so every desktop write uses the hardened native
+  // atomic command after the dialog has granted this selected path's scope.
   const ok = await tauriSaveFile(path, content);
   if (!ok) return null;
   const name = path.split(/[/\\]/).pop() ?? suggestedName;
@@ -88,7 +89,7 @@ async function tauriOpenDirectory(): Promise<{
 } | null> {
   const { open } = await import("@tauri-apps/plugin-dialog");
 
-  const selected = await open({ directory: true });
+  const selected = await open({ directory: true, recursive: true });
   if (!selected) return null;
   const dirPath = typeof selected === "string" ? selected : String(selected);
   const tree = await tauriReadDir(dirPath, 0);
@@ -142,15 +143,8 @@ async function tauriReadDir(
 }
 
 async function tauriReadFileByPath(path: string): Promise<string> {
-  // Use custom Rust command to bypass FS scope restrictions
-  try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return await invoke<string>("read_file", { path });
-  } catch {
-    // Fallback to plugin (works for scoped paths)
-    const { readTextFile } = await import("@tauri-apps/plugin-fs");
-    return readTextFile(path);
-  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<string>("read_file", { path });
 }
 
 // ── Browser File System Access API implementations ─────────────────
@@ -218,8 +212,8 @@ async function browserSaveFileAs(
 
 // ── Public API ─────────────────────────────────────────────────────
 
-export async function openFile() {
-  return isTauri() ? tauriOpenFile() : browserOpenFile();
+export async function openFile(defaultPath?: string) {
+  return isTauri() ? tauriOpenFile(defaultPath) : browserOpenFile();
 }
 
 export async function saveToFile(
@@ -246,13 +240,13 @@ export async function readDirTree(rootPath: string): Promise<FileEntry[]> {
   return tauriReadDir(rootPath, 0);
 }
 
-/** Create an empty file at `path` (Rust create_file; bypasses the fs ACL). */
+/** Create an empty file at `path` through the native scope gate. */
 export async function createFile(path: string): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("create_file", { path });
 }
 
-/** Create a directory at `path` (Rust create_folder). */
+/** Create a directory at `path` through the native scope gate. */
 export async function createFolder(path: string): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("create_folder", { path });
@@ -322,12 +316,7 @@ export async function exportAsHtml(html: string, title: string): Promise<void> {
     });
     if (!path) return;
     const { invoke } = await import("@tauri-apps/api/core");
-    try {
-      await invoke("write_file", { path, content: fullHtml });
-    } catch {
-      const { writeTextFile } = await import("@tauri-apps/plugin-fs");
-      await writeTextFile(path, fullHtml);
-    }
+    await invoke("write_file", { path, content: fullHtml });
     return;
   }
 

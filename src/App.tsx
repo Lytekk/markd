@@ -30,7 +30,7 @@ import { copyToClipboard } from "@/lib/code-block-enhance";
 import { revealInFileManager } from "@/lib/reveal";
 import { useZoom } from "@/hooks/use-zoom";
 import { TabBar, type TabAction } from "@/components/TabBar";
-import { createFile, createFolder, exportAsHtml, exportAsPdf, openFile, pathExists, readFileByPath, renamePath, saveFileAs, saveToFile, trashPath } from "@/lib/file-system";
+import { createFile, createFolder, exportAsHtml, exportAsPdf, isPathAuthorizationError, openFile, pathExists, readFileByPath, renamePath, saveFileAs, saveToFile, trashPath } from "@/lib/file-system";
 import { ensureMdExtension, joinPath, parentPath, targetDirForEntry, validateName } from "@/lib/file-tree-ops";
 import {
   shouldCheckForUpdate,
@@ -354,6 +354,7 @@ export function App() {
       const fs = fileStateRef.current;
       const tabs = ft.tabs;
       const activeId = ft.activeTabId;
+      let unableToRestore = 0;
 
       const needsHydration = tabs.filter((t) => t.filePath && t.content === "");
       if (needsHydration.length === 0) return;
@@ -373,7 +374,10 @@ export function App() {
             if (el) el.scrollTop = activeTab.scrollTop;
           });
         } catch {
-          if (bufferLoadGuardRef.current.isCurrent(request)) ft.closeTab(activeTab.id);
+          if (bufferLoadGuardRef.current.isCurrent(request)) {
+            unableToRestore += 1;
+            ft.closeTab(activeTab.id);
+          }
         }
       }
 
@@ -388,8 +392,20 @@ export function App() {
           if (!bufferLoadGuardRef.current.isCurrent(request)) return;
           ft.hydrateTab(tab.id, content, revision);
         } catch {
-          if (bufferLoadGuardRef.current.isCurrent(request)) ft.closeTab(tab.id);
+          if (bufferLoadGuardRef.current.isCurrent(request)) {
+            unableToRestore += 1;
+            ft.closeTab(tab.id);
+          }
         }
+      }
+
+      if (unableToRestore > 0 && bufferLoadGuardRef.current.isCurrent(request)) {
+        const noun = unableToRestore === 1 ? "file" : "files";
+        await messageDialog(
+          `${unableToRestore} previously opened ${noun} could not be restored. Their on-disk contents are unchanged. Reopen them from Recent Files or File > Open to authorize access again.`,
+          { title: "Reopen Files", kind: "warning" },
+        );
+        if (!bufferLoadGuardRef.current.isCurrent(request)) return;
       }
 
       // Open file passed via CLI arg / OS file association (if any).
@@ -645,7 +661,14 @@ export function App() {
     const html = sourceMode
       ? renderSourceHtml(editor, splitFrontmatter(sourceMarkdown).body) ?? editor.getHTML()
       : editor.getHTML();
-    await exportAsHtml(html, fileState.fileName);
+    try {
+      await exportAsHtml(html, fileState.fileName);
+    } catch {
+      await messageDialog("The HTML export could not be saved.", {
+        title: "Export Failed",
+        kind: "error",
+      });
+    }
   }, [editor, sourceMode, sourceMarkdown, fileState.fileName]);
 
   // Sync tab state when fileState changes (after open/save/new operations).
@@ -782,10 +805,27 @@ export function App() {
     const fs = fileStateRef.current;
     const tabId = ft.activeTabId;
     const revision = ft.getTabRevision(tabId);
+    const beforeSave = fs.getCurrentState();
     const owner = { tabId, revision };
     activeSaveOwnerRef.current = owner;
     try {
-      if (!await (saveAs ? fs.handleSaveAs() : fs.handleSave())) return false;
+      let saved = false;
+      try {
+        saved = await (saveAs ? fs.handleSaveAs() : fs.handleSave());
+      } catch {
+        saved = false;
+      }
+      if (!saved) {
+        // A canceled Save As is intentional. A named document's normal Save is
+        // not: keep its dirty state and make the hardened-write failure visible.
+        if (!saveAs && beforeSave.filePath) {
+          await messageDialog(`"${beforeSave.fileName}" could not be saved. Its contents remain unsaved.`, {
+            title: "Save Failed",
+            kind: "error",
+          });
+        }
+        return false;
+      }
       const current = fs.getCurrentState();
       return ft.markTabSaved(tabId, {
         filePath: current.filePath,
@@ -964,11 +1004,11 @@ export function App() {
     });
   }, []);
 
-  const handleOpenFile = useCallback(async () => {
+  const handleOpenFile = useCallback(async (defaultPath?: string) => {
     const request = bufferLoadGuardRef.current.begin();
     let opened: Awaited<ReturnType<typeof openFile>>;
     try {
-      opened = await openFile();
+      opened = await openFile(defaultPath);
     } catch {
       if (bufferLoadGuardRef.current.isCurrent(request)) {
         await messageDialog("The selected file could not be opened.", {
@@ -1635,13 +1675,17 @@ export function App() {
       // one synchronous step (the proven open path — see the initial-load and
       // single-instance handlers). The previous form passed "" to openInTab and
       // relied on a separate handleOpenByPath read, leaving the new tab's content
-      // empty across the async gap. A failed read = the file is gone since it was
-      // added → drop it from Recent Files (this read replaces the existence check).
+      // empty across the async gap. An authorization failure is not proof that
+      // the file is gone: it may be a legacy entry from before persisted scopes.
       let content: string;
       try {
         content = await readFileByPath(file.path);
-      } catch {
+      } catch (error) {
         if (!bufferLoadGuardRef.current.isCurrent(request)) return;
+        if (isPathAuthorizationError(error)) {
+          await handleOpenFile(file.path);
+          return;
+        }
         removeRecentFile(file.path);
         await messageDialog(`"${file.name}" no longer exists — removed from Recent Files.`, {
           title: "File Not Found",
@@ -1653,7 +1697,7 @@ export function App() {
       fileTabsRef.current.openInTab(file.name, file.path, content);
       await fileStateRef.current.handleOpenByPath(file.path, content);
     },
-    [handleSwitchTab, removeRecentFile],
+    [handleOpenFile, handleSwitchTab, removeRecentFile],
   );
 
   // File-tree CRUD from the sidebar context menu. The data-safety rule: when the
