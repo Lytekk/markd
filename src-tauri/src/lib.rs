@@ -75,8 +75,12 @@ fn allow_document_assets(app: &tauri::AppHandle, canonical_path: &Path) {
     // scope event, and tauri-plugin-persisted-scope rewrites its whole state
     // file on each one. Without this check, opening files from one folder
     // rewrote that file once per open and grew it forever — and the plugin
-    // re-canonicalizes every stored entry at the NEXT startup, before the
-    // window exists. Check first; the check is in-memory.
+    // re-canonicalizes every stored entry at the NEXT startup, before the window
+    // exists.
+    //
+    // The check is not free either — Scope::is_allowed canonicalizes its
+    // argument — but it is one canonicalize against a grant plus a whole-file
+    // rewrite, and it is bounded, whereas the growth it prevents is not.
     if app.asset_protocol_scope().is_allowed(parent) {
         return;
     }

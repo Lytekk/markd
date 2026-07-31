@@ -19,11 +19,13 @@
           if (stored === "markd") stored = "day";
           var theme = stored === "day" || stored === "night" ? stored : "day";
           var root = document.documentElement;
+          // Setting data-theme is the whole job: base.css gives <html> a
+          // background of var(--bg-color), and the theme files define that under
+          // this attribute. Do NOT also write an inline style here — an inline
+          // style attribute outranks every author rule, so it would pin the
+          // boot-time colour forever and a later theme switch would leave the
+          // page background on the old theme.
           root.dataset.theme = theme;
-          // The theme stylesheet has not been parsed yet on a cold start, so
-          // paint the background from here too; the stylesheet takes over once
-          // it lands.
-          root.style.backgroundColor = theme === "night" ? "#1e1e2e" : "#ffffff";
         } catch (e) {
           // Storage disabled — fall through to the default theme.
         }

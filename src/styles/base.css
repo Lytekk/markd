@@ -15,6 +15,14 @@ body,
   overflow: hidden;
 }
 
+/* The page background must resolve from the cascade, not from an inline style.
+   index.html sets data-theme before first paint so this is already the right
+   color on the very first frame; painting it inline there instead would outrank
+   every author rule and freeze the boot-time color across a later theme swap. */
+html {
+  background-color: var(--bg-color);
+}
+
 body {
   font-family: var(--font-family);
   font-size: var(--font-size);

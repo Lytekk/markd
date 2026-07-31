@@ -166,4 +166,15 @@ describe("base.css layout", () => {
     expect(css).toMatch(/\.theme-transition[\s\S]{0,260}transition:[\s\S]{0,120}background-color/);
     expect(css).toMatch(/prefers-reduced-motion/);
   });
+
+  test("paints the page background from the cascade, never from an inline style", () => {
+    // index.html applies data-theme before first paint so the first frame is
+    // already themed. It must NOT also set an inline background: an inline style
+    // outranks every author rule, so the boot-time color would survive a theme
+    // switch and the page would keep the old background forever.
+    expect(css).toMatch(/html\s*\{[^}]*background-color:\s*var\(--bg-color\)/);
+    const html = readFileSync("index.html", "utf8");
+    expect(html).toContain('root.dataset.theme = theme;');
+    expect(html).not.toContain("style.backgroundColor");
+  });
 });
