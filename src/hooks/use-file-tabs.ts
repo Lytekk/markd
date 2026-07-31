@@ -165,14 +165,16 @@ function persistTabs(tabs: FileTab[], activeTabId: string): void {
 }
 
 export function useFileTabs() {
-  const [tabs, setTabs] = useState<FileTab[]>(() => {
+  // One read, one parse. Two useState initializers each calling
+  // loadPersistedTabs() meant the session payload was read from localStorage and
+  // JSON.parsed twice on every boot, on the critical path.
+  const [initialState] = useState(() => {
     const restored = loadPersistedTabs();
-    return restored ? restored.tabs : [createTab()];
+    const tabs = restored ? restored.tabs : [createTab()];
+    return { tabs, activeTabId: restored ? restored.activeTabId : tabs[0]!.id };
   });
-  const [activeTabId, setActiveTabId] = useState(() => {
-    const restored = loadPersistedTabs();
-    return restored ? restored.activeTabId : tabs[0]!.id;
-  });
+  const [tabs, setTabs] = useState<FileTab[]>(initialState.tabs);
+  const [activeTabId, setActiveTabId] = useState(initialState.activeTabId);
   const getMarkdownRef = useRef<(() => string) | null>(null);
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;

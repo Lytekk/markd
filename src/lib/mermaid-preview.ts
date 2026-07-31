@@ -181,6 +181,19 @@ interface MermaidThemeConfig {
  * `--text-color` (dark on day, light on night) and node fills contrast on the
  * surface. Falls back to sensible values when the DOM/vars are unavailable.
  */
+/**
+ * The theme id alone, without touching the cascade.
+ *
+ * `props.decorations` runs on every editor state change and only ever needed
+ * this string, but it was calling readMermaidThemeConfig() — a getComputedStyle
+ * plus five getPropertyValue reads — on every keystroke, in every document,
+ * including the overwhelming majority that contain no mermaid blocks at all.
+ */
+function readMermaidThemeId(): "night" | "day" {
+  const root = typeof document !== "undefined" ? document.documentElement : null;
+  return root?.getAttribute("data-theme") === "night" ? "night" : "day";
+}
+
 function readMermaidThemeConfig(): MermaidThemeConfig {
   const root = typeof document !== "undefined" ? document.documentElement : null;
   const isNight = root?.getAttribute("data-theme") === "night";
@@ -307,7 +320,7 @@ export const MermaidPreview = Extension.create({
           };
         },
         props: {
-          decorations: (state) => buildMermaidDecorations(state.doc, readMermaidThemeConfig().id),
+          decorations: (state) => buildMermaidDecorations(state.doc, readMermaidThemeId()),
         },
       }),
     ];

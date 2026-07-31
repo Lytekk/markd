@@ -75,6 +75,9 @@ function isTauri(): boolean {
 // How long after the last edit to test whether the doc returned to the saved
 // state. Long enough to coalesce undo bursts, short enough to feel instant.
 const REVERT_CHECK_MS = 250;
+// Word/char counting is O(document); this coalesces it to the end of a typing
+// burst so the status bar still feels live without paying per keystroke.
+const STATS_COALESCE_MS = 150;
 
 export function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -319,6 +322,9 @@ export function App() {
   // Latest handleCloseTab, callable from the [filePath]-keyed watcher effect
   // (which must not list it as a dep). Assigned just after its definition below.
   const handleCloseTabRef = useRef<(tabId: string) => Promise<void> | void>(() => {});
+  // Latest buffer awaiting a coalesced stats pass, and its pending timer.
+  const pendingStatsMdRef = useRef<string | null>(null);
+  const statsTimerRef = useRef<number | null>(null);
   // Set once the user has answered the quit prompt, so a re-entrant close
   // request does not ask again.
   const quitConfirmedRef = useRef(false);
@@ -649,11 +655,22 @@ export function App() {
           sourceEntrySavedRef.current,
         ) || !canRevertClean(fs.filePath, fs.savedContent);
       if (!isDirty) fileState.markClean();
-      window.dispatchEvent(
-        new CustomEvent("markd:stats", {
-          detail: computeTextStats(splitFrontmatter(md).body),
-        }),
-      );
+      // Word/char counting walks the whole buffer. Running it per keystroke cost
+      // tens of milliseconds a character on a large document, to update a status
+      // bar nobody reads mid-word. Coalesce to the end of the typing burst.
+      pendingStatsMdRef.current = md;
+      if (statsTimerRef.current) window.clearTimeout(statsTimerRef.current);
+      statsTimerRef.current = window.setTimeout(() => {
+        statsTimerRef.current = null;
+        const latest = pendingStatsMdRef.current;
+        if (latest === null) return;
+        pendingStatsMdRef.current = null;
+        window.dispatchEvent(
+          new CustomEvent("markd:stats", {
+            detail: computeTextStats(splitFrontmatter(latest).body),
+          }),
+        );
+      }, STATS_COALESCE_MS);
     },
     [fileState.markDirty, fileState.markClean],
   );
@@ -728,13 +745,31 @@ export function App() {
   // lands on the heading line in the FULL textarea text.
   const sourceHeadings = useMemo(() => {
     if (!sourceMode) return null;
+    // Nobody can see the outline unless the sidebar is expanded on its tab, and
+    // this re-parses the ENTIRE buffer line by line on every keystroke — tens of
+    // milliseconds on a large document, for a panel that is not mounted.
+    // OutlinePanel falls back to the ProseMirror headings when this is null.
+    if (sidebarCollapsed || sidebarTab !== "outline") return null;
     const { body } = splitFrontmatter(sourceMarkdown);
     const prefixLen = sourceMarkdown.length - body.length;
     const heads = extractSourceHeadings(body);
     return prefixLen === 0
       ? heads
       : heads.map((h) => ({ ...h, pos: h.pos + prefixLen }));
-  }, [sourceMode, sourceMarkdown]);
+  }, [sourceMode, sourceMarkdown, sidebarCollapsed, sidebarTab]);
+
+  // A coalesced stats pass must not land after the buffer it measured stopped
+  // being the visible one — rendered mode dispatches its own counts from the
+  // editor, and a late source-mode event would overwrite them.
+  useEffect(() => {
+    return () => {
+      if (statsTimerRef.current) {
+        window.clearTimeout(statsTimerRef.current);
+        statsTimerRef.current = null;
+      }
+      pendingStatsMdRef.current = null;
+    };
+  }, [sourceMode, fileTabs.activeTabId]);
 
   const handleSourceHeadingClick = useCallback((pos: number) => {
     const ta = document.querySelector<HTMLTextAreaElement>(".markd-source-textarea");

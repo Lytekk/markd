@@ -136,12 +136,33 @@ export function SourceEditor({
   }, [lineNumbers, value, measureGutter]);
   useEffect(() => {
     // Width changes re-wrap the text (full-width toggle, window resize).
+    //
+    // measureGutter builds a hidden mirror of the WHOLE document — one span per
+    // line — and reads offsetTop off every marker. That is hundreds of
+    // milliseconds on a large document, and this observer used to call it once
+    // per resize notification, unthrottled: dragging a window edge fired it
+    // continuously. Only WIDTH re-wraps text, so height notifications are
+    // ignored, and the work is coalesced to one frame.
     if (!lineNumbers || typeof ResizeObserver === "undefined") return;
     const ta = textareaRef.current;
     if (!ta) return;
-    const ro = new ResizeObserver(() => measureGutter());
+    let frame = 0;
+    let lastWidth = ta.clientWidth;
+    const ro = new ResizeObserver(() => {
+      const width = textareaRef.current?.clientWidth ?? lastWidth;
+      if (width === lastWidth) return;
+      lastWidth = width;
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        measureGutter();
+      });
+    });
     ro.observe(ta);
-    return () => ro.disconnect();
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      ro.disconnect();
+    };
   }, [lineNumbers, measureGutter]);
 
   // Memoized so unrelated re-renders (line-number toggle, focus churn) don't
