@@ -8,6 +8,10 @@ interface EditorProps {
   focusMode: boolean;
 }
 
+// Matches App's source-mode coalescing window: the status bar stays responsive
+// without paying an O(document) pass per keystroke.
+const STATS_COALESCE_MS = 150;
+
 export function Editor({ editor, focusMode }: EditorProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -16,16 +20,33 @@ export function Editor({ editor, focusMode }: EditorProps) {
   // which suppresses the `update` event — stats would stay at 0 after load.
   useEffect(() => {
     if (!editor) return;
-    const handler = () => {
+    // `doc.textContent` rebuilds the whole document as a string and
+    // computeTextStats then splits it — O(document), and this fired on EVERY
+    // transaction: caret moves, selection changes, focus-mode and search meta
+    // transactions, mermaid redraws. None of those change a word count.
+    // Gate on docChanged, then coalesce the rest to the end of a typing burst,
+    // the same way source mode does.
+    let timer: number | null = null;
+    const dispatch = () => {
+      timer = null;
       window.dispatchEvent(
         new CustomEvent("markd:stats", {
           detail: computeTextStats(editor.state.doc.textContent),
         }),
       );
     };
+    const handler = ({ transaction }: { transaction: { docChanged: boolean } }) => {
+      if (!transaction.docChanged) return;
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(dispatch, STATS_COALESCE_MS);
+    };
     editor.on("transaction", handler);
-    handler();
+    // Once up front so a freshly loaded document reports immediately —
+    // setContent(md, false) suppresses `update`, which is why this listens to
+    // `transaction` at all.
+    dispatch();
     return () => {
+      if (timer !== null) window.clearTimeout(timer);
       editor.off("transaction", handler);
     };
   }, [editor]);
