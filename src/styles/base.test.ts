@@ -174,7 +174,30 @@ describe("base.css layout", () => {
     // switch and the page would keep the old background forever.
     expect(css).toMatch(/html\s*\{[^}]*background-color:\s*var\(--bg-color\)/);
     const html = readFileSync("index.html", "utf8");
-    expect(html).toContain('root.dataset.theme = theme;');
     expect(html).not.toContain("style.backgroundColor");
+  });
+
+  test("boots dark and hands the real theme to useTheme", () => {
+    // The window is revealed before WebView2 paints, so the first frames come
+    // from the native layer — which tauri.conf.json paints dark. The document
+    // must boot dark too, or the hand-off is exactly the white flash the dark
+    // window exists to prevent.
+    const html = readFileSync("index.html", "utf8");
+    expect(html).toContain('root.dataset.theme = "night";');
+    expect(html).toContain("root.dataset.bootTheme = theme;");
+
+    const conf = JSON.parse(readFileSync("src-tauri/tauri.conf.json", "utf8"));
+    const win = conf.app.windows[0];
+    expect(win.backgroundColor).toBe("#1e1e2e");
+    // Must match the night theme's own --bg-color, or the native frame and the
+    // first painted frame are different colours.
+    const night = readFileSync("src/styles/themes/night.css", "utf8");
+    expect(night).toMatch(/--bg-color:\s*#1e1e2e/);
+
+    // useTheme only cross-fades when index.html actually recorded a target.
+    const theme = readFileSync("src/hooks/use-theme.ts", "utf8");
+    expect(theme).toContain("const bootTarget = html.dataset.bootTheme;");
+    expect(theme).toContain("if (!bootTarget || bootedOn === activeTheme)");
+    expect(theme).toContain("requestAnimationFrame(applyWithCrossFade)");
   });
 });

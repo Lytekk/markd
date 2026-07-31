@@ -5,30 +5,34 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Markd</title>
     <script>
-      // Apply the saved theme before the first paint.
+      // Boot dark, always — then hand off to the user's real theme.
       //
-      // --bg-color is declared only under [data-theme], which React does not set
-      // until useTheme's mount effect runs. Until then var(--bg-color) is
-      // unresolved and the page paints WHITE — so a night-theme user watched a
-      // white rectangle for the whole boot and then a flash to dark. Same key and
-      // same "markd" -> "day" migration useTheme applies; this only pre-applies
-      // the answer, it does not own it.
+      // The window is created with a dark backgroundColor (tauri.conf.json) and
+      // is revealed before WebView2 has painted anything, so the first frames
+      // come from the native layer. Painting this document dark as well makes
+      // the whole startup one continuous dark surface instead of a white flash.
+      // A blinding white rectangle is the thing being fixed, and it is worth a
+      // brief dark moment for a day-theme user to avoid it.
+      //
+      // useTheme reads the SAME key and applies the real theme on mount; when it
+      // differs from this boot theme it cross-fades rather than snapping, via
+      // the data-boot-theme handshake below. Do NOT write an inline background
+      // here — an inline style outranks every author rule and would pin the boot
+      // colour past every later theme change.
       (function () {
+        var root = document.documentElement;
+        var theme = "day";
         try {
           var stored = localStorage.getItem("markd-theme");
           if (stored === "markd") stored = "day";
-          var theme = stored === "day" || stored === "night" ? stored : "day";
-          var root = document.documentElement;
-          // Setting data-theme is the whole job: base.css gives <html> a
-          // background of var(--bg-color), and the theme files define that under
-          // this attribute. Do NOT also write an inline style here — an inline
-          // style attribute outranks every author rule, so it would pin the
-          // boot-time colour forever and a later theme switch would leave the
-          // page background on the old theme.
-          root.dataset.theme = theme;
+          if (stored === "day" || stored === "night") theme = stored;
         } catch (e) {
           // Storage disabled — fall through to the default theme.
         }
+        root.dataset.theme = "night";
+        // Where useTheme should end up, so it knows whether it has to travel to
+        // get there. useTheme clears this once it has applied the real theme.
+        root.dataset.bootTheme = theme;
       })();
     </script>
   </head>
