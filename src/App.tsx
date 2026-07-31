@@ -436,8 +436,16 @@ export function App() {
       // needsHydration and the active-tab branch below is skipped entirely —
       // which is what keeps the restore (and its failure-recovery paths) from
       // pushing another document over the one the user asked for.
-      const activeId = ft.activeTabId;
-      const needsHydration = ft.tabs.filter((t) => t.filePath && !t.isHydrated);
+      // Through the LIVE accessors, not the captured object. `ft` is the value
+      // useFileTabs returned for the render this effect fired in, and its `tabs`
+      // and `activeTabId` are useState values — they do not follow the open
+      // above. Reading them here meant activeId was always the PRE-open tab and
+      // needsHydration still contained the launch file: the restore then loaded
+      // a DIFFERENT document over the one the user double-clicked, left
+      // fileState pointing at that other file, and a later tab switch snapshotted
+      // it into the launch tab, so a save wrote the wrong bytes to the path.
+      const activeId = ft.getActiveTabId();
+      const needsHydration = ft.getTabsSnapshot().filter((t) => t.filePath && !t.isHydrated);
 
       // Hydrate active tab first — sets editor content directly
       const activeTab = needsHydration.find((t) => t.id === activeId);
@@ -465,7 +473,7 @@ export function App() {
             // anything typed there would end up bound to its real path. Park on
             // a scratch tab; selecting the parked one re-reads it.
             if (isCurrent()) {
-              const other = ft.tabs.find((t) => t.id !== activeTab.id && t.isHydrated);
+              const other = ft.getTabsSnapshot().find((t) => t.id !== activeTab.id && t.isHydrated);
               if (other) {
                 const switched = ft.switchTab(other.id);
                 if (switched) fs.restoreState(other);
@@ -531,7 +539,10 @@ export function App() {
       const ft = fileTabsRef.current;
       const fs = fileStateRef.current;
       const request = bufferLoadGuardRef.current.begin();
-      const existing = ft.tabs.find((t) => samePath(t.filePath, filePath));
+      // Live: the pending-opens drain calls this in a loop with awaits between
+      // iterations, and fileTabsRef only re-points on render, so the second call
+      // would otherwise search a tab list that predates the first call's open.
+      const existing = ft.getTabsSnapshot().find((t) => samePath(t.filePath, filePath));
       if (existing) {
         let ready = existing;
         if (!existing.isHydrated) {

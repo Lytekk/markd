@@ -202,7 +202,9 @@ describe("native filesystem hardening wiring", () => {
     expect(startup).not.toContain("fs.restoreState(switchTo)");
 
     // The unavailable active tab must not be left active over a foreign buffer.
-    expect(startup).toContain("ft.tabs.find((t) => t.id !== activeTab.id && t.isHydrated)");
+    expect(startup).toContain(
+      "ft.getTabsSnapshot().find((t) => t.id !== activeTab.id && t.isHydrated)",
+    );
 
     // Hydration state is a flag, never inferred from an empty string: a document
     // the user emptied on purpose is not an unloaded one.
@@ -210,6 +212,14 @@ describe("native filesystem hardening wiring", () => {
     expect(tabs).toContain("isHydrated: boolean;");
     expect(tabs).toContain("if (current && !current.isHydrated) return current.content;");
     expect(app).toContain("(t) => t.filePath && !t.isHydrated");
+    // Read through the LIVE accessors. The captured hook object's `tabs` and
+    // `activeTabId` are useState values frozen into the render the effect fired
+    // in, so reading them after the launch-file open returned pre-open state —
+    // and the restore then loaded a different document over the user's file.
+    expect(startup).toContain("const activeId = ft.getActiveTabId();");
+    expect(startup).toContain("ft.getTabsSnapshot().filter((t) => t.filePath && !t.isHydrated)");
+    expect(startup).not.toMatch(/const activeId = ft\.activeTabId/);
+    expect(startup).not.toMatch(/ft\.tabs\.filter/);
     expect(app).toContain("if (!target.isHydrated && target.filePath) {");
     expect(app).not.toMatch(/!target\.content && target\.filePath/);
   });
@@ -238,10 +248,11 @@ describe("native filesystem hardening wiring", () => {
     expect(hydrateAt).toBeGreaterThan(-1);
     expect(openAt).toBeLessThan(hydrateAt);
 
-    // activeId must be read AFTER that open. It is what makes the launch file
-    // drop out of needsHydration, which is what stops the restore — and its
-    // failure-recovery branches — from pushing another document over it.
-    expect(startup.indexOf("const activeId = ft.activeTabId")).toBeGreaterThan(openAt);
+    // activeId must be read AFTER that open, and through the live accessor. It
+    // is what makes the launch file drop out of needsHydration, which is what
+    // stops the restore — and its failure-recovery branches — from pushing
+    // another document over it.
+    expect(startup.indexOf("const activeId = ft.getActiveTabId();")).toBeGreaterThan(openAt);
 
     // A matched existing tab is activated without content, so it must be given
     // the launch bytes or it stays unhydrated behind a real path.

@@ -531,4 +531,36 @@ describe("useFileTabs — clean-skip snapshots store savedContent, not stale ope
     expect(result.current.tabs[0]!.isHydrated).toBe(true);
     expect(result.current.tabs[0]!.content).toBe("from disk");
   });
+
+  it("exposes the live active id, not the one frozen into the last render", () => {
+    // The startup effect captures the hook's return object once and then awaits.
+    // `tabs` and `activeTabId` on that object are useState VALUES, so they never
+    // follow a mutation made after the capture — reading them post-open made the
+    // session restore push a DIFFERENT document over the one the user opened,
+    // and later saved that document's bytes to the opened file's path.
+    // A restored session, then a launch file — the real cold-open shape. (With
+    // no session openInTab reuses the empty untitled tab and the id legitimately
+    // does not move, which would not exercise the bug.)
+    localStorage.setItem("markd-tabs", JSON.stringify({
+      tabs: [{ id: "t1", fileName: "a.md", filePath: "/tmp/a.md", scrollTop: 0, isDirty: false }],
+      activeTabId: "t1",
+    }));
+    const { result } = renderHook(() => useFileTabs());
+    const captured = result.current;
+    const before = captured.activeTabId;
+    expect(before).toBe("t1");
+
+    act(() => { captured.openInTab("launch.md", "/tmp/launch.md", "LAUNCH"); });
+
+    // The frozen field is stale by construction; the accessor must not be.
+    expect(captured.activeTabId).toBe(before);
+    expect(captured.getActiveTabId()).not.toBe(before);
+    expect(captured.getActiveTabId()).toBe(result.current.activeTabId);
+
+    const openedTab = result.current.tabs.find((t) => t.filePath === "/tmp/launch.md")!;
+    expect(captured.getActiveTabId()).toBe(openedTab.id);
+    // ...and the snapshot must show it hydrated, so it drops out of any
+    // "needs hydration" filter computed after the open.
+    expect(captured.getTabsSnapshot().find((t) => t.id === openedTab.id)!.isHydrated).toBe(true);
+  });
 });

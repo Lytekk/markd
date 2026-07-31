@@ -194,6 +194,16 @@ export function useFileTabs() {
    * reported failure for a Save All that had in fact saved everything.
    */
   const getTabsSnapshot = useCallback(() => tabsRef.current, []);
+  /**
+   * The active tab id as of right now.
+   *
+   * Same hazard as {@link getTabsSnapshot}: this hook returns a plain object
+   * literal, so `activeTabId` on it is a useState VALUE frozen into the render
+   * that produced it. Anything that captures the hook object and then awaits —
+   * the startup effect does exactly that — must ask through here, or it reads
+   * the state from before its own mutations.
+   */
+  const getActiveTabId = useCallback(() => activeTabIdRef.current, []);
   const advanceTabRevision = useCallback((id: string) => {
     const next = (tabRevisionRef.current.get(id) ?? 0) + 1;
     tabRevisionRef.current.set(id, next);
@@ -670,6 +680,7 @@ export function useFileTabs() {
     getMru,
     getTabRevision,
     getTabsSnapshot,
+    getActiveTabId,
     updateTabPath,
     switchTab,
     openInTab,
