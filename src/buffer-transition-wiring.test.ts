@@ -23,10 +23,18 @@ describe("buffer-transition wiring (src/App.tsx)", () => {
 
   it("uses the checked background-save chokepoint before Close All resets tabs", () => {
     expect(app).toContain("saveBackgroundTab");
-    expect(app).toMatch(/const saved = await saveBackgroundTab\(/);
-    expect(app).toMatch(/if \(!saved\) return;/);
+    expect(app).toMatch(/const result = await saveBackgroundTab\(/);
+    // Only a write that actually happened may advance the tab; and a write that
+    // FAILED must say so. Collapsing failed/superseded/cancelled into one falsy
+    // value made a real disk failure abort Close All with nothing shown.
+    expect(app).toMatch(/if \(!result\.saved\) \{/);
+    expect(app).toContain("saveOutcomeMessage(result.outcome, tab.fileName)");
+    expect(app).toContain("{ ...result.saved, expectedRevision: revision }");
     expect(app).toContain("expectedRevision");
     expect(app).toContain("getTabRevision");
+    expect(readFileSync("src/lib/background-tab-save.ts", "utf8")).toContain(
+      "outcome: SaveOutcome;",
+    );
   });
 
   it("re-reads live tab state after Save All settles writes", () => {

@@ -121,7 +121,20 @@ fn get_opened_file_from_args(app: &tauri::AppHandle) -> Result<Option<OpenedFile
 /// unauthorized document did nothing at all — no window content, no message, no
 /// way for the user to tell Markd had even seen the file.
 #[tauri::command]
-fn get_opened_file(app: tauri::AppHandle) -> Result<Option<OpenedFile>, String> {
+fn get_opened_file(
+    app: tauri::AppHandle,
+    state: State<'_, PendingOpens>,
+) -> Result<Option<OpenedFile>, String> {
+    match state.0.lock() {
+        Ok(mut pending) => {
+            if pending.launch_file_taken {
+                return Ok(None);
+            }
+            pending.launch_file_taken = true;
+        }
+        // Poisoned lock: answering once more beats never opening the file.
+        Err(_) => {}
+    }
     get_opened_file_from_args(&app)
 }
 
@@ -374,6 +387,10 @@ fn unwatch_file(state: State<'_, FileWatchState>) -> Result<(), String> {
 struct PendingOpensState {
     queue: Vec<String>,
     renderer_ready: bool,
+    /// The launch argument is consumed once per process. `std::env::args()` never
+    /// changes, so re-reading it on a webview reload re-opened (and, once the
+    /// command started reporting errors, re-alerted about) the same file.
+    launch_file_taken: bool,
 }
 
 #[derive(Default)]

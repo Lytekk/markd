@@ -14,7 +14,21 @@
 
 const WINDOWS_VERBATIM_UNC = /^[\\/]{2}[?][\\/]UNC[\\/]/i;
 const WINDOWS_VERBATIM_DISK = /^[\\/]{2}[?][\\/](?=[a-z]:)/i;
-const WINDOWS_SHAPED = /^(?:[a-z]:|[\\/]{2})/i;
+const WINDOWS_DRIVE = /^[a-z]:/i;
+const DOUBLE_SEPARATOR = /^[\\/]{2}/;
+
+/**
+ * A drive letter is unambiguous. A leading `\\` or `//` is not: it opens a UNC
+ * share on Windows, but on POSIX a doubled slash is legal and simply collapses,
+ * so `//Users/me/A.md` is an ordinary case-SENSITIVE path. Every real Windows
+ * path Markd handles uses backslashes, so require one before reading a doubled
+ * separator as a share — otherwise a POSIX path had its first two segments
+ * case-folded and two different files collapsed into one identity.
+ */
+function isWindowsShaped(path: string): boolean {
+  if (WINDOWS_DRIVE.test(path)) return true;
+  return DOUBLE_SEPARATOR.test(path) && path.includes("\\");
+}
 
 /**
  * Reduce a path to a stable key for equality checks.
@@ -32,7 +46,7 @@ export function normalizePathKey(path: string): string {
     .replace(WINDOWS_VERBATIM_UNC, "\\\\")
     .replace(WINDOWS_VERBATIM_DISK, "");
 
-  if (!WINDOWS_SHAPED.test(normalized)) {
+  if (!isWindowsShaped(normalized)) {
     // POSIX: collapse repeated separators and drop a trailing one, but keep case.
     const collapsed = normalized.replace(/\/{2,}/g, "/");
     return collapsed.length > 1 ? collapsed.replace(/\/+$/, "") : collapsed;

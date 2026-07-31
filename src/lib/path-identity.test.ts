@@ -28,6 +28,14 @@ describe("normalizePathKey", () => {
     );
   });
 
+  it("does not mistake a POSIX path with a doubled slash for a UNC share", () => {
+    // A leading "//" is legal on POSIX and collapses to "/". Reading it as a
+    // Windows UNC share folded the case of the first two segments, so two
+    // different files on a case-sensitive volume became one identity.
+    expect(normalizePathKey("//Users/me/A.md")).not.toBe(normalizePathKey("//users/me/a.md"));
+    expect(normalizePathKey("//Users/me/A.md")).toBe(normalizePathKey("/Users/me/A.md"));
+  });
+
   it("keeps POSIX paths case-sensitive", () => {
     expect(normalizePathKey("/home/me/A.md")).not.toBe(normalizePathKey("/home/me/a.md"));
   });

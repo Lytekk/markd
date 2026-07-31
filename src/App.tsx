@@ -30,7 +30,7 @@ import { copyToClipboard } from "@/lib/code-block-enhance";
 import { revealInFileManager } from "@/lib/reveal";
 import { useZoom } from "@/hooks/use-zoom";
 import { TabBar, type TabAction } from "@/components/TabBar";
-import { createFile, createFolder, exportAsHtml, exportAsPdf, isPathAuthorizationError, openFile, pathExists, readFileByPath, renamePath, saveFileAs, saveToFile, trashPath } from "@/lib/file-system";
+import { createFile, createFolder, exportAsHtml, exportAsPdf, isPathAuthorizationError, isPathUnavailableError, openFile, pathExists, readFileByPath, renamePath, saveFileAs, saveToFile, trashPath } from "@/lib/file-system";
 import { ensureMdExtension, joinPath, parentPath, targetDirForEntry, validateName } from "@/lib/file-tree-ops";
 import {
   shouldCheckForUpdate,
@@ -383,11 +383,20 @@ export function App() {
       // tab stays and reloads when the user selects it. Closing on every error
       // used to delete the session over a sleeping network drive.
       const recordFailure = async (tab: FileTab, error: unknown): Promise<RestoreFailureKind> => {
+        // The existence probe only breaks a tie. When the native error already
+        // names the class, skip the IPC round trip — it was being serialized
+        // into startup once per failed tab for no answer.
+        const needsProbe =
+          !!tab.filePath &&
+          !isPathAuthorizationError(error) &&
+          !isPathUnavailableError(error);
         let exists: boolean | null = null;
-        try {
-          exists = tab.filePath ? await pathExists(tab.filePath) : null;
-        } catch {
-          exists = null;
+        if (needsProbe) {
+          try {
+            exists = await pathExists(tab.filePath!);
+          } catch {
+            exists = null;
+          }
         }
         const kind = classifyRestoreFailure(error, exists);
         failures[kind] = (failures[kind] ?? 0) + 1;
@@ -413,6 +422,8 @@ export function App() {
           }
         } catch (error) {
           const kind = isCurrent() ? await recordFailure(activeTab, error) : null;
+          // recordFailure awaits; a newer load may have taken over meanwhile.
+          if (!isCurrent()) return;
           if (kind === "unavailable") {
             // Keep the tab — the file is fine, the drive is not — but do not let
             // it stay ACTIVE over the blank startup buffer: switching to a tab
@@ -450,7 +461,9 @@ export function App() {
           if (!isCurrent()) return;
           ft.hydrateTab(tab.id, content, revision);
         } catch (error) {
-          if (isCurrent() && (await recordFailure(tab, error)) !== "unavailable") {
+          if (!isCurrent()) return;
+          const kind = await recordFailure(tab, error);
+          if (isCurrent() && kind !== "unavailable") {
             ft.closeTab(tab.id);
           }
         }
@@ -478,7 +491,7 @@ export function App() {
         if (isCurrent()) {
           await messageDialog(
             isPathAuthorizationError(error)
-              ? "Markd could not open that file because the path is not authorized. Open it from File > Open to authorize access."
+              ? "Markd could not open that file. Try File > Open — if that is refused too, the path goes through a symbolic link or junction, which Markd does not currently open."
               : "Markd could not open that file. Its contents are unchanged.",
             { title: "Open Failed", kind: "error" },
           );
@@ -929,17 +942,33 @@ export function App() {
       let outcome: SaveOutcome = "failed";
       try {
         outcome = await (saveAs ? fs.handleSaveAs() : fs.handleSave());
+        // A keystroke landing during the write supersedes it: the bytes reached
+        // disk but newer ones exist, so the buffer is still dirty. Callers only
+        // see a boolean, so this aborted a close or a Save All with no message
+        // at all. The user asked to save what is in front of them — write the
+        // newer bytes too. Once only: someone who keeps typing would loop
+        // forever, and the second outcome is reported honestly either way.
+        // Never retry a Save As; that would re-open the file chooser.
+        if (outcome === "superseded" && !saveAs) {
+          outcome = await fs.handleSave();
+        }
       } catch {
         outcome = "failed";
       }
       if (outcome !== "written") {
-        // Only a real write failure is worth interrupting for — and it is worth
-        // interrupting for even when the document had no path yet, which the
-        // old has-a-path gate silently excluded. A cancelled dialog is the
-        // user's choice; a superseded write already reached the disk.
-        const message = saveOutcomeMessage(outcome, beforeSave.fileName);
-        if (message) {
-          await messageDialog(message, { title: "Save Failed", kind: "error" });
+        // A real write failure is worth interrupting for — including when the
+        // document had no path yet, which the old has-a-path gate silently
+        // excluded. A cancelled dialog is the user's own choice, so it stays
+        // silent. A still-superseded save is neither: the bytes landed but the
+        // buffer moved on again, so say so rather than aborting in silence.
+        const failure = saveOutcomeMessage(outcome, beforeSave.fileName);
+        if (failure) {
+          await messageDialog(failure, { title: "Save Failed", kind: "error" });
+        } else if (outcome === "superseded") {
+          await messageDialog(
+            `"${beforeSave.fileName}" was saved, but you have edited it again since. Save once more to store those changes.`,
+            { title: "Saved — Newer Changes Pending", kind: "info" },
+          );
         }
         return false;
       }
@@ -995,12 +1024,17 @@ export function App() {
             if (!saved) return;
           } else {
             const revision = fileTabsRef.current.getTabRevision(tab.id);
-            const saved = await saveBackgroundTab(tab, { saveToFile, saveFileAs }, () => (
+            const result = await saveBackgroundTab(tab, { saveToFile, saveFileAs }, () => (
               bufferLoadGuardRef.current.isCurrent(request) &&
               fileTabsRef.current.getTabRevision(tab.id) === revision
             ));
-            if (!saved) return;
-            if (!fileTabsRef.current.markTabSaved(tab.id, { ...saved, expectedRevision: revision })) {
+            if (!result.saved) {
+              // A real write failure here used to abort the close in silence.
+              const failure = saveOutcomeMessage(result.outcome, tab.fileName);
+              if (failure) await messageDialog(failure, { title: "Save Failed", kind: "error" });
+              return;
+            }
+            if (!fileTabsRef.current.markTabSaved(tab.id, { ...result.saved, expectedRevision: revision })) {
               return;
             }
           }
@@ -1095,11 +1129,16 @@ export function App() {
     const dirtyTabs = ft.tabs.filter((tab) => tab.isDirty && tab.id !== activeTabId);
     for (const tab of dirtyTabs) {
       const revision = ft.getTabRevision(tab.id);
-      const saved = await saveBackgroundTab(tab, { saveToFile, saveFileAs }, () => (
+      const result = await saveBackgroundTab(tab, { saveToFile, saveFileAs }, () => (
         fileTabsRef.current.getTabRevision(tab.id) === revision
       ));
-      if (!saved) return false;
-      if (!ft.markTabSaved(tab.id, { ...saved, expectedRevision: revision })) return false;
+      if (!result.saved) {
+        // Save All stopping dead with no explanation is why this outcome exists.
+        const failure = saveOutcomeMessage(result.outcome, tab.fileName);
+        if (failure) await messageDialog(failure, { title: "Save Failed", kind: "error" });
+        return false;
+      }
+      if (!ft.markTabSaved(tab.id, { ...result.saved, expectedRevision: revision })) return false;
     }
     // Read the synchronous snapshot: markTabSaved has already settled there,
     // while the rendered array still carries the pre-save dirty flags.

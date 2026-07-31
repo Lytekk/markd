@@ -218,15 +218,22 @@ async function browserSaveFileAs(
   content: string,
   suggestedName = "untitled.md",
 ): Promise<SaveAsResult> {
+  if (typeof window.showSaveFilePicker !== "function") {
+    // Firefox and Safari have no File System Access API at all.
+    return { status: "failed" };
+  }
   let handle: FileSystemFileHandle;
   try {
     handle = await window.showSaveFilePicker({
       suggestedName,
       types: [{ description: "Markdown", accept: { "text/markdown": [".md"] } }],
     });
-  } catch {
-    // The picker only rejects when the user dismisses it.
-    return { status: "cancelled" };
+  } catch (error) {
+    // AbortError is the user dismissing the picker. SecurityError (no user
+    // gesture, insecure origin) and TypeError are real failures, and reporting
+    // them as a cancel meant Ctrl+S did nothing at all with no explanation.
+    const name = error instanceof DOMException ? error.name : "";
+    return name === "AbortError" ? { status: "cancelled" } : { status: "failed" };
   }
   try {
     const writable = await handle.createWritable();
