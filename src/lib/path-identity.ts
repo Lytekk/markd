@@ -39,9 +39,19 @@ export function normalizePathKey(path: string): string {
   }
 
   const leadingUnc = /^[\\/]{2}/.test(normalized);
-  normalized = normalized.replace(/[\\/]+/g, "\\").toLowerCase();
+  normalized = normalized.replace(/[\\/]+/g, "\\");
   if (leadingUnc) normalized = `\\${normalized}`;
-  return normalized.length > 1 ? normalized.replace(/\\+$/, "") : normalized;
+  normalized = normalized.length > 1 ? normalized.replace(/\\+$/, "") : normalized;
+
+  if (!leadingUnc) return normalized.toLowerCase();
+
+  // `\\server\share\rest`: Windows resolves the server and share names
+  // case-insensitively, but everything below them belongs to the remote
+  // filesystem — a WSL or Samba export can hold both Notes.md and notes.md, and
+  // folding their case would merge two different files into one tab.
+  const match = /^(\\\\[^\\]*\\[^\\]*)(\\.*)?$/.exec(normalized);
+  if (!match) return normalized.toLowerCase();
+  return `${match[1]!.toLowerCase()}${match[2] ?? ""}`;
 }
 
 /**

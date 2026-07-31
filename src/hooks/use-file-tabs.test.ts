@@ -43,7 +43,7 @@ describe("closed-tab stack persistence", () => {
 });
 
 import { renderHook, act } from "@testing-library/react";
-import { useFileTabs } from "./use-file-tabs";
+import { useFileTabs, type FileTab } from "./use-file-tabs";
 
 describe("useFileTabs — reopen closed tab", () => {
   beforeEach(() => {
@@ -445,5 +445,90 @@ describe("useFileTabs — clean-skip snapshots store savedContent, not stale ope
     act(() => { result.current.updateTabPath(id, null, "renamed.md"); });
     expect(result.current.tabs[0]!.filePath).toBeNull();
     expect(result.current.tabs[0]!.isDirty).toBe(true);
+  });
+
+  it("closeAllTabs remembers every tab so Ctrl+Shift+T can walk the session back", () => {
+    // Close All wiped the tab set AND localStorage without pushing anything to
+    // the closed stack, so one misclick — with no prompt at all when every tab
+    // was clean — left the session rebuildable only by hand from Recent Files.
+    const { result } = renderHook(() => useFileTabs());
+    act(() => { result.current.openInTab("a.md", "/tmp/a.md", "AAA"); });
+    act(() => { result.current.openInTab("b.md", "/tmp/b.md", "BBB"); });
+    act(() => { result.current.registerIsClean(() => true); });
+
+    act(() => { result.current.closeAllTabs(); });
+
+    expect(result.current.tabs).toHaveLength(1);
+    expect(result.current.tabs[0]!.filePath).toBeNull();
+
+    // Most recent first, so repeated reopen walks backwards through the session.
+    let first: FileTab | null = null;
+    act(() => { first = result.current.reopenLastClosed().tab; });
+    expect(first!.filePath).toBe("/tmp/b.md");
+    let second: FileTab | null = null;
+    act(() => { second = result.current.reopenLastClosed().tab; });
+    expect(second!.filePath).toBe("/tmp/a.md");
+  });
+
+  it("closeAllTabs keeps an untitled buffer's text so it is not lost outright", () => {
+    const { result } = renderHook(() => useFileTabs());
+    const id = result.current.activeTabId;
+    act(() => { result.current.registerGetMarkdown(() => "unsaved scratch"); });
+    act(() => { result.current.markTabDirty(id); });
+
+    act(() => { result.current.closeAllTabs(); });
+
+    let reopened: FileTab | null = null;
+    act(() => { reopened = result.current.reopenLastClosed().tab; });
+    expect(reopened!.content).toBe("unsaved scratch");
+  });
+
+  it("marks a tab restored from persistence as not yet hydrated", () => {
+    localStorage.setItem("markd-tabs", JSON.stringify({
+      tabs: [{ id: "t1", fileName: "a.md", filePath: "/tmp/a.md", scrollTop: 0, isDirty: false }],
+      activeTabId: "t1",
+    }));
+    const { result } = renderHook(() => useFileTabs());
+    expect(result.current.tabs[0]!.isHydrated).toBe(false);
+  });
+
+  it("treats a freshly opened tab and a hydrated tab as loaded", () => {
+    const { result } = renderHook(() => useFileTabs());
+    expect(result.current.tabs[0]!.isHydrated).toBe(true);
+    act(() => { result.current.openInTab("a.md", "/tmp/a.md", "AAA"); });
+    expect(result.current.tabs.find((t) => t.filePath === "/tmp/a.md")!.isHydrated).toBe(true);
+  });
+
+  it("never snapshots the editor buffer into a tab whose file was never read", () => {
+    // The editor holds a DIFFERENT document (or the blank startup one) while an
+    // unhydrated tab is active. Writing that buffer into the tab would bind
+    // foreign text to a real file path, and the next save would overwrite it.
+    localStorage.setItem("markd-tabs", JSON.stringify({
+      tabs: [{ id: "t1", fileName: "a.md", filePath: "/tmp/a.md", scrollTop: 0, isDirty: false }],
+      activeTabId: "t1",
+    }));
+    const { result } = renderHook(() => useFileTabs());
+    act(() => {
+      result.current.registerGetMarkdown(() => "text belonging to some other document");
+      result.current.registerIsClean(() => false);
+    });
+
+    act(() => { result.current.newTab(); });
+
+    const restored = result.current.tabs.find((t) => t.id === "t1")!;
+    expect(restored.isHydrated).toBe(false);
+    expect(restored.content).toBe("");
+    expect(restored.savedContent).toBe("");
+  });
+
+  it("hydrateTab marks the tab loaded", () => {
+    localStorage.setItem("markd-tabs", JSON.stringify({
+      tabs: [{ id: "t1", fileName: "a.md", filePath: "/tmp/a.md", scrollTop: 0, isDirty: false }],
+      activeTabId: "t1",
+    }));
+    const { result } = renderHook(() => useFileTabs());
+    act(() => { result.current.hydrateTab("t1", "from disk"); });
+    expect(result.current.tabs[0]!.isHydrated).toBe(true);
+    expect(result.current.tabs[0]!.content).toBe("from disk");
   });
 });

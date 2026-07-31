@@ -30,9 +30,18 @@ describe("buffer-transition wiring (src/App.tsx)", () => {
   });
 
   it("re-reads live tab state after Save All settles writes", () => {
-    // markTabSaved updates a synchronous hook ref, not the immutable hook
-    // snapshot captured at the start of saveAllDirtyTabs.
-    expect(app).toContain("return !fileTabsRef.current.tabs.some((tab) => tab.isDirty)");
+    // markTabSaved settles `tabsRef` synchronously and only QUEUES a render, so
+    // `fileTabsRef.current.tabs` — the rendered array — still carries the
+    // pre-save dirty flags when the await resumes. Verifying against it reported
+    // failure for a Save All that had saved everything, and Close All then
+    // aborted with no explanation. getTabsSnapshot() reads the settled ref.
+    expect(app).toContain(
+      "return !fileTabsRef.current.getTabsSnapshot().some((tab) => tab.isDirty)",
+    );
+    expect(app).not.toContain("return !fileTabsRef.current.tabs.some((tab) => tab.isDirty)");
+    expect(readFileSync("src/hooks/use-file-tabs.ts", "utf8")).toContain(
+      "const getTabsSnapshot = useCallback(() => tabsRef.current, []);",
+    );
   });
 
   it("lets an owning active save settle its captured tab before the generic mirror", () => {

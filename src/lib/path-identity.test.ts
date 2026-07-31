@@ -16,6 +16,18 @@ describe("normalizePathKey", () => {
     expect(normalizePathKey("D:\\Notes\\A.md")).toBe(normalizePathKey("d:\\notes\\a.md"));
   });
 
+  it("keeps the path below a UNC share case-sensitive", () => {
+    // Windows resolves the server and share names case-insensitively, but what
+    // the remote filesystem does below them is its own business — a WSL or Samba
+    // export really can hold both Notes.md and notes.md.
+    expect(normalizePathKey("\\\\host\\share\\A.md")).not.toBe(
+      normalizePathKey("\\\\host\\share\\a.md"),
+    );
+    expect(normalizePathKey("\\\\HOST\\SHARE\\a.md")).toBe(
+      normalizePathKey("\\\\host\\share\\a.md"),
+    );
+  });
+
   it("keeps POSIX paths case-sensitive", () => {
     expect(normalizePathKey("/home/me/A.md")).not.toBe(normalizePathKey("/home/me/a.md"));
   });

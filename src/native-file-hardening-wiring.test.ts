@@ -179,17 +179,39 @@ describe("native filesystem hardening wiring", () => {
 
   it("keeps a tab whose file is only temporarily unreachable", () => {
     const startup = section(app, "const startupDone", "// Single-instance listener");
-    // Both the active-tab and background-tab catch arms must gate closeTab on a
-    // non-transient verdict. An offline share must not delete the session.
-    const closeGuards = startup.match(/!== "unavailable"\) \{/g) ?? [];
-    expect(closeGuards.length).toBe(2);
-    expect(startup).not.toMatch(/catch\s*\{\s*if \(isCurrent\(\)\) \{\s*ft\.closeTab/);
+    // An offline share must not delete the session, so closeTab has to be gated
+    // on a non-transient verdict in both the active- and background-tab arms.
+    expect(startup).toContain('if (kind === "unavailable")');
+    expect(startup).toContain('!== "unavailable") {');
+    // ...and no catch arm may close unconditionally.
+    expect(startup).not.toMatch(/catch\s*\{[^}]*?\bft\.closeTab\(/s);
   });
 
-  it("puts the successor tab in the editor when a failed active tab is closed", () => {
+  it("never binds the editor to a tab whose file has not been read", () => {
+    // A tab can name a real file and hold no bytes at all. Restoring one puts a
+    // blank buffer and an empty savedContent behind that path, and the next
+    // Ctrl+S truncates the file — so every restore goes through the helper that
+    // reads it first, and no startup path calls restoreState on a raw tab.
+    const helper = section(app, "const restoreTabIntoEditor", "// Startup owner:");
+    expect(helper).toContain("if (tab.isHydrated || !tab.filePath)");
+    expect(helper).toContain("await readFileByPath(tab.filePath)");
+    expect(helper).toContain("hydrateTab(tab.id, content, revision)");
+
     const startup = section(app, "const startupDone", "// Single-instance listener");
-    expect(startup).toContain("const { switchTo } = ft.closeTab(activeTab.id)");
-    expect(startup).toContain("fs.restoreState(switchTo)");
+    expect(startup).toContain("await restoreTabIntoEditor(switchTo, isCurrent)");
+    expect(startup).not.toContain("fs.restoreState(switchTo)");
+
+    // The unavailable active tab must not be left active over a foreign buffer.
+    expect(startup).toContain("ft.tabs.find((t) => t.id !== activeTab.id && t.isHydrated)");
+
+    // Hydration state is a flag, never inferred from an empty string: a document
+    // the user emptied on purpose is not an unloaded one.
+    const tabs = readFileSync("src/hooks/use-file-tabs.ts", "utf8");
+    expect(tabs).toContain("isHydrated: boolean;");
+    expect(tabs).toContain("if (current && !current.isHydrated) return current.content;");
+    expect(app).toContain("(t) => t.filePath && !t.isHydrated");
+    expect(app).toContain("if (!target.isHydrated && target.filePath) {");
+    expect(app).not.toMatch(/!target\.content && target\.filePath/);
   });
 
   it("reaches the OS file-association open on every startup path", () => {
@@ -210,10 +232,20 @@ describe("native filesystem hardening wiring", () => {
     // The mount pass of this effect carries INITIAL_FILE_STATE. Applying it wiped
     // the restored tab's identity, bumped its revision so hydration aborted, and
     // re-persisted a session with no file-backed tabs.
-    const mirror = section(app, "const fileStateMirrorArmed", "useEffect(() => {\n    const ft = fileTabsRef.current;\n    if (fileState.isDirty)");
-    expect(mirror).toContain("if (!fileStateMirrorArmed.current) {");
-    expect(mirror).toContain("fileStateMirrorArmed.current = true;");
-    expect(mirror).toContain("ft.markTabSaved(ft.activeTabId, {");
+    const mirror = section(app, "const mirroringUntouchedInitialState", "ft.markTabSaved(ft.activeTabId, {");
+    // Must test the VALUE. A "skip the first run" ref is defeated by StrictMode's
+    // dev double-invoke, which arms on pass one and applies the initial state on
+    // pass two — the same bug, on every dev launch.
+    expect(app).not.toContain("fileStateMirrorArmed");
+    expect(mirror).toContain("fileState.filePath === null");
+    expect(mirror).toContain('fileState.fileName === "Untitled"');
+    expect(mirror).toContain('fileState.savedContent === ""');
+    expect(mirror).toContain("fileState.openCount === 0");
+    expect(mirror).toContain("if (mirroringUntouchedInitialState) return;");
+    // A dirty buffer whose path changed has not been saved — mirroring it
+    // through markTabSaved would clear isDirty and disarm the close guard.
+    expect(mirror).toContain("if (fileStateRef.current.isDirty) {");
+    expect(mirror).toContain("ft.updateTabPath(ft.activeTabId, fileState.filePath, fileState.fileName)");
   });
 
   it("compares file paths by identity so one file cannot become two tabs", () => {

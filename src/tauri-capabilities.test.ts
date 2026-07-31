@@ -35,4 +35,11 @@ describe("Tauri capabilities (src-tauri/capabilities/default.json)", () => {
   it("grants opener:allow-reveal-item-in-dir — the tab/file-tree 'Reveal in File Explorer' action needs it", () => {
     expect(perms).toContain("opener:allow-reveal-item-in-dir");
   });
+
+  it("grants core:window:allow-destroy — the quit guard needs it to finish closing", () => {
+    // core:window:default deliberately omits destroy. The quit guard calls
+    // preventDefault() first, so without this permission destroy() throws and
+    // the window can never close at all.
+    expect(perms).toContain("core:window:allow-destroy");
+  });
 });

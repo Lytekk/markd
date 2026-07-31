@@ -41,6 +41,7 @@ import {
 import { shouldPromptForExternalChange, shouldPromptForDeletion } from "@/lib/file-change";
 import { askDialog, messageDialog } from "@/lib/dialogs";
 import { samePath } from "@/lib/path-identity";
+import { isPathInside } from "@/lib/path-scope";
 import { saveOutcomeMessage, type SaveOutcome } from "@/lib/save-outcome";
 import { reloadDiscardPrompt } from "@/lib/reload-guard";
 import {
@@ -318,6 +319,43 @@ export function App() {
   // Latest handleCloseTab, callable from the [filePath]-keyed watcher effect
   // (which must not list it as a dep). Assigned just after its definition below.
   const handleCloseTabRef = useRef<(tabId: string) => Promise<void> | void>(() => {});
+  // Set once the user has answered the quit prompt, so a re-entrant close
+  // request does not ask again.
+  const quitConfirmedRef = useRef(false);
+
+  /**
+   * Put a tab in the editor, reading it from disk first when its bytes have
+   * never been loaded. Restoring an unhydrated tab directly would bind a blank
+   * buffer and an empty savedContent to a real file path — the next save writes
+   * that emptiness out. When the read fails, the editor is left alone rather
+   * than bound to a file it does not hold.
+   */
+  const restoreTabIntoEditor = useCallback(
+    async (tab: FileTab, isCurrent: () => boolean): Promise<boolean> => {
+      if (tab.isHydrated || !tab.filePath) {
+        fileStateRef.current.restoreState(tab);
+        return true;
+      }
+      const revision = fileTabsRef.current.getTabRevision(tab.id);
+      try {
+        const content = await readFileByPath(tab.filePath);
+        if (!isCurrent()) return false;
+        if (!fileTabsRef.current.hydrateTab(tab.id, content, revision)) return false;
+        fileStateRef.current.restoreState({
+          fileName: tab.fileName,
+          filePath: tab.filePath,
+          content,
+          savedContent: content,
+          isDirty: false,
+          docJSON: undefined,
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [],
+  );
 
   // Startup owner: restore persisted tabs from disk, then open the file the OS
   // handed us (CLI argument / file association).
@@ -356,7 +394,7 @@ export function App() {
         return kind;
       };
 
-      const needsHydration = ft.tabs.filter((t) => t.filePath && t.content === "");
+      const needsHydration = ft.tabs.filter((t) => t.filePath && !t.isHydrated);
 
       // Hydrate active tab first — sets editor content directly
       const activeTab = needsHydration.find((t) => t.id === activeId);
@@ -374,13 +412,29 @@ export function App() {
             });
           }
         } catch (error) {
-          if (isCurrent() && (await recordFailure(activeTab, error)) !== "unavailable") {
-            // Close it, then put the successor in the editor. Without this the
-            // tab bar showed the successor as active while the editor still held
-            // the blank startup document — and the next tab switch wrote that
-            // blank buffer into the successor's content, over its real file.
+          const kind = isCurrent() ? await recordFailure(activeTab, error) : null;
+          if (kind === "unavailable") {
+            // Keep the tab — the file is fine, the drive is not — but do not let
+            // it stay ACTIVE over the blank startup buffer: switching to a tab
+            // that is already active is a no-op, so it could never reload, and
+            // anything typed there would end up bound to its real path. Park on
+            // a scratch tab; selecting the parked one re-reads it.
+            if (isCurrent()) {
+              const other = ft.tabs.find((t) => t.id !== activeTab.id && t.isHydrated);
+              if (other) {
+                const switched = ft.switchTab(other.id);
+                if (switched) fs.restoreState(other);
+              } else {
+                ft.newTab();
+              }
+            }
+          } else if (kind !== null) {
+            // Close it and put the successor in the editor — but only once the
+            // successor actually holds its file's bytes. Restoring an unhydrated
+            // tab binds a blank buffer and an empty savedContent to a real path,
+            // and the next Ctrl+S truncates that file to zero.
             const { switchTo } = ft.closeTab(activeTab.id);
-            if (switchTo && isCurrent()) fs.restoreState(switchTo);
+            if (switchTo && isCurrent()) await restoreTabIntoEditor(switchTo, isCurrent);
           }
         }
       }
@@ -439,43 +493,70 @@ export function App() {
     let unlisten: (() => void) | null = null;
     let cancelled = false;
 
+    const openPath = async (filePath: string) => {
+      const ft = fileTabsRef.current;
+      const fs = fileStateRef.current;
+      const request = bufferLoadGuardRef.current.begin();
+      const existing = ft.tabs.find((t) => samePath(t.filePath, filePath));
+      if (existing) {
+        let ready = existing;
+        if (!existing.isHydrated) {
+          const revision = ft.getTabRevision(existing.id);
+          try {
+            const content = await readFileByPath(filePath);
+            if (!bufferLoadGuardRef.current.isCurrent(request)) return;
+            if (!ft.hydrateTab(existing.id, content, revision)) return;
+            ready = { ...existing, content, savedContent: content, isDirty: false, isHydrated: true, docJSON: undefined };
+          } catch {
+            return;
+          }
+        }
+        if (!bufferLoadGuardRef.current.isCurrent(request)) return;
+        const target = ft.switchTab(existing.id);
+        if (target) fs.restoreState(ready);
+        return;
+      }
+      try {
+        const content = await readFileByPath(filePath);
+        if (!bufferLoadGuardRef.current.isCurrent(request)) return;
+        const name = filePath.split(/[/\\]/).pop() ?? "untitled.md";
+        ft.openInTab(name, filePath, content);
+        await fs.handleOpenByPath(filePath, content);
+      } catch {
+        // The file may have been removed between the OS event and this read.
+      }
+    };
+
     (async () => {
       const { listen } = await import("@tauri-apps/api/event");
       if (cancelled) return;
-      unlisten = await listen<string>("open-file-in-tab", async (event) => {
-        const ft = fileTabsRef.current;
-        const fs = fileStateRef.current;
-        const request = bufferLoadGuardRef.current.begin();
-        const filePath = event.payload;
-        const existing = ft.tabs.find((t) => samePath(t.filePath, filePath));
-        if (existing) {
-          let ready = existing;
-          if (!existing.content) {
-            const revision = ft.getTabRevision(existing.id);
-            try {
-              const content = await readFileByPath(filePath);
-              if (!bufferLoadGuardRef.current.isCurrent(request)) return;
-              if (!ft.hydrateTab(existing.id, content, revision)) return;
-              ready = { ...existing, content, savedContent: content, isDirty: false, docJSON: undefined };
-            } catch {
-              return;
-            }
-          }
-          if (!bufferLoadGuardRef.current.isCurrent(request)) return;
-          const target = ft.switchTab(existing.id);
-          if (target) fs.restoreState(ready);
-          return;
-        }
-        try {
-          const content = await readFileByPath(filePath);
-          if (!bufferLoadGuardRef.current.isCurrent(request)) return;
-          const name = filePath.split(/[/\\]/).pop() ?? "untitled.md";
-          ft.openInTab(name, filePath, content);
-          await fs.handleOpenByPath(filePath, content);
-        } catch {
-          // The file may have been removed between the OS event and this read.
-        }
+      unlisten = await listen<string>("open-file-in-tab", (event) => {
+        void openPath(event.payload);
       });
+      // The effect can be torn down while listen() is still resolving; without
+      // this the handle is dropped on the floor and the listener outlives it.
+      if (cancelled) {
+        unlisten();
+        unlisten = null;
+        return;
+      }
+
+      // Tauri drops an emitted event when no JS listener is registered yet, and
+      // never replays it. A second launch that lands while this window is still
+      // booting — selecting several files in Explorer and pressing Enter starts
+      // exactly that race — was therefore silently ignored. The native side
+      // queues every path it could not deliver; drain it now that we are live.
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const pending = await invoke<string[]>("take_pending_opens");
+        for (const filePath of pending) {
+          if (cancelled) return;
+          await openPath(filePath);
+        }
+      } catch {
+        // Older backend without the queue — the live listener still covers the
+        // common case.
+      }
     })();
 
     return () => { cancelled = true; unlisten?.(); };
@@ -639,10 +720,8 @@ export function App() {
     document.title = `${fileState.fileName}${fileState.isDirty ? " \u2022" : ""} \u2014 Markd`;
   }, [fileState.fileName, fileState.isDirty]);
 
-  // Browser beforeunload (no-op in Tauri windows). Tauri's onCloseRequested
-  // was removed: window.confirm can be suppressed inside a close-requested
-  // handler on WebView2, returning falsy and blocking the close. Auto-save
-  // (30s) covers named files; untitled docs rely on the user saving manually.
+  // Browser beforeunload — covers the dev server. Tauri windows ignore it, so
+  // the desktop app needs the onCloseRequested guard below.
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       // Any tab's unsaved edits count — a background tab's dirty buffer is as
@@ -688,15 +767,20 @@ export function App() {
   // Mirroring THAT onto a tab restored from localStorage erased the tab's path
   // and name, advanced its revision (so the in-flight startup hydration was
   // rejected and aborted, taking the OS file-association open with it), and
-  // re-persisted a session with no file-backed tabs at all. Nothing has been
-  // opened or saved at mount, so there is nothing to mirror: arm on the first
-  // run and act from the second.
-  const fileStateMirrorArmed = useRef(false);
+  // re-persisted a session with no file-backed tabs at all.
+  //
+  // The guard tests the VALUE, not the run count: a "skip the first run" ref is
+  // defeated by StrictMode's development double-invoke, which arms on pass one
+  // and then applies the still-initial state on pass two — reintroducing exactly
+  // this bug on every `pnpm dev`. Nothing has been opened or saved while
+  // fileState is untouched, so there is nothing to mirror.
   useEffect(() => {
-    if (!fileStateMirrorArmed.current) {
-      fileStateMirrorArmed.current = true;
-      return;
-    }
+    const mirroringUntouchedInitialState =
+      fileState.filePath === null &&
+      fileState.fileName === "Untitled" &&
+      fileState.savedContent === "" &&
+      fileState.openCount === 0;
+    if (mirroringUntouchedInitialState) return;
     const ft = fileTabsRef.current;
     if (activeSaveOwnerRef.current?.tabId === ft.activeTabId) return;
     // markTabSaved asserts "this tab is saved" and therefore clears isDirty.
@@ -714,7 +798,7 @@ export function App() {
       fileName: fileState.fileName,
       savedContent: fileState.savedContent,
     });
-  }, [fileState.filePath, fileState.fileName, fileState.savedContent]);
+  }, [fileState.filePath, fileState.fileName, fileState.savedContent, fileState.openCount]);
 
   useEffect(() => {
     const ft = fileTabsRef.current;
@@ -782,7 +866,7 @@ export function App() {
       // click then snapshots that old buffer into the wrong tab. The request
       // guard also makes an older slow/UNC read inert after a newer selection.
       let ready = target;
-      if (!target.content && target.filePath) {
+      if (!target.isHydrated && target.filePath) {
         try {
           const content = await readFileByPath(target.filePath);
           if (!bufferLoadGuardRef.current.isCurrent(request)) return;
@@ -1017,7 +1101,9 @@ export function App() {
       if (!saved) return false;
       if (!ft.markTabSaved(tab.id, { ...saved, expectedRevision: revision })) return false;
     }
-    return !fileTabsRef.current.tabs.some((tab) => tab.isDirty) &&
+    // Read the synchronous snapshot: markTabSaved has already settled there,
+    // while the rendered array still carries the pre-save dirty flags.
+    return !fileTabsRef.current.getTabsSnapshot().some((tab) => tab.isDirty) &&
       !fileStateRef.current.getCurrentState().isDirty;
   }, [saveActiveTab]);
 
@@ -1043,6 +1129,71 @@ export function App() {
     bufferLoadGuardRef.current.invalidate();
     const { switchTo } = fileTabsRef.current.closeAllTabs();
     fileStateRef.current.restoreState(switchTo);
+  }, [saveAllDirtyTabs]);
+
+  // Desktop quit guard.
+  //
+  // Closing the window discarded every unsaved buffer in silence: beforeunload
+  // is inert in a Tauri window, autosave only ever runs for a NAMED file 30s
+  // after an edit, and the persisted session stores metadata only — so an
+  // untitled buffer full of pasted notes simply ceased to exist. The historical
+  // reason there was no handler here was that window.confirm is suppressed by
+  // WebView2 inside a close-requested handler; confirmModal is an in-app React
+  // modal and is not affected, and is already what Ctrl+W and Close All use.
+  useEffect(() => {
+    if (!isTauri()) return;
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+
+    (async () => {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      if (cancelled) return;
+      const appWindow = getCurrentWindow();
+      unlisten = await appWindow.onCloseRequested(async (event) => {
+        // Second pass after the user confirmed: let it through.
+        if (quitConfirmedRef.current) return;
+        const dirty = fileTabsRef.current.tabs.filter((t) => t.isDirty);
+        if (dirty.length === 0) return;
+        // Hold the window open while we ask; destroy() below bypasses this
+        // handler so the second pass cannot re-prompt.
+        event.preventDefault();
+        const choice = await confirmModal({
+          title: "Unsaved Changes",
+          message:
+            dirty.length === 1
+              ? `"${dirty[0]!.fileName}" has unsaved changes.`
+              : `${dirty.length} files have unsaved changes.`,
+          defaultValue: "cancel",
+          buttons: [
+            { label: "Save All", value: "save", variant: "primary" },
+            { label: "Don't Save", value: "discard", variant: "danger" },
+            { label: "Cancel", value: "cancel" },
+          ],
+        });
+        if (choice === "save") {
+          // saveAllDirtyTabs reports false for a failed or cancelled write —
+          // quitting then would discard exactly the work the user asked to keep.
+          if (!(await saveAllDirtyTabs())) return;
+        } else if (choice !== "discard") {
+          return;
+        }
+        quitConfirmedRef.current = true;
+        try {
+          await appWindow.destroy();
+        } catch {
+          // destroy() is ACL-gated; if the permission is ever dropped, fall back
+          // to close(), which re-enters this handler and passes the ref check
+          // above rather than leaving the window permanently unclosable.
+          await appWindow.close();
+        }
+      });
+      if (cancelled) {
+        unlisten();
+        unlisten = null;
+      }
+    })();
+
+    return () => { cancelled = true; unlisten?.(); };
   }, [saveAllDirtyTabs]);
 
   const handleNewTab = useCallback(() => {
@@ -1835,10 +1986,16 @@ export function App() {
           });
           if (choice !== "delete") return;
           await trashPath(entry.path);
-          const fp = fileState.filePath;
-          const insideTrashed =
-            !!fp && (fp === entry.path || fp.startsWith(entry.path + "/") || fp.startsWith(entry.path + "\\"));
-          if (insideTrashed) fileState.detachActiveFile();
+          // Detach EVERY open tab under the trashed path, not just the active
+          // one. A dirty background tab kept its filePath, so the next Save All
+          // wrote it straight back — recreating the file the user had just sent
+          // to the recycle bin, with no prompt.
+          if (isPathInside(fileState.filePath, entry.path)) fileState.detachActiveFile();
+          for (const tab of fileTabsRef.current.tabs) {
+            if (isPathInside(tab.filePath, entry.path)) {
+              fileTabsRef.current.updateTabPath(tab.id, null, tab.fileName);
+            }
+          }
           await fileState.refreshTree();
         }
       } catch (e) {

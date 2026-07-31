@@ -253,11 +253,51 @@ fn trash_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
 
 /// True if an authorized path currently exists on disk. This distinguishes a real
 /// deletion from a transient read failure without granting arbitrary path probes.
+///
+/// A path whose PARENT is gone cannot be canonicalized, so the authorization gate
+/// can only report "could not inspect". Answering `false` for that case is both
+/// true and necessary: without it the renderer cannot tell a deleted folder from
+/// an offline drive, and keeps a tab alive forever for a file that will never
+/// come back. The grant is still required — the fallback only applies once the
+/// scope has already accepted the path's nearest existing ancestor.
 #[tauri::command]
 fn path_exists(app: tauri::AppHandle, path: String) -> Result<bool, String> {
     let path = Path::new(&path);
-    ensure_allowed_path(&app, path)?;
-    Ok(path.exists())
+    match ensure_allowed_path(&app, path) {
+        Ok(()) => Ok(path.exists()),
+        Err(error) if error.starts_with(PATH_UNAVAILABLE_ERROR_CODE) => {
+            if nearest_existing_ancestor_is_allowed(&app, path) {
+                Ok(false)
+            } else {
+                Err(error)
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// True when some existing ancestor of `path` is inside the user's grant.
+///
+/// Used only to answer an existence probe for a path whose parent has been
+/// removed. Walking up stops at the first ancestor that exists, so this never
+/// reaches past the tree the user actually authorized.
+fn nearest_existing_ancestor_is_allowed(app: &tauri::AppHandle, path: &Path) -> bool {
+    let mut ancestors = path.ancestors().skip(1);
+    for ancestor in ancestors.by_ref() {
+        if ancestor.as_os_str().is_empty() {
+            break;
+        }
+        match std::fs::symlink_metadata(ancestor) {
+            Ok(_) => {
+                return file_ops::canonical_existing_path(ancestor)
+                    .map(|canonical| app.fs_scope().is_allowed(&canonical))
+                    .unwrap_or(false);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return false,
+        }
+    }
+    false
 }
 
 /// Holds the active file's OS filesystem watcher. Watching the file's PARENT
@@ -322,10 +362,46 @@ fn unwatch_file(state: State<'_, FileWatchState>) -> Result<(), String> {
     Ok(())
 }
 
+/// Paths a second launch handed us before the renderer was listening.
+///
+/// `Manager::emit` only reaches webviews that already registered a JS listener
+/// for that event, and it never replays. The renderer's listener is registered
+/// from an effect that first awaits a dynamic import, so anything forwarded
+/// during startup was dropped on the floor — which is exactly what selecting
+/// several documents in Explorer and pressing Enter produces, since that starts
+/// one instance and forwards the rest into it immediately.
+#[derive(Default)]
+struct PendingOpensState {
+    queue: Vec<String>,
+    renderer_ready: bool,
+}
+
+#[derive(Default)]
+struct PendingOpens(Mutex<PendingOpensState>);
+
+/// Drain the queue and mark the renderer live.
+///
+/// The renderer calls this once, immediately after its `open-file-in-tab`
+/// listener is registered. `renderer_ready` lives inside the same mutex as the
+/// queue so the forwarder's "is anyone listening?" check and its push are atomic
+/// against this drain — otherwise a path could be queued just after a drain and
+/// then sit there until the next launch, or be delivered twice.
+#[tauri::command]
+fn take_pending_opens(state: State<'_, PendingOpens>) -> Vec<String> {
+    match state.0.lock() {
+        Ok(mut pending) => {
+            pending.renderer_ready = true;
+            std::mem::take(&mut pending.queue)
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(FileWatchState::default())
+        .manage(PendingOpens::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
             // A second launch can forward a relative argument, so resolve it
             // against the *launching* process's directory, not this one's.
@@ -341,12 +417,26 @@ pub fn run() {
                     if let Ok(canonical_path) = grant_file_access(app, &path) {
                         // Same spelling the dialog produces, so an already-open
                         // tab is recognised instead of duplicated.
-                        let _ = app.emit(
-                            "open-file-in-tab",
-                            file_ops::display_path(&canonical_path)
-                                .to_string_lossy()
-                                .to_string(),
-                        );
+                        let display = file_ops::display_path(&canonical_path)
+                            .to_string_lossy()
+                            .to_string();
+                        // Exactly one delivery route. A live renderer gets the
+                        // event; one that is still booting would never see it,
+                        // so the path waits in the queue it drains on startup.
+                        let renderer_ready = match app.state::<PendingOpens>().0.lock() {
+                            Ok(mut pending) => {
+                                if !pending.renderer_ready {
+                                    pending.queue.push(display.clone());
+                                }
+                                pending.renderer_ready
+                            }
+                            // Poisoned lock: fall back to emitting rather than
+                            // dropping the user's file.
+                            Err(_) => true,
+                        };
+                        if renderer_ready {
+                            let _ = app.emit("open-file-in-tab", display);
+                        }
                     }
                 }
             }
@@ -372,7 +462,8 @@ pub fn run() {
             trash_path,
             path_exists,
             watch_file,
-            unwatch_file
+            unwatch_file,
+            take_pending_opens
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

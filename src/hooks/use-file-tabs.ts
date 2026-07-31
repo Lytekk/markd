@@ -11,6 +11,17 @@ export interface FileTab {
   savedContent: string;
   scrollTop: number;
   /**
+   * False while this tab names a file whose bytes have never been read.
+   *
+   * `content === ""` cannot express this: a document the user emptied on
+   * purpose looks identical to one that was never loaded. Treating the two the
+   * same bound the live editor buffer — the blank startup document, or another
+   * tab's text — to a real file path, and the next save wrote it out. Anything
+   * that reads a tab as authoritative (snapshot, restore into the editor, save,
+   * autosave) must check this first.
+   */
+  isHydrated: boolean;
+  /**
    * Session-only cache of `content`'s body as a ProseMirror JSON doc, captured
    * when the tab is left. Restoring via JSON skips the slow markdown re-parse on
    * switch-back. INVARIANT: present ⇒ it is getJSON() of the doc that `content`'s
@@ -94,6 +105,9 @@ function createTab(overrides?: Partial<FileTab>): FileTab {
     isDirty: false,
     savedContent: "",
     scrollTop: 0,
+    // A brand-new buffer is its own truth; only a path-bearing tab awaiting a
+    // disk read is unhydrated, and those opt in explicitly below.
+    isHydrated: true,
     ...overrides,
   };
 }
@@ -115,6 +129,8 @@ function loadPersistedTabs(): { tabs: FileTab[]; activeTabId: string } | null {
       scrollTop: t.scrollTop ?? 0,
       isDirty: false,
       savedContent: "",
+      // Persistence stores metadata only — the bytes come from disk at startup.
+      isHydrated: false,
     }));
     const activeTabId = tabs.some((t) => t.id === parsed.activeTabId)
       ? parsed.activeTabId
@@ -167,6 +183,15 @@ export function useFileTabs() {
   // snapshot it captured without forcing the whole editor to re-render per key.
   const tabRevisionRef = useRef(new Map(tabs.map((tab) => [tab.id, 0])));
   const getTabRevision = useCallback((id: string) => tabRevisionRef.current.get(id) ?? 0, []);
+  /**
+   * The tab array as of right now, not as of the last render.
+   *
+   * Mutations update `tabsRef` synchronously and queue a render, so a caller
+   * that awaits its own save and then reads the rendered `tabs` still sees the
+   * pre-save flags. Verifying "is anything still dirty?" against that stale copy
+   * reported failure for a Save All that had in fact saved everything.
+   */
+  const getTabsSnapshot = useCallback(() => tabsRef.current, []);
   const advanceTabRevision = useCallback((id: string) => {
     const next = (tabRevisionRef.current.get(id) ?? 0) + 1;
     tabRevisionRef.current.set(id, next);
@@ -251,6 +276,10 @@ export function useFileTabs() {
     // truth is savedContent — store THAT, not the tab's old content: after an
     // edit→save, content still holds the open-time text (markTabSaved only
     // advances savedContent), and snapshotting it would regress the tab.
+    // An unhydrated tab's file has never been read, so the editor is showing
+    // something else entirely. Snapshotting that over the tab would bind foreign
+    // text to a real path; leave the tab untouched until it loads.
+    if (current && !current.isHydrated) return current.content;
     const clean = isCleanRef.current?.() ?? false;
     const md = clean
       ? current?.savedContent ?? current?.content ?? ""
@@ -434,13 +463,31 @@ export function useFileTabs() {
   );
 
   const closeAllTabs = useCallback((): { switchTo: FileTab } => {
+    // Remember every tab first. Closing one at a time pushes each onto the
+    // closed stack; Close All used to skip that entirely and also clear the
+    // persisted session — so one misclick (with no prompt at all when every tab
+    // was clean) left nothing for Ctrl+Shift+T and nothing on disk to restore.
+    // Oldest first, so repeated reopen walks the session backwards.
+    const closing = tabsRef.current;
+    const activeId = activeTabIdRef.current;
+    const clean = isCleanRef.current?.() ?? false;
+    for (const tab of closing) {
+      if (tab.id === activeId) {
+        // Only the active tab's text lives in the editor rather than the tab.
+        const md = clean ? tab.savedContent : getMarkdownRef.current?.() ?? tab.content;
+        pushClosedTab({ ...tab, content: md });
+      } else {
+        pushClosedTab(tab);
+      }
+    }
+
     const fresh = createTab();
     tabsRef.current = [fresh];
     setTabs([fresh]);
     activate(fresh.id);
     queueMicrotask(() => persistTabs([fresh], fresh.id));
     return { switchTo: fresh };
-  }, []);
+  }, [pushClosedTab]);
 
   // Pops the most-recent closed tab. For untitled tabs, restore inline with cached content.
   // For named files, return a sentinel populated with filePath — caller (App.tsx) is
@@ -483,6 +530,7 @@ export function useFileTabs() {
         isDirty: false,
         savedContent: "",
         scrollTop: entry.scrollTop,
+        isHydrated: false,
       },
     };
   }, [snapshotActiveTab]);
@@ -603,7 +651,7 @@ export function useFileTabs() {
       advanceTabRevision(tabId);
       const updated = tabsRef.current.map((t) =>
           t.id === tabId
-            ? { ...t, content, savedContent: content, isDirty: false, docJSON: undefined }
+            ? { ...t, content, savedContent: content, isDirty: false, isHydrated: true, docJSON: undefined }
             : t,
       );
       tabsRef.current = updated;
@@ -619,6 +667,7 @@ export function useFileTabs() {
     activeTabId,
     getMru,
     getTabRevision,
+    getTabsSnapshot,
     updateTabPath,
     switchTab,
     openInTab,

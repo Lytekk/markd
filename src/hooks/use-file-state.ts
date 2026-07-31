@@ -226,7 +226,14 @@ export function useFileState() {
       // The queue skipped this write because a newer one owns the path.
       if (ok === null) return "superseded";
       if (!ok) {
-        if (stateRef.current.isDirty) scheduleAutoSave(revision, filePath);
+        // Re-arm against the CURRENT revision, not the one this save captured.
+        // Typing during a slow failing write advances the revision and arms its
+        // own timer; rescheduling the stale one cleared that live timer and then
+        // installed a callback that would refuse to fire — leaving the document
+        // with no autosave at all, exactly when a save had just failed.
+        if (stateRef.current.isDirty) {
+          scheduleAutoSave(contentRevisionRef.current, stateRef.current.filePath ?? filePath);
+        }
         return "failed";
       }
       // The bytes are on disk. If the buffer moved on while the write was in
@@ -246,8 +253,8 @@ export function useFileState() {
     // No path yet — save as
     const result = await saveFileAs(md, snapshot.fileName);
     if (result.status !== "saved") {
-      if (snapshot.filePath && stateRef.current.isDirty) {
-        scheduleAutoSave(revision, snapshot.filePath);
+      if (stateRef.current.isDirty && stateRef.current.filePath) {
+        scheduleAutoSave(contentRevisionRef.current, stateRef.current.filePath);
       }
       return result.status;
     }
@@ -280,8 +287,8 @@ export function useFileState() {
     clearAutoSave();
     const result = await saveFileAs(md, snapshot.fileName);
     if (result.status !== "saved") {
-      if (snapshot.filePath && stateRef.current.isDirty) {
-        scheduleAutoSave(revision, snapshot.filePath);
+      if (stateRef.current.isDirty && stateRef.current.filePath) {
+        scheduleAutoSave(contentRevisionRef.current, stateRef.current.filePath);
       }
       return result.status;
     }
