@@ -29,10 +29,13 @@ Published publicly because it solves a real problem and a few people asked. If i
 - Alt+1 / Alt+2 to switch sidebar between Files and Outline tabs
 - Hotkey hint ribbon — hold Ctrl to see toolbar shortcuts, hold Alt to see sidebar shortcuts
 - Auto-save every 30 seconds for named files
+- Unsaved work is guarded on every exit — closing the window, closing a tab, Close All, and reloading from disk all prompt before anything is discarded
+- Close All is recoverable: Ctrl+Shift+T walks back through the tabs it closed
+- Opening a file from Explorer/Finder shows that document first, then restores the rest of your session behind it
 - Line numbers (toggle via status bar) in both rendered and source modes
 - Window size and position remembered across restarts
 - Auto-update — checks GitHub Releases on startup (Ed25519-signed); choose **Install Now**, **Remind Me Later**, or **Skip This Version** (skip is per-version; a newer release prompts again)
-- Two themes (Day, Night) — extendable via CSS custom properties
+- Two themes (Day, Night) — extendable via CSS custom properties. Startup always paints dark first so launching never flashes white; a Day-theme window cross-fades to light once the app is up
 - Syntax highlighting for fenced code blocks (via [lowlight](https://github.com/wooorm/lowlight)), each with a hover copy button + language badge
 - Mermaid diagrams — fenced ` ```mermaid ` blocks render as live SVG diagrams below the source (lazy-loaded; bad syntax shows an inline error, never a crash)
 - LaTeX math via [KaTeX](https://katex.org) — inline `$x$` and block `$$...$$`; double-click a rendered formula to edit its source
@@ -56,6 +59,7 @@ Published publicly because it solves a real problem and a few people asked. If i
 | Ctrl+S | Save |
 | Ctrl+Shift+S | Save all open tabs |
 | Ctrl+W | Close tab |
+| Ctrl+Shift+W | Close all tabs |
 | Ctrl+T | New tab |
 | Ctrl+Shift+T | Reopen last closed tab |
 | Ctrl+Tab / Ctrl+Shift+Tab | Cycle tabs |
@@ -82,7 +86,7 @@ Published publicly because it solves a real problem and a few people asked. If i
 ## Known Issues
 
 - UNC paths from WSL (`\\wsl.localhost\...`) work for opening markdown files and for the asset protocol that serves relative images, but they can be slow or flaky. Keep files on a local drive if you hit issues.
-- Devtools are enabled in the current release binary. Disable by setting `features = []` on the `tauri` dependency in `src-tauri/Cargo.toml` before rebuilding.
+- Devtools are enabled in the current release binary. To disable, drop `"devtools"` from the `tauri` dependency's feature list in `src-tauri/Cargo.toml` — keep `"protocol-asset"`, which `assetProtocol.enable` requires; removing it fails the build.
 
 ## Install
 
@@ -121,6 +125,16 @@ For development with hot reload:
 ```bash
 pnpm tauri dev
 ```
+
+Tests:
+
+```bash
+pnpm exec tsc --noEmit                                   # typecheck
+pnpm test:run                                            # frontend (vitest)
+cargo test --manifest-path src-tauri/Cargo.toml --lib    # filesystem boundary (Rust)
+```
+
+All three run in CI on every push and pull request.
 
 ### Building from WSL
 
