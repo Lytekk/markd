@@ -72,6 +72,91 @@ pub(crate) fn canonical_new_child_path(path: &Path) -> io::Result<PathBuf> {
     Ok(canonical_existing_path(parent)?.join(file_name))
 }
 
+/// Characters Windows forbids in a normalized path component. A verbatim path
+/// may legally carry them; a plain path may not, so their presence means the
+/// two spellings are not interchangeable.
+const WINDOWS_RESERVED_CHARS: &[char] = &['<', '>', ':', '"', '|', '?', '*'];
+
+/// Longest plain Windows path that is guaranteed to resolve without the
+/// extended-length prefix.
+const WINDOWS_MAX_PLAIN_PATH: usize = 260;
+
+/// Rewrite `\\?\UNC\server\share\...` as `\\server\share\...`, or return None
+/// when that rewrite would change meaning.
+///
+/// The verbatim prefix suppresses Windows path normalization, so stripping it is
+/// only safe when the remainder would survive normalization untouched: no `.` or
+/// `..` segments, no empty segments, no trailing dots or spaces, no characters
+/// that are illegal in a plain path, and a length the plain form supports.
+/// Written against `&str` rather than `Path` so it is exercised on every host,
+/// not only on Windows where `Path` parses the prefix.
+fn simplify_verbatim_unc(path: &str) -> Option<String> {
+    const PREFIX: &str = r"\\?\UNC\";
+    let remainder = path.strip_prefix(PREFIX)?;
+    if remainder.is_empty() {
+        return None;
+    }
+
+    for segment in remainder.split('\\') {
+        if segment.is_empty() || segment == "." || segment == ".." {
+            return None;
+        }
+        if segment.ends_with('.') || segment.ends_with(' ') {
+            return None;
+        }
+        if segment
+            .chars()
+            .any(|c| c.is_control() || c == '/' || WINDOWS_RESERVED_CHARS.contains(&c))
+        {
+            return None;
+        }
+    }
+
+    let simplified = format!(r"\\{remainder}");
+    if simplified.chars().count() > WINDOWS_MAX_PLAIN_PATH {
+        return None;
+    }
+    Some(simplified)
+}
+
+/// Resolve a launch argument — a CLI argument or a single-instance forward — to
+/// an absolute path, anchoring a relative argument to the launching process's
+/// working directory. Parent traversal is refused outright rather than resolved,
+/// so a launch argument can never reach outside the directory it was issued from.
+pub(crate) fn resolve_launch_path(arg: &str, cwd: &Path) -> Option<PathBuf> {
+    if arg.is_empty() {
+        return None;
+    }
+    let path = Path::new(arg);
+    if path.is_absolute() {
+        return Some(path.to_path_buf());
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return None;
+    }
+    Some(cwd.join(path))
+}
+
+/// The spelling of `path` to hand back to the renderer.
+///
+/// Canonicalization is required for the scope grant, but on Windows it yields an
+/// extended-length (`\\?\`) path. That form is a correct filesystem identity and
+/// a poor application identity: the dialog plugin gives the renderer the plain
+/// spelling, so one file arrives under two names and becomes two tabs and two
+/// Recent Files rows. Hand back the plain spelling whenever it is unambiguous.
+/// This grants no authority — every renderer path is canonicalized and
+/// re-checked against the scope on each use.
+pub(crate) fn display_path(path: &Path) -> PathBuf {
+    let simplified = dunce::simplified(path);
+    match simplified.to_str().and_then(simplify_verbatim_unc) {
+        Some(unc) => PathBuf::from(unc),
+        None => simplified.to_path_buf(),
+    }
+}
+
 /// Write through a random sibling temp file, then atomically replace the target.
 /// A failed replacement leaves the target untouched; there is no direct-write
 /// fallback. The sibling location keeps the replacement on the target volume.
@@ -142,6 +227,110 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
     use tempfile::tempdir;
+
+    #[test]
+    fn simplifies_a_plain_verbatim_unc_path() {
+        assert_eq!(
+            simplify_verbatim_unc(r"\\?\UNC\wsl.localhost\Ubuntu\home\me\notes.md").as_deref(),
+            Some(r"\\wsl.localhost\Ubuntu\home\me\notes.md"),
+        );
+    }
+
+    #[test]
+    fn leaves_non_verbatim_unc_input_alone() {
+        for input in [
+            r"\\server\share\notes.md",
+            r"\\?\C:\notes.md",
+            "/home/me/notes.md",
+            r"\\?\UNC\",
+            "",
+        ] {
+            assert_eq!(simplify_verbatim_unc(input), None, "{input}");
+        }
+    }
+
+    #[test]
+    fn refuses_to_simplify_when_the_plain_form_would_be_reinterpreted() {
+        // The verbatim prefix suppresses Windows path normalization. Stripping it
+        // is only safe when the remainder survives normalization untouched.
+        for input in [
+            r"\\?\UNC\server\share\..\escape.md",
+            r"\\?\UNC\server\share\.\here.md",
+            r"\\?\UNC\server\share\trailing.",
+            r"\\?\UNC\server\share\trailing ",
+            r"\\?\UNC\server\share\wild*card.md",
+            r#"\\?\UNC\server\share\quo"te.md"#,
+            r"\\?\UNC\server\\share\empty.md",
+        ] {
+            assert_eq!(simplify_verbatim_unc(input), None, "{input}");
+        }
+    }
+
+    #[test]
+    fn refuses_to_simplify_a_path_that_needs_the_extended_length_prefix() {
+        let long = format!(r"\\?\UNC\server\share\{}.md", "a".repeat(300));
+        assert_eq!(simplify_verbatim_unc(&long), None);
+    }
+
+    #[test]
+    fn display_path_is_identity_for_an_ordinary_absolute_path() {
+        let dir = tempdir().expect("tempdir");
+        let target = dir.path().join("notes.md");
+        assert_eq!(display_path(&target), target);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn display_path_returns_the_plain_windows_spelling() {
+        // Both extended-length forms canonicalize() can produce must collapse to
+        // the spelling a file dialog would hand the renderer, or the same file
+        // opens as two tabs.
+        assert_eq!(
+            display_path(Path::new(r"\\?\C:\notes\a.md")),
+            PathBuf::from(r"C:\notes\a.md"),
+        );
+        assert_eq!(
+            display_path(Path::new(r"\\?\UNC\wsl.localhost\Ubuntu\home\me\a.md")),
+            PathBuf::from(r"\\wsl.localhost\Ubuntu\home\me\a.md"),
+        );
+    }
+
+    #[test]
+    fn resolve_launch_path_keeps_an_absolute_argument() {
+        let dir = tempdir().expect("tempdir");
+        let absolute = dir.path().join("notes.md");
+        let cwd = Path::new("/definitely/not/used");
+        assert_eq!(
+            resolve_launch_path(&absolute.to_string_lossy(), cwd).as_deref(),
+            Some(absolute.as_path()),
+        );
+    }
+
+    #[test]
+    fn resolve_launch_path_anchors_a_relative_argument_to_the_launching_directory() {
+        // A shell can hand either entry point a relative argument; the caller's
+        // working directory is the only correct anchor for it.
+        let cwd = tempdir().expect("tempdir");
+        assert_eq!(
+            resolve_launch_path("notes.md", cwd.path()).as_deref(),
+            Some(cwd.path().join("notes.md").as_path()),
+        );
+    }
+
+    #[test]
+    fn resolve_launch_path_refuses_parent_traversal_and_empty_arguments() {
+        let cwd = tempdir().expect("tempdir");
+        assert_eq!(resolve_launch_path("../escape.md", cwd.path()), None);
+        assert_eq!(resolve_launch_path("a/../../escape.md", cwd.path()), None);
+        assert_eq!(resolve_launch_path("", cwd.path()), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn display_path_keeps_a_path_that_needs_the_extended_length_prefix() {
+        let long = format!(r"\\?\C:\{}\a.md", "d".repeat(300));
+        assert_eq!(display_path(Path::new(&long)), PathBuf::from(&long));
+    }
 
     #[test]
     fn atomic_write_replaces_existing_contents() -> Result<(), Box<dyn Error>> {

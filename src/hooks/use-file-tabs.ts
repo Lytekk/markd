@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useMemo, useEffect } from "react";
 import type { JSONContent } from "@tiptap/core";
+import { samePath } from "@/lib/path-identity";
 
 export interface FileTab {
   id: string;
@@ -187,7 +188,11 @@ export function useFileTabs() {
   // Update a tab's path + name after its file was renamed/moved on disk (the
   // active file's path is owned by useFileState; this keeps the snapshot tabs
   // and the TabBar label in sync).
-  const updateTabPath = useCallback((id: string, newPath: string, newName: string) => {
+  // Change a tab's identity WITHOUT touching its buffer or its dirty flag.
+  // `newPath` is nullable because a file can be deleted out from under an open
+  // tab: the user keeps the buffer, which then has no path and is the only copy
+  // of that content.
+  const updateTabPath = useCallback((id: string, newPath: string | null, newName: string) => {
     advanceTabRevision(id);
     const updated = tabsRef.current.map((t) => (
       t.id === id ? { ...t, filePath: newPath, fileName: newName } : t
@@ -307,7 +312,7 @@ export function useFileTabs() {
       const currentTabs = tabsRef.current;
       const currentId = activeTabIdRef.current;
       const existing = filePath
-        ? currentTabs.find((t) => t.filePath === filePath)
+        ? currentTabs.find((t) => samePath(t.filePath, filePath))
         : null;
       if (existing) {
         activate(existing.id);

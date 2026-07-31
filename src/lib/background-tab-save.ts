@@ -1,12 +1,13 @@
 import type { FileTab } from "@/hooks/use-file-tabs";
 import { queueFileWrite } from "./file-write-queue";
 import { resolveSaveContent } from "./markdown-fidelity";
+import type { SaveAsResult } from "./file-system";
 
 type BackgroundTab = Pick<FileTab, "fileName" | "filePath" | "content" | "savedContent">;
 
 export interface BackgroundTabSaveDeps {
   saveToFile: (path: string, content: string) => Promise<boolean>;
-  saveFileAs: (content: string, suggestedName: string) => Promise<{ path: string; name: string } | null>;
+  saveFileAs: (content: string, suggestedName: string) => Promise<SaveAsResult>;
 }
 
 export interface SavedBackgroundTab {
@@ -39,7 +40,7 @@ export async function saveBackgroundTab(
   if (!shouldWrite()) return null;
   const result = await saveFileAs(savedContent, tab.fileName);
   if (!shouldWrite()) return null;
-  return result
+  return result.status === "saved"
     ? { filePath: result.path, fileName: result.name, savedContent }
     : null;
 }

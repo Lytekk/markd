@@ -18,10 +18,15 @@ tauri-build = { version = "2.5.6", features = [] }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "2.10.3", features = ["devtools"] }
+# `protocol-asset` is required by tauri.conf.json's assetProtocol.enable and was
+# already pulled in transitively by tauri-plugin-persisted-scope. Declaring it
+# here is what tauri-build's allowlist check reads, so plain `cargo check`,
+# `cargo clippy` and `cargo test` work instead of only `tauri build`.
+tauri = { version = "2.10.3", features = ["devtools", "protocol-asset"] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
+dunce = "1"
 tauri-plugin-persisted-scope = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-window-state = "2"

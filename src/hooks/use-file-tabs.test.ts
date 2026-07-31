@@ -426,4 +426,24 @@ describe("useFileTabs — clean-skip snapshots store savedContent, not stale ope
     act(() => { result.current.newTab(); });
     expect(result.current.tabs.find((t) => t.id === aId)!.content).toBe("AAA v2");
   });
+
+  it("keeps a dirty tab dirty when only its path changes", () => {
+    // Rename, or "Keep in Editor" after the file is deleted outside Markd, both
+    // change the active file's path while the buffer still holds unsaved edits.
+    // Routing that through markTabSaved marked the tab clean, so the close guard
+    // stopped asking and the only copy of those edits could be discarded.
+    const { result } = renderHook(() => useFileTabs());
+    const id = result.current.activeTabId;
+    act(() => { result.current.markTabDirty(id); });
+    expect(result.current.tabs[0]!.isDirty).toBe(true);
+
+    act(() => { result.current.updateTabPath(id, "/tmp/renamed.md", "renamed.md"); });
+    expect(result.current.tabs[0]!.filePath).toBe("/tmp/renamed.md");
+    expect(result.current.tabs[0]!.fileName).toBe("renamed.md");
+    expect(result.current.tabs[0]!.isDirty).toBe(true);
+
+    act(() => { result.current.updateTabPath(id, null, "renamed.md"); });
+    expect(result.current.tabs[0]!.filePath).toBeNull();
+    expect(result.current.tabs[0]!.isDirty).toBe(true);
+  });
 });

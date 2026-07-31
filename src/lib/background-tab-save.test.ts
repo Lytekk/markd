@@ -22,7 +22,7 @@ describe("saveBackgroundTab", () => {
 
   it("routes an untitled background buffer through Save As and returns its new identity", async () => {
     const saveToFile = vi.fn();
-    const saveFileAs = vi.fn().mockResolvedValue({ path: "/tmp/untitled.md", name: "untitled.md" });
+    const saveFileAs = vi.fn().mockResolvedValue({ status: "saved", path: "/tmp/untitled.md", name: "untitled.md" });
     const tab = { ...dirtyNamedTab, id: "untitled", fileName: "Untitled", filePath: null };
 
     await expect(saveBackgroundTab(tab, { saveToFile, saveFileAs })).resolves.toEqual({
