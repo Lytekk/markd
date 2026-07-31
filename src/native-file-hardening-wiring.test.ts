@@ -282,6 +282,25 @@ describe("native filesystem hardening wiring", () => {
     expect(mirror).toContain("ft.updateTabPath(ft.activeTabId, fileState.filePath, fileState.fileName)");
   });
 
+  it("reads tab state live wherever a handler continues past an await", () => {
+    // useFileTabs returns a plain object literal: `tabs` and `activeTabId` on it
+    // are useState VALUES frozen into the render that produced it, while the
+    // function members are ref-backed. Anything that captures the hook object
+    // and then awaits must ask through the accessors, or it acts on state from
+    // before its own mutations — which shipped once as the startup restore
+    // loading a different document over the one the user opened, and lurks in
+    // every save path that writes tab.content.
+    const saveAll = section(app, "const saveAllDirtyTabs", "const handleCloseAllTabs");
+    expect(saveAll).toContain("ft.getActiveTabId()");
+    expect(saveAll).toContain("ft\n      .getTabsSnapshot()\n      .filter((tab) => tab.isDirty");
+    expect(saveAll).not.toMatch(/ft\.tabs\.filter/);
+    expect(saveAll).not.toMatch(/const activeTabId = ft\.activeTabId/);
+
+    const startup = section(app, "const startupDone", "// Single-instance listener");
+    expect(startup).not.toMatch(/ft\.tabs\b/);
+    expect(startup).not.toMatch(/ft\.activeTabId\b/);
+  });
+
   it("compares file paths by identity so one file cannot become two tabs", () => {
     // The native layer canonicalizes and a dialog does not, so `===` on the raw
     // strings split one file into two tabs, two Recent Files rows and two write

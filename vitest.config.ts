@@ -9,9 +9,17 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify("0.0.0-test"),
   },
   resolve: {
-    alias: {
-      "@": resolve(__dirname, "src"),
-    },
+    // Mirrors vite.config.ts. Without the katex pin the suite resolved KaTeX
+    // through the dual-format path the build no longer uses, so every test —
+    // including the math round-trip ones — exercised a different module graph
+    // than the shipped bundle.
+    alias: [
+      { find: "@", replacement: resolve(__dirname, "src") },
+      {
+        find: /^katex$/,
+        replacement: resolve(__dirname, "node_modules/katex/dist/katex.mjs"),
+      },
+    ],
   },
   test: {
     environment: "jsdom",

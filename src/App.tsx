@@ -1176,8 +1176,8 @@ export function App() {
 
   const saveAllDirtyTabs = useCallback(async (): Promise<boolean> => {
     const ft = fileTabsRef.current;
-    const activeTabId = ft.activeTabId;
-    const activeTab = ft.tabs.find((tab) => tab.id === activeTabId);
+    const activeTabId = ft.getActiveTabId();
+    const activeTab = ft.getTabsSnapshot().find((tab) => tab.id === activeTabId);
     // Save the active buffer before any awaited background write. handleSave is
     // revision-bound inside useFileState; a tab switch or edit during the write
     // returns false rather than accidentally saving whichever tab is current.
@@ -1185,9 +1185,17 @@ export function App() {
       if (!await saveActiveTab()) return false;
     }
 
-    // Each inactive write carries its tab revision through the await. A stale
-    // completion is a failed Save All, never permission to close a newer buffer.
-    const dirtyTabs = ft.tabs.filter((tab) => tab.isDirty && tab.id !== activeTabId);
+    // From the LIVE snapshot, after that await. `ft.tabs` is the array from the
+    // render this callback was created in; the active save has since mutated
+    // tabsRef and queued a render it will never reflect. Worse, the tab OBJECTS
+    // in it carry the content from that old render, and saveBackgroundTab writes
+    // tab.content — so a buffer edited between the render and this point would
+    // have had its older bytes written to disk. The revision guard cannot catch
+    // that: `revision` is read live here, so it matches the live value and the
+    // write proceeds with the stale object.
+    const dirtyTabs = ft
+      .getTabsSnapshot()
+      .filter((tab) => tab.isDirty && tab.id !== activeTabId);
     for (const tab of dirtyTabs) {
       const revision = ft.getTabRevision(tab.id);
       const result = await saveBackgroundTab(tab, { saveToFile, saveFileAs }, () => (
@@ -1477,8 +1485,10 @@ export function App() {
                 const request = bufferLoadGuardRef.current.begin();
                 const ft = fileTabsRef.current;
                 const fs = fileStateRef.current;
-                const activeTabId = ft.activeTabId;
-                const tabs = ft.tabs.map((tab) => ({ tab, revision: ft.getTabRevision(tab.id) }));
+                const activeTabId = ft.getActiveTabId();
+                const tabs = ft
+                  .getTabsSnapshot()
+                  .map((tab) => ({ tab, revision: ft.getTabRevision(tab.id) }));
                 for (const { tab, revision } of tabs) {
                   if (!tab.filePath) continue;
                   try {

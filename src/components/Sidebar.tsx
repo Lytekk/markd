@@ -67,11 +67,15 @@ export function Sidebar({
   const showsRecentFiles =
     !collapsed && activeTab === "files" && tree.length === 0 && recentFiles.length > 0;
   useEffect(() => {
-    if (!showsRecentFiles) return;
+    // Reset first, and OUTSIDE the visibility gate: showsRecentFiles already
+    // requires a non-empty list, so gating this branch behind it made it
+    // unreachable and left a stale missing-set behind after the list was
+    // cleared — dead code that read as live safety.
     if (recentFiles.length === 0) {
       setMissingRecent(new Set());
       return;
     }
+    if (!showsRecentFiles) return;
     let cancelled = false;
     void (async () => {
       const checks = await Promise.all(
