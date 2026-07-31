@@ -8,15 +8,63 @@ const fileSystem = readFileSync("src/lib/file-system.ts", "utf8");
 const app = readFileSync("src/App.tsx", "utf8");
 const tauriConfig = JSON.parse(readFileSync("src-tauri/tauri.conf.json", "utf8"));
 
+/**
+ * Extract a Rust function body, counting braces only in real code.
+ *
+ * Naive brace counting stops early on a `{` inside a string literal or a
+ * comment, and a truncated body makes every `.not.toContain` assertion below
+ * pass for the wrong reason — the guard silently stops guarding. Skip strings,
+ * chars, raw strings and comments so the depth count reflects the source.
+ */
 function functionBody(source: string, name: string): string {
   const start = source.indexOf(`fn ${name}(`);
   expect(start, `missing ${name}`).toBeGreaterThanOrEqual(0);
   const openingBrace = source.indexOf("{", start);
+  expect(openingBrace, `missing body for ${name}`).toBeGreaterThan(start);
+
   let depth = 0;
   for (let index = openingBrace; index < source.length; index += 1) {
-    if (source[index] === "{") depth += 1;
-    if (source[index] === "}") depth -= 1;
-    if (depth === 0) return source.slice(start, index + 1);
+    const char = source[index];
+
+    if (char === "/" && source[index + 1] === "/") {
+      index = source.indexOf("\n", index);
+      if (index === -1) break;
+      continue;
+    }
+    if (char === "/" && source[index + 1] === "*") {
+      const close = source.indexOf("*/", index + 2);
+      if (close === -1) break;
+      index = close + 1;
+      continue;
+    }
+    // Raw string: r"...", r#"..."#, r##"..."## — the hash count delimits it.
+    if (char === "r" && (source[index + 1] === '"' || source[index + 1] === "#")) {
+      let hashes = 0;
+      while (source[index + 1 + hashes] === "#") hashes += 1;
+      if (source[index + 1 + hashes] === '"') {
+        const terminator = `"${"#".repeat(hashes)}`;
+        const close = source.indexOf(terminator, index + 2 + hashes);
+        if (close === -1) break;
+        index = close + terminator.length - 1;
+        continue;
+      }
+    }
+    if (char === '"' || char === "'") {
+      let cursor = index + 1;
+      while (cursor < source.length && source[cursor] !== char) {
+        cursor += source[cursor] === "\\" ? 2 : 1;
+      }
+      // A lone `'` is a lifetime (`&'a str`), not a char literal — leave it be.
+      if (char === "'" && cursor - index > 3) continue;
+      index = cursor;
+      continue;
+    }
+
+    if (char === "{") depth += 1;
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return source.slice(start, index + 1);
+    }
   }
   throw new Error(`unterminated ${name}`);
 }
@@ -28,6 +76,34 @@ function section(source: string, startMarker: string, endMarker: string): string
   expect(end, `missing ${endMarker}`).toBeGreaterThan(start);
   return source.slice(start, end);
 }
+
+describe("wiring-guard extraction", () => {
+  // If this harness truncates a body, every `.not.toContain` guard below starts
+  // passing vacuously — the guards would report success while guarding nothing.
+  it("counts braces in code only, not in strings or comments", () => {
+    const sample = [
+      "fn sample(path: &Path) -> String {",
+      '    let a = "an unbalanced { brace in a string";',
+      "    // an unbalanced { brace in a line comment",
+      "    /* an unbalanced { brace in a block comment */",
+      '    let b = r#"a raw string with { and "quotes""#;',
+      "    let c: &'static str = \"lifetime above must not open a char literal\";",
+      "    if path.is_absolute() { return String::new(); }",
+      "    SENTINEL",
+      "}",
+      "fn after() { NOT_PART_OF_SAMPLE }",
+    ].join("\n");
+
+    const body = functionBody(sample, "sample");
+    expect(body).toContain("SENTINEL");
+    expect(body).not.toContain("NOT_PART_OF_SAMPLE");
+    expect(body.endsWith("}")).toBe(true);
+  });
+
+  it("reports a missing function instead of silently returning nothing", () => {
+    expect(() => functionBody("fn other() {}", "absent")).toThrow();
+  });
+});
 
 describe("native filesystem hardening wiring", () => {
   it("routes atomic writes through an unpredictable same-directory temporary file without a direct-write fallback", () => {

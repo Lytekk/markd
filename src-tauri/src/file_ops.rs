@@ -175,8 +175,15 @@ pub(crate) fn write_atomic(target: &Path, bytes: &[u8]) -> io::Result<()> {
     temp.as_file().sync_all()?;
     temp.persist(target).map_err(|error| error.error)?;
 
+    // The rename has already happened: the new contents are visible to every
+    // reader from here on. Syncing the directory only makes that rename durable
+    // across a power loss, so a failure is a weaker-durability warning, not a
+    // failed save. Propagating it told the user their document "could not be
+    // saved" and left the buffer dirty for a write that had in fact landed.
     #[cfg(unix)]
-    fs::File::open(&dir)?.sync_all()?;
+    if let Ok(handle) = fs::File::open(&dir) {
+        let _ = handle.sync_all();
+    }
 
     Ok(())
 }
