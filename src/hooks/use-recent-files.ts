@@ -1,4 +1,5 @@
 import { useState, useCallback } from "react";
+import { samePath } from "@/lib/path-identity";
 
 export interface RecentFile {
   name: string;
@@ -29,7 +30,9 @@ export function useRecentFiles() {
 
   const addRecentFile = useCallback((name: string, path: string) => {
     setRecentFiles((prev) => {
-      const filtered = prev.filter((f) => f.path !== path);
+      // Dedup by file identity, not by spelling: the native layer and a file
+      // dialog name one file differently, which used to add a second row.
+      const filtered = prev.filter((f) => !samePath(f.path, path));
       const updated = [{ name, path, timestamp: Date.now() }, ...filtered].slice(0, MAX_RECENT);
       persistRecentFiles(updated);
       return updated;
@@ -40,7 +43,7 @@ export function useRecentFiles() {
   // an entry whose file we discover is gone on open/existence-check.
   const removeRecentFile = useCallback((path: string) => {
     setRecentFiles((prev) => {
-      const updated = prev.filter((f) => f.path !== path);
+      const updated = prev.filter((f) => !samePath(f.path, path));
       persistRecentFiles(updated);
       return updated;
     });

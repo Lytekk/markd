@@ -204,8 +204,9 @@ describe("useFileState save ownership", () => {
 
     finishSecond?.(true);
     await act(async () => {
-      await expect(firstSave).resolves.toBe(false);
-      await expect(secondSave).resolves.toBe(true);
+      // The queue skipped this write entirely: a newer one owns the path.
+      await expect(firstSave).resolves.toBe("superseded");
+      await expect(secondSave).resolves.toBe("written");
     });
     expect(result.current.savedContent).toBe("second edit");
     expect(result.current.isDirty).toBe(false);
@@ -272,7 +273,7 @@ describe("useFileState save ownership", () => {
     act(() => result.current.markDirty());
 
     await act(async () => {
-      await expect(result.current.handleSave()).resolves.toBe(false);
+      await expect(result.current.handleSave()).resolves.toBe("failed");
     });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(30_000);

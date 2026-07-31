@@ -10,10 +10,21 @@ export interface FileEntry {
 
 const MD_EXTENSIONS = [".md", ".markdown", ".mdx", ".txt"];
 const PATH_AUTHORIZATION_ERROR_CODE = "MARKD_PATH_NOT_AUTHORIZED";
+const PATH_UNAVAILABLE_ERROR_CODE = "MARKD_PATH_UNAVAILABLE";
 
 function isMarkdownFile(name: string): boolean {
   return MD_EXTENSIONS.some((ext) => name.toLowerCase().endsWith(ext));
 }
+
+/**
+ * A Save As either wrote, was dismissed by the user, or failed. Collapsing the
+ * last two into `null` made a failed write look exactly like a cancel, so a save
+ * that never happened was reported to the user as nothing at all.
+ */
+export type SaveAsResult =
+  | { status: "saved"; path: string; name: string }
+  | { status: "cancelled" }
+  | { status: "failed" };
 
 export function isTauri(): boolean {
   // Tauri v2 exposes the IPC bridge as __TAURI_INTERNALS__ by default;
@@ -25,6 +36,17 @@ export function isTauri(): boolean {
 export function isPathAuthorizationError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return message.includes(PATH_AUTHORIZATION_ERROR_CODE);
+}
+
+/**
+ * True when the native side could not inspect the path at all — a disconnected
+ * share, a sleeping VM filesystem, or a device error. Distinct from an
+ * authorization denial: the grant is intact and a later attempt can succeed, so
+ * callers must not discard the user's tab or ask them to re-authorize.
+ */
+export function isPathUnavailableError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes(PATH_UNAVAILABLE_ERROR_CODE);
 }
 
 // ── Tauri implementations ──────────────────────────────────────────
@@ -66,7 +88,7 @@ async function tauriSaveFile(path: string, content: string): Promise<boolean> {
 async function tauriSaveFileAs(
   content: string,
   suggestedName = "untitled.md",
-): Promise<{ path: string; name: string } | null> {
+): Promise<SaveAsResult> {
   const { save } = await import("@tauri-apps/plugin-dialog");
 
   const path = await save({
@@ -74,13 +96,13 @@ async function tauriSaveFileAs(
     filters: [{ name: "Markdown", extensions: ["md"] }],
   });
 
-  if (!path) return null;
+  if (!path) return { status: "cancelled" };
   // Route through tauriSaveFile so every desktop write uses the hardened native
   // atomic command after the dialog has granted this selected path's scope.
   const ok = await tauriSaveFile(path, content);
-  if (!ok) return null;
+  if (!ok) return { status: "failed" };
   const name = path.split(/[/\\]/).pop() ?? suggestedName;
-  return { path, name };
+  return { status: "saved", path, name };
 }
 
 async function tauriOpenDirectory(): Promise<{
@@ -195,18 +217,31 @@ async function browserSaveFile(
 async function browserSaveFileAs(
   content: string,
   suggestedName = "untitled.md",
-): Promise<{ path: string; name: string } | null> {
+): Promise<SaveAsResult> {
+  if (typeof window.showSaveFilePicker !== "function") {
+    // Firefox and Safari have no File System Access API at all.
+    return { status: "failed" };
+  }
+  let handle: FileSystemFileHandle;
   try {
-    const handle = await window.showSaveFilePicker({
+    handle = await window.showSaveFilePicker({
       suggestedName,
       types: [{ description: "Markdown", accept: { "text/markdown": [".md"] } }],
     });
+  } catch (error) {
+    // AbortError is the user dismissing the picker. SecurityError (no user
+    // gesture, insecure origin) and TypeError are real failures, and reporting
+    // them as a cancel meant Ctrl+S did nothing at all with no explanation.
+    const name = error instanceof DOMException ? error.name : "";
+    return name === "AbortError" ? { status: "cancelled" } : { status: "failed" };
+  }
+  try {
     const writable = await handle.createWritable();
     await writable.write(content);
     await writable.close();
-    return { path: handle.name, name: handle.name };
+    return { status: "saved", path: handle.name, name: handle.name };
   } catch {
-    return null;
+    return { status: "failed" };
   }
 }
 
@@ -224,7 +259,10 @@ export async function saveToFile(
   return isTauri() ? tauriSaveFile(path, content) : browserSaveFile(path, content, handle);
 }
 
-export async function saveFileAs(content: string, suggestedName?: string) {
+export async function saveFileAs(
+  content: string,
+  suggestedName?: string,
+): Promise<SaveAsResult> {
   return isTauri() ? tauriSaveFileAs(content, suggestedName) : browserSaveFileAs(content, suggestedName);
 }
 
@@ -281,6 +319,15 @@ export async function pathExists(path: string): Promise<boolean> {
   return invoke<boolean>("path_exists", { path });
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 export async function exportAsHtml(html: string, title: string): Promise<void> {
   const styles = Array.from(document.styleSheets)
     .flatMap((sheet) => {
@@ -293,12 +340,16 @@ export async function exportAsHtml(html: string, title: string): Promise<void> {
     .join("\n");
 
   const baseName = title.replace(/\.md$/, "");
+  // File names may legally contain < and > on macOS/Linux. The rest of the
+  // export pipeline routes through the ProseMirror serializer precisely to keep
+  // markup escaped; this interpolation must not be the hole in it.
+  const escapedTitle = escapeHtml(baseName);
   const fullHtml = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${baseName}</title>
+  <title>${escapedTitle}</title>
   <style>${styles}</style>
 </head>
 <body>

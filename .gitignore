@@ -32,7 +32,12 @@ TODO.md
 CLAUDE.md
 .claude/
 .serena/
-/docs/
+# docs/ holds local working notes, EXCEPT the wiring trace CLAUDE.md points at
+# as the filesystem source of truth — that one has to survive a fresh clone.
+# `/docs/*` rather than `/docs/`: git never descends into an ignored directory,
+# so a negation inside one can never match.
+/docs/*
+!/docs/codebase-ground-truth.md
 
 # Local tooling artifacts (code-intelligence index + browser-automation scratch)
 .axon/

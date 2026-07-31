@@ -8,6 +8,7 @@ use tauri_plugin_fs::FsExt;
 mod file_ops;
 
 const PATH_AUTHORIZATION_ERROR_CODE: &str = "MARKD_PATH_NOT_AUTHORIZED";
+const PATH_UNAVAILABLE_ERROR_CODE: &str = "MARKD_PATH_UNAVAILABLE";
 
 #[derive(Serialize, Clone)]
 struct OpenedFile {
@@ -16,20 +17,15 @@ struct OpenedFile {
     content: String,
 }
 
+fn launch_file_argument(args: &[String]) -> Option<&String> {
+    args.iter().skip(1).find(|arg| !arg.starts_with('-'))
+}
+
 fn get_file_path_from_args() -> Option<PathBuf> {
     let args: Vec<String> = std::env::args().collect();
-    let file_path = args.iter().skip(1).find(|arg| !arg.starts_with('-'))?;
-    let path = PathBuf::from(file_path);
-    if path.is_absolute() {
-        Some(path)
-    } else if path
-        .components()
-        .all(|component| !matches!(component, std::path::Component::ParentDir))
-    {
-        std::env::current_dir().ok().map(|cwd| cwd.join(path))
-    } else {
-        None
-    }
+    let file_path = launch_file_argument(&args)?;
+    let cwd = std::env::current_dir().ok()?;
+    file_ops::resolve_launch_path(file_path, &cwd)
 }
 
 fn path_authorization_error() -> String {
@@ -38,41 +34,107 @@ fn path_authorization_error() -> String {
     )
 }
 
+fn path_unavailable_error() -> String {
+    format!(
+        "{PATH_UNAVAILABLE_ERROR_CODE}: This path could not be reached right now. The drive or share may be offline."
+    )
+}
+
+/// Map a failure to *inspect* a path onto the two codes the renderer acts on.
+///
+/// `InvalidInput` is how `file_ops` refuses a path on policy grounds — a symlink
+/// component, parent traversal, a relative path. Everything else is an I/O
+/// condition (offline share, sleeping VM filesystem, device error, missing
+/// parent) that a later attempt can clear, so it must not be reported as a
+/// revoked authorization: the renderer would tell the user to re-authorize a
+/// grant that is still perfectly intact, and discard their tab.
+fn path_inspection_error(error: &std::io::Error) -> String {
+    match error.kind() {
+        std::io::ErrorKind::InvalidInput => path_authorization_error(),
+        _ => path_unavailable_error(),
+    }
+}
+
+/// Let the asset protocol serve the folder of a document the user has already
+/// opened, so the document's relative images render.
+///
+/// A markdown image is written relative to its document (`./img/plot.png`), so
+/// the document's folder — not the document file — is what has to be servable.
+/// v0.4.4 dropped the blanket `assetProtocol.scope: ["**"]` and granted only the
+/// opened `.md` file, which silently broke every relative image in a document
+/// opened by double-click or File > Open. This restores those images without
+/// restoring ambient authority: the grant is read-only display scope, it is
+/// bounded to one folder, and it is only ever taken for a path that already
+/// passed the filesystem authorization gate. Paths that climb out with `..` are
+/// still refused, because the scope check canonicalizes before matching.
+fn allow_document_assets(app: &tauri::AppHandle, canonical_path: &Path) {
+    if let Some(parent) = canonical_path.parent() {
+        let _ = app.asset_protocol_scope().allow_directory(parent, true);
+    }
+}
+
 /// Grant both command and asset-protocol scopes for a user-mediated OS file
 /// event. Dialogs grant both scopes themselves; CLI and single-instance events
 /// reach this helper directly.
 fn grant_file_access(app: &tauri::AppHandle, path: &Path) -> Result<PathBuf, String> {
     let canonical_path =
-        file_ops::canonical_existing_path(path).map_err(|_| path_authorization_error())?;
+        file_ops::canonical_existing_path(path).map_err(|e| path_inspection_error(&e))?;
     app.fs_scope()
         .allow_file(&canonical_path)
         .map_err(|_| path_authorization_error())?;
     app.asset_protocol_scope()
         .allow_file(&canonical_path)
         .map_err(|_| path_authorization_error())?;
+    allow_document_assets(app, &canonical_path);
     Ok(canonical_path)
 }
 
-fn get_opened_file_from_args(app: &tauri::AppHandle) -> Option<OpenedFile> {
-    let file_path = get_file_path_from_args()?;
-    let file_path = grant_file_access(app, &file_path).ok()?;
+fn get_opened_file_from_args(app: &tauri::AppHandle) -> Result<Option<OpenedFile>, String> {
+    let Some(file_path) = get_file_path_from_args() else {
+        return Ok(None);
+    };
+    let canonical_path = grant_file_access(app, &file_path)?;
 
-    let content = std::fs::read_to_string(&file_path).ok()?;
-    let name = file_path
+    let content = std::fs::read_to_string(&canonical_path)
+        .map_err(|e| io_error("read this file", &e))?;
+    let name = canonical_path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("untitled.md")
         .to_string();
 
-    Some(OpenedFile {
-        path: file_path.to_string_lossy().to_string(),
+    Ok(Some(OpenedFile {
+        // The renderer keys tabs, Recent Files and the file watcher off this
+        // string, so hand it the same spelling a file dialog would produce.
+        path: file_ops::display_path(&canonical_path)
+            .to_string_lossy()
+            .to_string(),
         name,
         content,
-    })
+    }))
 }
 
+/// Content of the file the OS launched Markd with, if any.
+///
+/// Returns an error rather than `None` when a file WAS named but could not be
+/// opened. Swallowing that with `.ok()?` meant double-clicking an unreadable or
+/// unauthorized document did nothing at all — no window content, no message, no
+/// way for the user to tell Markd had even seen the file.
 #[tauri::command]
-fn get_opened_file(app: tauri::AppHandle) -> Option<OpenedFile> {
+fn get_opened_file(
+    app: tauri::AppHandle,
+    state: State<'_, PendingOpens>,
+) -> Result<Option<OpenedFile>, String> {
+    match state.0.lock() {
+        Ok(mut pending) => {
+            if pending.launch_file_taken {
+                return Ok(None);
+            }
+            pending.launch_file_taken = true;
+        }
+        // Poisoned lock: answering once more beats never opening the file.
+        Err(_) => {}
+    }
     get_opened_file_from_args(&app)
 }
 
@@ -86,9 +148,9 @@ fn ensure_allowed_path(app: &tauri::AppHandle, path: &Path) -> Result<(), String
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             file_ops::canonical_new_child_path(path)
         }
-        Err(_) => return Err(path_authorization_error()),
+        Err(error) => return Err(path_inspection_error(&error)),
     }
-    .map_err(|_| path_authorization_error())?;
+    .map_err(|error| path_inspection_error(&error))?;
 
     // The submitted path must match the user grant, and its canonical parent
     // must still match after symlink resolution. Both checks are needed for a
@@ -116,7 +178,14 @@ fn io_error(action: &str, error: &std::io::Error) -> String {
 fn read_file(app: tauri::AppHandle, path: String) -> Result<String, String> {
     let path = Path::new(&path);
     ensure_allowed_path(&app, path)?;
-    std::fs::read_to_string(path).map_err(|e| io_error("read this file", &e))
+    let content = std::fs::read_to_string(path).map_err(|e| io_error("read this file", &e))?;
+    // Every document open the renderer performs — dialog, Recent Files, file
+    // tree, session restore — arrives here, so this is the one place that has to
+    // make the document's images loadable.
+    if let Ok(canonical_path) = file_ops::canonical_existing_path(path) {
+        allow_document_assets(&app, &canonical_path);
+    }
+    Ok(content)
 }
 
 #[tauri::command]
@@ -197,11 +266,51 @@ fn trash_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
 
 /// True if an authorized path currently exists on disk. This distinguishes a real
 /// deletion from a transient read failure without granting arbitrary path probes.
+///
+/// A path whose PARENT is gone cannot be canonicalized, so the authorization gate
+/// can only report "could not inspect". Answering `false` for that case is both
+/// true and necessary: without it the renderer cannot tell a deleted folder from
+/// an offline drive, and keeps a tab alive forever for a file that will never
+/// come back. The grant is still required — the fallback only applies once the
+/// scope has already accepted the path's nearest existing ancestor.
 #[tauri::command]
 fn path_exists(app: tauri::AppHandle, path: String) -> Result<bool, String> {
     let path = Path::new(&path);
-    ensure_allowed_path(&app, path)?;
-    Ok(path.exists())
+    match ensure_allowed_path(&app, path) {
+        Ok(()) => Ok(path.exists()),
+        Err(error) if error.starts_with(PATH_UNAVAILABLE_ERROR_CODE) => {
+            if nearest_existing_ancestor_is_allowed(&app, path) {
+                Ok(false)
+            } else {
+                Err(error)
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// True when some existing ancestor of `path` is inside the user's grant.
+///
+/// Used only to answer an existence probe for a path whose parent has been
+/// removed. Walking up stops at the first ancestor that exists, so this never
+/// reaches past the tree the user actually authorized.
+fn nearest_existing_ancestor_is_allowed(app: &tauri::AppHandle, path: &Path) -> bool {
+    let mut ancestors = path.ancestors().skip(1);
+    for ancestor in ancestors.by_ref() {
+        if ancestor.as_os_str().is_empty() {
+            break;
+        }
+        match std::fs::symlink_metadata(ancestor) {
+            Ok(_) => {
+                return file_ops::canonical_existing_path(ancestor)
+                    .map(|canonical| app.fs_scope().is_allowed(&canonical))
+                    .unwrap_or(false);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return false,
+        }
+    }
+    false
 }
 
 /// Holds the active file's OS filesystem watcher. Watching the file's PARENT
@@ -266,21 +375,85 @@ fn unwatch_file(state: State<'_, FileWatchState>) -> Result<(), String> {
     Ok(())
 }
 
+/// Paths a second launch handed us before the renderer was listening.
+///
+/// `Manager::emit` only reaches webviews that already registered a JS listener
+/// for that event, and it never replays. The renderer's listener is registered
+/// from an effect that first awaits a dynamic import, so anything forwarded
+/// during startup was dropped on the floor — which is exactly what selecting
+/// several documents in Explorer and pressing Enter produces, since that starts
+/// one instance and forwards the rest into it immediately.
+#[derive(Default)]
+struct PendingOpensState {
+    queue: Vec<String>,
+    renderer_ready: bool,
+    /// The launch argument is consumed once per process. `std::env::args()` never
+    /// changes, so re-reading it on a webview reload re-opened (and, once the
+    /// command started reporting errors, re-alerted about) the same file.
+    launch_file_taken: bool,
+}
+
+#[derive(Default)]
+struct PendingOpens(Mutex<PendingOpensState>);
+
+/// Drain the queue and mark the renderer live.
+///
+/// The renderer calls this once, immediately after its `open-file-in-tab`
+/// listener is registered. `renderer_ready` lives inside the same mutex as the
+/// queue so the forwarder's "is anyone listening?" check and its push are atomic
+/// against this drain — otherwise a path could be queued just after a drain and
+/// then sit there until the next launch, or be delivered twice.
+#[tauri::command]
+fn take_pending_opens(state: State<'_, PendingOpens>) -> Vec<String> {
+    match state.0.lock() {
+        Ok(mut pending) => {
+            pending.renderer_ready = true;
+            std::mem::take(&mut pending.queue)
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(FileWatchState::default())
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            if let Some(file_path) = args.iter().skip(1).find(|a| !a.starts_with('-')) {
-                let path = std::path::Path::new(file_path);
+        .manage(PendingOpens::default())
+        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            // A second launch can forward a relative argument, so resolve it
+            // against the *launching* process's directory, not this one's.
+            if let Some(path) = launch_file_argument(&args)
+                .and_then(|arg| file_ops::resolve_launch_path(arg, std::path::Path::new(&cwd)))
+            {
                 let valid_ext = path
                     .extension()
                     .and_then(|e| e.to_str())
                     .map(|e| matches!(e, "md" | "markdown" | "mdx" | "txt"))
                     .unwrap_or(false);
                 if valid_ext && path.is_file() {
-                    if let Ok(path) = grant_file_access(app, path) {
-                        let _ = app.emit("open-file-in-tab", path.to_string_lossy().to_string());
+                    if let Ok(canonical_path) = grant_file_access(app, &path) {
+                        // Same spelling the dialog produces, so an already-open
+                        // tab is recognised instead of duplicated.
+                        let display = file_ops::display_path(&canonical_path)
+                            .to_string_lossy()
+                            .to_string();
+                        // Exactly one delivery route. A live renderer gets the
+                        // event; one that is still booting would never see it,
+                        // so the path waits in the queue it drains on startup.
+                        let renderer_ready = match app.state::<PendingOpens>().0.lock() {
+                            Ok(mut pending) => {
+                                if !pending.renderer_ready {
+                                    pending.queue.push(display.clone());
+                                }
+                                pending.renderer_ready
+                            }
+                            // Poisoned lock: fall back to emitting rather than
+                            // dropping the user's file.
+                            Err(_) => true,
+                        };
+                        if renderer_ready {
+                            let _ = app.emit("open-file-in-tab", display);
+                        }
                     }
                 }
             }
@@ -306,7 +479,8 @@ pub fn run() {
             trash_path,
             path_exists,
             watch_file,
-            unwatch_file
+            unwatch_file,
+            take_pending_opens
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

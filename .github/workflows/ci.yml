@@ -37,3 +37,43 @@ jobs:
 
       - name: Test
         run: pnpm test:run
+
+  # The filesystem authorization boundary lives in Rust, and until now nothing in
+  # CI compiled it — every test in src-tauri/src/file_ops.rs was dead code and a
+  # Rust regression could only be caught by a release build. Runs on Windows
+  # because that is the shipping platform and several of those tests are
+  # #[cfg(windows)] (extended-length paths, UNC spellings).
+  rust:
+    name: Rust check + test
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # tauri-build reads frontendDist from tauri.conf.json, so dist/ must exist
+      # before cargo can build the crate.
+      - name: Build frontend
+        run: pnpm build
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Rust test
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib

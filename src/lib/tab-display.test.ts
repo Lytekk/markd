@@ -9,6 +9,7 @@ const tab = (over: Partial<FileTab> & { id: string }): FileTab => ({
   isDirty: false,
   savedContent: "",
   scrollTop: 0,
+  isHydrated: true,
   ...over,
 });
 

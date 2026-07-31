@@ -15,20 +15,28 @@ describe("saveBackgroundTab", () => {
     const saveToFile = vi.fn().mockResolvedValue(false);
     const saveFileAs = vi.fn();
 
-    await expect(saveBackgroundTab(dirtyNamedTab, { saveToFile, saveFileAs })).resolves.toBeNull();
+    // A write that genuinely failed must be distinguishable from one that was
+    // superseded or cancelled — collapsing them made a real disk failure during
+    // Close All abort with nothing shown to the user.
+    await expect(saveBackgroundTab(dirtyNamedTab, { saveToFile, saveFileAs })).resolves.toEqual({
+      outcome: "failed",
+    });
     expect(saveToFile).toHaveBeenCalledWith("/tmp/named.md", "edited");
     expect(saveFileAs).not.toHaveBeenCalled();
   });
 
   it("routes an untitled background buffer through Save As and returns its new identity", async () => {
     const saveToFile = vi.fn();
-    const saveFileAs = vi.fn().mockResolvedValue({ path: "/tmp/untitled.md", name: "untitled.md" });
+    const saveFileAs = vi.fn().mockResolvedValue({ status: "saved", path: "/tmp/untitled.md", name: "untitled.md" });
     const tab = { ...dirtyNamedTab, id: "untitled", fileName: "Untitled", filePath: null };
 
     await expect(saveBackgroundTab(tab, { saveToFile, saveFileAs })).resolves.toEqual({
-      filePath: "/tmp/untitled.md",
-      fileName: "untitled.md",
-      savedContent: "edited",
+      outcome: "written",
+      saved: {
+        filePath: "/tmp/untitled.md",
+        fileName: "untitled.md",
+        savedContent: "edited",
+      },
     });
     expect(saveFileAs).toHaveBeenCalledWith("edited", "Untitled");
     expect(saveToFile).not.toHaveBeenCalled();
@@ -51,7 +59,20 @@ describe("saveBackgroundTab", () => {
     releaseLeadingWrite?.();
     await leadingWrite;
 
-    await expect(pending).resolves.toBeNull();
+    await expect(pending).resolves.toEqual({ outcome: "superseded" });
     expect(saveToFile).not.toHaveBeenCalled();
+  });
+
+  it("reports a cancelled Save As distinctly from a failed one", async () => {
+    const saveToFile = vi.fn();
+    const tab = { ...dirtyNamedTab, id: "untitled", fileName: "Untitled", filePath: null };
+
+    await expect(
+      saveBackgroundTab(tab, { saveToFile, saveFileAs: vi.fn().mockResolvedValue({ status: "cancelled" }) }),
+    ).resolves.toEqual({ outcome: "cancelled" });
+
+    await expect(
+      saveBackgroundTab(tab, { saveToFile, saveFileAs: vi.fn().mockResolvedValue({ status: "failed" }) }),
+    ).resolves.toEqual({ outcome: "failed" });
   });
 });

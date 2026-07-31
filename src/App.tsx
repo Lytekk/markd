@@ -30,7 +30,7 @@ import { copyToClipboard } from "@/lib/code-block-enhance";
 import { revealInFileManager } from "@/lib/reveal";
 import { useZoom } from "@/hooks/use-zoom";
 import { TabBar, type TabAction } from "@/components/TabBar";
-import { createFile, createFolder, exportAsHtml, exportAsPdf, isPathAuthorizationError, openFile, pathExists, readFileByPath, renamePath, saveFileAs, saveToFile, trashPath } from "@/lib/file-system";
+import { createFile, createFolder, exportAsHtml, exportAsPdf, isPathAuthorizationError, isPathUnavailableError, openFile, pathExists, readFileByPath, renamePath, saveFileAs, saveToFile, trashPath } from "@/lib/file-system";
 import { ensureMdExtension, joinPath, parentPath, targetDirForEntry, validateName } from "@/lib/file-tree-ops";
 import {
   shouldCheckForUpdate,
@@ -40,6 +40,16 @@ import {
 } from "@/lib/updater";
 import { shouldPromptForExternalChange, shouldPromptForDeletion } from "@/lib/file-change";
 import { askDialog, messageDialog } from "@/lib/dialogs";
+import { samePath } from "@/lib/path-identity";
+import { isPathInside } from "@/lib/path-scope";
+import { saveOutcomeMessage, type SaveOutcome } from "@/lib/save-outcome";
+import { reloadDiscardPrompt } from "@/lib/reload-guard";
+import {
+  classifyRestoreFailure,
+  restoreFailureNotice,
+  type RestoreFailureCounts,
+  type RestoreFailureKind,
+} from "@/lib/restore-failure";
 import { confirmModal, promptModal } from "@/lib/modal";
 import { normalizeUrl, wordRangeAt } from "@/lib/links";
 import { splitFrontmatter, joinFrontmatter } from "@/lib/frontmatter";
@@ -309,55 +319,91 @@ export function App() {
   // Latest handleCloseTab, callable from the [filePath]-keyed watcher effect
   // (which must not list it as a dep). Assigned just after its definition below.
   const handleCloseTabRef = useRef<(tabId: string) => Promise<void> | void>(() => {});
+  // Set once the user has answered the quit prompt, so a re-entrant close
+  // request does not ask again.
+  const quitConfirmedRef = useRef(false);
 
-  // Load file passed as CLI arg / OS file association (Tauri only).
-  // Skipped when tabs were restored from persistence (refresh case).
-  const initialLoadDone = useRef(false);
-  useEffect(() => {
-    if (!isTauri() || !editor || initialLoadDone.current) return;
-    initialLoadDone.current = true;
-
-    // If tabs were restored from localStorage, hydration handles content loading
-    const hasPersistedTabs = fileTabsRef.current.tabs.some((t) => t.filePath);
-    if (hasPersistedTabs) return;
-
-    interface OpenedFile {
-      path: string;
-      name: string;
-      content: string;
-    }
-
-    (async () => {
-      const request = bufferLoadGuardRef.current.begin();
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        const file = await invoke<OpenedFile | null>("get_opened_file");
-        if (!file || !bufferLoadGuardRef.current.isCurrent(request)) return;
-        fileTabsRef.current.openInTab(file.name, file.path, file.content);
-        fileStateRef.current.handleOpenByPath(file.path, file.content);
-      } catch {
-        // Not in Tauri or no file argument
+  /**
+   * Put a tab in the editor, reading it from disk first when its bytes have
+   * never been loaded. Restoring an unhydrated tab directly would bind a blank
+   * buffer and an empty savedContent to a real file path — the next save writes
+   * that emptiness out. When the read fails, the editor is left alone rather
+   * than bound to a file it does not hold.
+   */
+  const restoreTabIntoEditor = useCallback(
+    async (tab: FileTab, isCurrent: () => boolean): Promise<boolean> => {
+      if (tab.isHydrated || !tab.filePath) {
+        fileStateRef.current.restoreState(tab);
+        return true;
       }
-    })();
-  }, [editor]);
+      const revision = fileTabsRef.current.getTabRevision(tab.id);
+      try {
+        const content = await readFileByPath(tab.filePath);
+        if (!isCurrent()) return false;
+        if (!fileTabsRef.current.hydrateTab(tab.id, content, revision)) return false;
+        fileStateRef.current.restoreState({
+          fileName: tab.fileName,
+          filePath: tab.filePath,
+          content,
+          savedContent: content,
+          isDirty: false,
+          docJSON: undefined,
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [],
+  );
 
-  // Hydrate persisted tabs from disk — runs once after editor mounts.
-  // Tabs restored from localStorage have filePath but empty content.
-  const hydrationDone = useRef(false);
+  // Startup owner: restore persisted tabs from disk, then open the file the OS
+  // handed us (CLI argument / file association).
+  //
+  // These were two effects. Both took a buffer-load request, and the second
+  // one's begin() invalidated the first's — so on a cold start with no persisted
+  // session the double-clicked file was fetched and then silently discarded.
+  // They are one sequential owner now, holding ONE request, and the
+  // get_opened_file step is unconditional: every startup path reaches it.
+  const startupDone = useRef(false);
   useEffect(() => {
-    if (!isTauri() || !editor || hydrationDone.current) return;
-    hydrationDone.current = true;
+    if (!isTauri() || !editor || startupDone.current) return;
+    startupDone.current = true;
 
     (async () => {
       const request = bufferLoadGuardRef.current.begin();
+      const isCurrent = () => bufferLoadGuardRef.current.isCurrent(request);
       const ft = fileTabsRef.current;
       const fs = fileStateRef.current;
-      const tabs = ft.tabs;
       const activeId = ft.activeTabId;
-      let unableToRestore = 0;
+      const failures: RestoreFailureCounts = {};
 
-      const needsHydration = tabs.filter((t) => t.filePath && t.content === "");
-      if (needsHydration.length === 0) return;
+      // Why a read failed decides what to do with the tab. A deleted file is
+      // gone and its tab goes with it; an offline share is temporary, so the
+      // tab stays and reloads when the user selects it. Closing on every error
+      // used to delete the session over a sleeping network drive.
+      const recordFailure = async (tab: FileTab, error: unknown): Promise<RestoreFailureKind> => {
+        // The existence probe only breaks a tie. When the native error already
+        // names the class, skip the IPC round trip — it was being serialized
+        // into startup once per failed tab for no answer.
+        const needsProbe =
+          !!tab.filePath &&
+          !isPathAuthorizationError(error) &&
+          !isPathUnavailableError(error);
+        let exists: boolean | null = null;
+        if (needsProbe) {
+          try {
+            exists = await pathExists(tab.filePath!);
+          } catch {
+            exists = null;
+          }
+        }
+        const kind = classifyRestoreFailure(error, exists);
+        failures[kind] = (failures[kind] ?? 0) + 1;
+        return kind;
+      };
+
+      const needsHydration = ft.tabs.filter((t) => t.filePath && !t.isHydrated);
 
       // Hydrate active tab first — sets editor content directly
       const activeTab = needsHydration.find((t) => t.id === activeId);
@@ -365,61 +411,91 @@ export function App() {
         const revision = ft.getTabRevision(activeTab.id);
         try {
           const content = await readFileByPath(activeTab.filePath);
-          if (!bufferLoadGuardRef.current.isCurrent(request)) return;
-          if (!ft.hydrateTab(activeTab.id, content, revision)) return;
-          fs.handleOpenByPath(activeTab.filePath, content);
-          requestAnimationFrame(() => {
-            if (!bufferLoadGuardRef.current.isCurrent(request)) return;
-            const el = document.querySelector(".markd-editor-scroll") as HTMLElement | null;
-            if (el) el.scrollTop = activeTab.scrollTop;
-          });
-        } catch {
-          if (bufferLoadGuardRef.current.isCurrent(request)) {
-            unableToRestore += 1;
-            ft.closeTab(activeTab.id);
+          if (!isCurrent()) return;
+          if (ft.hydrateTab(activeTab.id, content, revision)) {
+            fs.handleOpenByPath(activeTab.filePath, content);
+            requestAnimationFrame(() => {
+              if (!isCurrent()) return;
+              const el = document.querySelector(".markd-editor-scroll") as HTMLElement | null;
+              if (el) el.scrollTop = activeTab.scrollTop;
+            });
+          }
+        } catch (error) {
+          const kind = isCurrent() ? await recordFailure(activeTab, error) : null;
+          // recordFailure awaits; a newer load may have taken over meanwhile.
+          if (!isCurrent()) return;
+          if (kind === "unavailable") {
+            // Keep the tab — the file is fine, the drive is not — but do not let
+            // it stay ACTIVE over the blank startup buffer: switching to a tab
+            // that is already active is a no-op, so it could never reload, and
+            // anything typed there would end up bound to its real path. Park on
+            // a scratch tab; selecting the parked one re-reads it.
+            if (isCurrent()) {
+              const other = ft.tabs.find((t) => t.id !== activeTab.id && t.isHydrated);
+              if (other) {
+                const switched = ft.switchTab(other.id);
+                if (switched) fs.restoreState(other);
+              } else {
+                ft.newTab();
+              }
+            }
+          } else if (kind !== null) {
+            // Close it and put the successor in the editor — but only once the
+            // successor actually holds its file's bytes. Restoring an unhydrated
+            // tab binds a blank buffer and an empty savedContent to a real path,
+            // and the next Ctrl+S truncates that file to zero.
+            const { switchTo } = ft.closeTab(activeTab.id);
+            if (switchTo && isCurrent()) await restoreTabIntoEditor(switchTo, isCurrent);
           }
         }
       }
 
       // Hydrate background tabs — update content in state without switching
       for (const tab of needsHydration) {
-        if (!bufferLoadGuardRef.current.isCurrent(request)) return;
+        if (!isCurrent()) return;
         if (tab.id === activeId) continue;
         if (!tab.filePath) continue;
         const revision = ft.getTabRevision(tab.id);
         try {
           const content = await readFileByPath(tab.filePath);
-          if (!bufferLoadGuardRef.current.isCurrent(request)) return;
+          if (!isCurrent()) return;
           ft.hydrateTab(tab.id, content, revision);
-        } catch {
-          if (bufferLoadGuardRef.current.isCurrent(request)) {
-            unableToRestore += 1;
+        } catch (error) {
+          if (!isCurrent()) return;
+          const kind = await recordFailure(tab, error);
+          if (isCurrent() && kind !== "unavailable") {
             ft.closeTab(tab.id);
           }
         }
       }
 
-      if (unableToRestore > 0 && bufferLoadGuardRef.current.isCurrent(request)) {
-        const noun = unableToRestore === 1 ? "file" : "files";
-        await messageDialog(
-          `${unableToRestore} previously opened ${noun} could not be restored. Their on-disk contents are unchanged. Reopen them from Recent Files or File > Open to authorize access again.`,
-          { title: "Reopen Files", kind: "warning" },
-        );
-        if (!bufferLoadGuardRef.current.isCurrent(request)) return;
+      const notice = restoreFailureNotice(failures);
+      if (notice && isCurrent()) {
+        await messageDialog(notice.message, { title: notice.title, kind: "warning" });
+        if (!isCurrent()) return;
       }
 
-      // Open file passed via CLI arg / OS file association (if any).
-      // Must run after hydration so openInTab can match existing tabs
-      // and snapshotActiveTab captures hydrated (not empty) content.
+      // Open the file passed via CLI arg / OS file association (if any).
+      // Runs after hydration so openInTab can match an already-restored tab and
+      // snapshotActiveTab captures hydrated (not empty) content.
       try {
         const { invoke } = await import("@tauri-apps/api/core");
         const file = await invoke<{ path: string; name: string; content: string } | null>("get_opened_file");
-        if (file && bufferLoadGuardRef.current.isCurrent(request)) {
+        if (file && isCurrent()) {
           fileTabsRef.current.openInTab(file.name, file.path, file.content);
           fileStateRef.current.handleOpenByPath(file.path, file.content);
         }
-      } catch {
-        // No file argument
+      } catch (error) {
+        // The OS named a file we could not open. Saying so beats the blank
+        // window the user used to get with no explanation at all.
+        if (isCurrent()) {
+          await messageDialog(
+            isPathAuthorizationError(error)
+              ? "Markd could not open that file. Try File > Open — if that is refused too, the path goes through a symbolic link or junction, which Markd does not currently open."
+              : "Markd could not open that file. Its contents are unchanged.",
+            { title: "Open Failed", kind: "error" },
+          );
+        }
       }
     })();
   }, [editor]);
@@ -430,43 +506,70 @@ export function App() {
     let unlisten: (() => void) | null = null;
     let cancelled = false;
 
+    const openPath = async (filePath: string) => {
+      const ft = fileTabsRef.current;
+      const fs = fileStateRef.current;
+      const request = bufferLoadGuardRef.current.begin();
+      const existing = ft.tabs.find((t) => samePath(t.filePath, filePath));
+      if (existing) {
+        let ready = existing;
+        if (!existing.isHydrated) {
+          const revision = ft.getTabRevision(existing.id);
+          try {
+            const content = await readFileByPath(filePath);
+            if (!bufferLoadGuardRef.current.isCurrent(request)) return;
+            if (!ft.hydrateTab(existing.id, content, revision)) return;
+            ready = { ...existing, content, savedContent: content, isDirty: false, isHydrated: true, docJSON: undefined };
+          } catch {
+            return;
+          }
+        }
+        if (!bufferLoadGuardRef.current.isCurrent(request)) return;
+        const target = ft.switchTab(existing.id);
+        if (target) fs.restoreState(ready);
+        return;
+      }
+      try {
+        const content = await readFileByPath(filePath);
+        if (!bufferLoadGuardRef.current.isCurrent(request)) return;
+        const name = filePath.split(/[/\\]/).pop() ?? "untitled.md";
+        ft.openInTab(name, filePath, content);
+        await fs.handleOpenByPath(filePath, content);
+      } catch {
+        // The file may have been removed between the OS event and this read.
+      }
+    };
+
     (async () => {
       const { listen } = await import("@tauri-apps/api/event");
       if (cancelled) return;
-      unlisten = await listen<string>("open-file-in-tab", async (event) => {
-        const ft = fileTabsRef.current;
-        const fs = fileStateRef.current;
-        const request = bufferLoadGuardRef.current.begin();
-        const filePath = event.payload;
-        const existing = ft.tabs.find((t) => t.filePath === filePath);
-        if (existing) {
-          let ready = existing;
-          if (!existing.content) {
-            const revision = ft.getTabRevision(existing.id);
-            try {
-              const content = await readFileByPath(filePath);
-              if (!bufferLoadGuardRef.current.isCurrent(request)) return;
-              if (!ft.hydrateTab(existing.id, content, revision)) return;
-              ready = { ...existing, content, savedContent: content, isDirty: false, docJSON: undefined };
-            } catch {
-              return;
-            }
-          }
-          if (!bufferLoadGuardRef.current.isCurrent(request)) return;
-          const target = ft.switchTab(existing.id);
-          if (target) fs.restoreState(ready);
-          return;
-        }
-        try {
-          const content = await readFileByPath(filePath);
-          if (!bufferLoadGuardRef.current.isCurrent(request)) return;
-          const name = filePath.split(/[/\\]/).pop() ?? "untitled.md";
-          ft.openInTab(name, filePath, content);
-          await fs.handleOpenByPath(filePath, content);
-        } catch {
-          // The file may have been removed between the OS event and this read.
-        }
+      unlisten = await listen<string>("open-file-in-tab", (event) => {
+        void openPath(event.payload);
       });
+      // The effect can be torn down while listen() is still resolving; without
+      // this the handle is dropped on the floor and the listener outlives it.
+      if (cancelled) {
+        unlisten();
+        unlisten = null;
+        return;
+      }
+
+      // Tauri drops an emitted event when no JS listener is registered yet, and
+      // never replays it. A second launch that lands while this window is still
+      // booting — selecting several files in Explorer and pressing Enter starts
+      // exactly that race — was therefore silently ignored. The native side
+      // queues every path it could not deliver; drain it now that we are live.
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const pending = await invoke<string[]>("take_pending_opens");
+        for (const filePath of pending) {
+          if (cancelled) return;
+          await openPath(filePath);
+        }
+      } catch {
+        // Older backend without the queue — the live listener still covers the
+        // common case.
+      }
     })();
 
     return () => { cancelled = true; unlisten?.(); };
@@ -630,10 +733,8 @@ export function App() {
     document.title = `${fileState.fileName}${fileState.isDirty ? " \u2022" : ""} \u2014 Markd`;
   }, [fileState.fileName, fileState.isDirty]);
 
-  // Browser beforeunload (no-op in Tauri windows). Tauri's onCloseRequested
-  // was removed: window.confirm can be suppressed inside a close-requested
-  // handler on WebView2, returning falsy and blocking the close. Auto-save
-  // (30s) covers named files; untitled docs rely on the user saving manually.
+  // Browser beforeunload — covers the dev server. Tauri windows ignore it, so
+  // the desktop app needs the onCloseRequested guard below.
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       // Any tab's unsaved edits count — a background tab's dirty buffer is as
@@ -673,15 +774,44 @@ export function App() {
 
   // Sync tab state when fileState changes (after open/save/new operations).
   // Uses refs so the effect always reads the current activeTabId.
+  //
+  // React runs every effect once on mount, and at mount fileState is still its
+  // initial empty value — filePath null, fileName "Untitled", savedContent "".
+  // Mirroring THAT onto a tab restored from localStorage erased the tab's path
+  // and name, advanced its revision (so the in-flight startup hydration was
+  // rejected and aborted, taking the OS file-association open with it), and
+  // re-persisted a session with no file-backed tabs at all.
+  //
+  // The guard tests the VALUE, not the run count: a "skip the first run" ref is
+  // defeated by StrictMode's development double-invoke, which arms on pass one
+  // and then applies the still-initial state on pass two — reintroducing exactly
+  // this bug on every `pnpm dev`. Nothing has been opened or saved while
+  // fileState is untouched, so there is nothing to mirror.
   useEffect(() => {
+    const mirroringUntouchedInitialState =
+      fileState.filePath === null &&
+      fileState.fileName === "Untitled" &&
+      fileState.savedContent === "" &&
+      fileState.openCount === 0;
+    if (mirroringUntouchedInitialState) return;
     const ft = fileTabsRef.current;
     if (activeSaveOwnerRef.current?.tabId === ft.activeTabId) return;
+    // markTabSaved asserts "this tab is saved" and therefore clears isDirty.
+    // A dirty buffer whose PATH changed has not been saved — renaming from the
+    // sidebar, or choosing "Keep in Editor" after the file was deleted outside
+    // Markd, both land here with unsaved edits. Marking those clean made the
+    // close guard stop asking, so the only remaining copy of the user's work
+    // could be discarded without a prompt. Mirror identity alone in that case.
+    if (fileStateRef.current.isDirty) {
+      ft.updateTabPath(ft.activeTabId, fileState.filePath, fileState.fileName);
+      return;
+    }
     ft.markTabSaved(ft.activeTabId, {
       filePath: fileState.filePath,
       fileName: fileState.fileName,
       savedContent: fileState.savedContent,
     });
-  }, [fileState.filePath, fileState.fileName, fileState.savedContent]);
+  }, [fileState.filePath, fileState.fileName, fileState.savedContent, fileState.openCount]);
 
   useEffect(() => {
     const ft = fileTabsRef.current;
@@ -749,7 +879,7 @@ export function App() {
       // click then snapshots that old buffer into the wrong tab. The request
       // guard also makes an older slow/UNC read inert after a newer selection.
       let ready = target;
-      if (!target.content && target.filePath) {
+      if (!target.isHydrated && target.filePath) {
         try {
           const content = await readFileByPath(target.filePath);
           if (!bufferLoadGuardRef.current.isCurrent(request)) return;
@@ -809,20 +939,36 @@ export function App() {
     const owner = { tabId, revision };
     activeSaveOwnerRef.current = owner;
     try {
-      let saved = false;
+      let outcome: SaveOutcome = "failed";
       try {
-        saved = await (saveAs ? fs.handleSaveAs() : fs.handleSave());
+        outcome = await (saveAs ? fs.handleSaveAs() : fs.handleSave());
+        // A keystroke landing during the write supersedes it: the bytes reached
+        // disk but newer ones exist, so the buffer is still dirty. Callers only
+        // see a boolean, so this aborted a close or a Save All with no message
+        // at all. The user asked to save what is in front of them — write the
+        // newer bytes too. Once only: someone who keeps typing would loop
+        // forever, and the second outcome is reported honestly either way.
+        // Never retry a Save As; that would re-open the file chooser.
+        if (outcome === "superseded" && !saveAs) {
+          outcome = await fs.handleSave();
+        }
       } catch {
-        saved = false;
+        outcome = "failed";
       }
-      if (!saved) {
-        // A canceled Save As is intentional. A named document's normal Save is
-        // not: keep its dirty state and make the hardened-write failure visible.
-        if (!saveAs && beforeSave.filePath) {
-          await messageDialog(`"${beforeSave.fileName}" could not be saved. Its contents remain unsaved.`, {
-            title: "Save Failed",
-            kind: "error",
-          });
+      if (outcome !== "written") {
+        // A real write failure is worth interrupting for — including when the
+        // document had no path yet, which the old has-a-path gate silently
+        // excluded. A cancelled dialog is the user's own choice, so it stays
+        // silent. A still-superseded save is neither: the bytes landed but the
+        // buffer moved on again, so say so rather than aborting in silence.
+        const failure = saveOutcomeMessage(outcome, beforeSave.fileName);
+        if (failure) {
+          await messageDialog(failure, { title: "Save Failed", kind: "error" });
+        } else if (outcome === "superseded") {
+          await messageDialog(
+            `"${beforeSave.fileName}" was saved, but you have edited it again since. Save once more to store those changes.`,
+            { title: "Saved — Newer Changes Pending", kind: "info" },
+          );
         }
         return false;
       }
@@ -838,6 +984,24 @@ export function App() {
     }
   }, []);
   const saveActiveTabAs = useCallback(() => saveActiveTab(true), [saveActiveTab]);
+
+  /** Ask before a reload throws away unsaved edits. True means go ahead. */
+  const confirmDiscardForReload = useCallback(async (candidates: FileTab[]): Promise<boolean> => {
+    const prompt = reloadDiscardPrompt(
+      candidates.filter((tab) => tab.isDirty).map((tab) => tab.fileName),
+    );
+    if (!prompt) return true;
+    const choice = await confirmModal({
+      title: prompt.title,
+      message: prompt.message,
+      defaultValue: "cancel",
+      buttons: [
+        { label: "Discard and Reload", value: "discard", variant: "danger" },
+        { label: "Cancel", value: "cancel" },
+      ],
+    });
+    return choice === "discard";
+  }, []);
 
   const handleCloseTab = useCallback(
     async (tabId: string) => {
@@ -860,12 +1024,17 @@ export function App() {
             if (!saved) return;
           } else {
             const revision = fileTabsRef.current.getTabRevision(tab.id);
-            const saved = await saveBackgroundTab(tab, { saveToFile, saveFileAs }, () => (
+            const result = await saveBackgroundTab(tab, { saveToFile, saveFileAs }, () => (
               bufferLoadGuardRef.current.isCurrent(request) &&
               fileTabsRef.current.getTabRevision(tab.id) === revision
             ));
-            if (!saved) return;
-            if (!fileTabsRef.current.markTabSaved(tab.id, { ...saved, expectedRevision: revision })) {
+            if (!result.saved) {
+              // A real write failure here used to abort the close in silence.
+              const failure = saveOutcomeMessage(result.outcome, tab.fileName);
+              if (failure) await messageDialog(failure, { title: "Save Failed", kind: "error" });
+              return;
+            }
+            if (!fileTabsRef.current.markTabSaved(tab.id, { ...result.saved, expectedRevision: revision })) {
               return;
             }
           }
@@ -960,13 +1129,20 @@ export function App() {
     const dirtyTabs = ft.tabs.filter((tab) => tab.isDirty && tab.id !== activeTabId);
     for (const tab of dirtyTabs) {
       const revision = ft.getTabRevision(tab.id);
-      const saved = await saveBackgroundTab(tab, { saveToFile, saveFileAs }, () => (
+      const result = await saveBackgroundTab(tab, { saveToFile, saveFileAs }, () => (
         fileTabsRef.current.getTabRevision(tab.id) === revision
       ));
-      if (!saved) return false;
-      if (!ft.markTabSaved(tab.id, { ...saved, expectedRevision: revision })) return false;
+      if (!result.saved) {
+        // Save All stopping dead with no explanation is why this outcome exists.
+        const failure = saveOutcomeMessage(result.outcome, tab.fileName);
+        if (failure) await messageDialog(failure, { title: "Save Failed", kind: "error" });
+        return false;
+      }
+      if (!ft.markTabSaved(tab.id, { ...result.saved, expectedRevision: revision })) return false;
     }
-    return !fileTabsRef.current.tabs.some((tab) => tab.isDirty) &&
+    // Read the synchronous snapshot: markTabSaved has already settled there,
+    // while the rendered array still carries the pre-save dirty flags.
+    return !fileTabsRef.current.getTabsSnapshot().some((tab) => tab.isDirty) &&
       !fileStateRef.current.getCurrentState().isDirty;
   }, [saveActiveTab]);
 
@@ -992,6 +1168,71 @@ export function App() {
     bufferLoadGuardRef.current.invalidate();
     const { switchTo } = fileTabsRef.current.closeAllTabs();
     fileStateRef.current.restoreState(switchTo);
+  }, [saveAllDirtyTabs]);
+
+  // Desktop quit guard.
+  //
+  // Closing the window discarded every unsaved buffer in silence: beforeunload
+  // is inert in a Tauri window, autosave only ever runs for a NAMED file 30s
+  // after an edit, and the persisted session stores metadata only — so an
+  // untitled buffer full of pasted notes simply ceased to exist. The historical
+  // reason there was no handler here was that window.confirm is suppressed by
+  // WebView2 inside a close-requested handler; confirmModal is an in-app React
+  // modal and is not affected, and is already what Ctrl+W and Close All use.
+  useEffect(() => {
+    if (!isTauri()) return;
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+
+    (async () => {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      if (cancelled) return;
+      const appWindow = getCurrentWindow();
+      unlisten = await appWindow.onCloseRequested(async (event) => {
+        // Second pass after the user confirmed: let it through.
+        if (quitConfirmedRef.current) return;
+        const dirty = fileTabsRef.current.tabs.filter((t) => t.isDirty);
+        if (dirty.length === 0) return;
+        // Hold the window open while we ask; destroy() below bypasses this
+        // handler so the second pass cannot re-prompt.
+        event.preventDefault();
+        const choice = await confirmModal({
+          title: "Unsaved Changes",
+          message:
+            dirty.length === 1
+              ? `"${dirty[0]!.fileName}" has unsaved changes.`
+              : `${dirty.length} files have unsaved changes.`,
+          defaultValue: "cancel",
+          buttons: [
+            { label: "Save All", value: "save", variant: "primary" },
+            { label: "Don't Save", value: "discard", variant: "danger" },
+            { label: "Cancel", value: "cancel" },
+          ],
+        });
+        if (choice === "save") {
+          // saveAllDirtyTabs reports false for a failed or cancelled write —
+          // quitting then would discard exactly the work the user asked to keep.
+          if (!(await saveAllDirtyTabs())) return;
+        } else if (choice !== "discard") {
+          return;
+        }
+        quitConfirmedRef.current = true;
+        try {
+          await appWindow.destroy();
+        } catch {
+          // destroy() is ACL-gated; if the permission is ever dropped, fall back
+          // to close(), which re-enters this handler and passes the ref check
+          // above rather than leaving the window permanently unclosable.
+          await appWindow.close();
+        }
+      });
+      if (cancelled) {
+        unlisten();
+        unlisten = null;
+      }
+    })();
+
+    return () => { cancelled = true; unlisten?.(); };
   }, [saveAllDirtyTabs]);
 
   const handleNewTab = useCallback(() => {
@@ -1020,7 +1261,7 @@ export function App() {
     }
     if (!opened || !bufferLoadGuardRef.current.isCurrent(request)) return;
 
-    const existing = fileTabsRef.current.tabs.find((tab) => tab.filePath === opened.path);
+    const existing = fileTabsRef.current.tabs.find((tab) => samePath(tab.filePath, opened.path));
     if (existing) {
       await handleSwitchTab(existing.id);
       return;
@@ -1171,6 +1412,7 @@ export function App() {
             if (e.shiftKey) {
               // Ctrl+Shift+R: reload all tabs from disk
               (async () => {
+                if (!(await confirmDiscardForReload(fileTabsRef.current.tabs))) return;
                 const request = bufferLoadGuardRef.current.begin();
                 const ft = fileTabsRef.current;
                 const fs = fileStateRef.current;
@@ -1195,6 +1437,7 @@ export function App() {
               );
               if (active?.filePath) {
                 (async () => {
+                  if (!(await confirmDiscardForReload([active]))) return;
                   const request = bufferLoadGuardRef.current.begin();
                   const revision = fileTabsRef.current.getTabRevision(active.id);
                   try {
@@ -1338,6 +1581,7 @@ export function App() {
   }, [
     saveAllDirtyTabs,
     saveActiveTab,
+    confirmDiscardForReload,
     handleOpenFile,
     handleToggleSource,
     handleCloseTab,
@@ -1639,7 +1883,7 @@ export function App() {
     async (entry: { kind: string; name: string; path: string }) => {
       if (entry.kind !== "file") return;
       const request = bufferLoadGuardRef.current.begin();
-      const existing = fileTabsRef.current.tabs.find((t) => t.filePath === entry.path);
+      const existing = fileTabsRef.current.tabs.find((t) => samePath(t.filePath, entry.path));
       if (existing) {
         await handleSwitchTab(existing.id);
         return;
@@ -1666,7 +1910,7 @@ export function App() {
   const handleRecentFileSelect = useCallback(
     async (file: { name: string; path: string }) => {
       const request = bufferLoadGuardRef.current.begin();
-      const existing = fileTabsRef.current.tabs.find((t) => t.filePath === file.path);
+      const existing = fileTabsRef.current.tabs.find((t) => samePath(t.filePath, file.path));
       if (existing) {
         await handleSwitchTab(existing.id);
         return;
@@ -1761,11 +2005,11 @@ export function App() {
           const finalName = entry.kind === "file" ? ensureMdExtension(next.trim()) : next.trim();
           const newPath = joinPath(parentPath(entry.path), finalName);
           await renamePath(entry.path, newPath);
-          if (fileState.filePath === entry.path) {
+          if (samePath(fileState.filePath, entry.path)) {
             fileState.updateActiveFilePath(newPath, finalName);
             fileTabs.updateTabPath(fileTabs.activeTabId, newPath, finalName);
           } else {
-            const t = fileTabs.tabs.find((tab) => tab.filePath === entry.path);
+            const t = fileTabs.tabs.find((tab) => samePath(tab.filePath, entry.path));
             if (t) fileTabs.updateTabPath(t.id, newPath, finalName);
           }
           await fileState.refreshTree();
@@ -1781,10 +2025,16 @@ export function App() {
           });
           if (choice !== "delete") return;
           await trashPath(entry.path);
-          const fp = fileState.filePath;
-          const insideTrashed =
-            !!fp && (fp === entry.path || fp.startsWith(entry.path + "/") || fp.startsWith(entry.path + "\\"));
-          if (insideTrashed) fileState.detachActiveFile();
+          // Detach EVERY open tab under the trashed path, not just the active
+          // one. A dirty background tab kept its filePath, so the next Save All
+          // wrote it straight back — recreating the file the user had just sent
+          // to the recycle bin, with no prompt.
+          if (isPathInside(fileState.filePath, entry.path)) fileState.detachActiveFile();
+          for (const tab of fileTabsRef.current.tabs) {
+            if (isPathInside(tab.filePath, entry.path)) {
+              fileTabsRef.current.updateTabPath(tab.id, null, tab.fileName);
+            }
+          }
           await fileState.refreshTree();
         }
       } catch (e) {
