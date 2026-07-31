@@ -228,6 +228,29 @@ describe("native filesystem hardening wiring", () => {
     expect(beforeOpen).not.toContain("if (needsHydration.length === 0) return;");
   });
 
+  it("opens the OS-handed file before restoring the rest of the session", () => {
+    const startup = section(app, "const startupDone", "// Single-instance listener");
+    // The document the user double-clicked must not wait behind a disk read and
+    // a full ProseMirror render of every persisted tab.
+    const openAt = startup.indexOf('"get_opened_file"');
+    const hydrateAt = startup.indexOf("const needsHydration");
+    expect(openAt).toBeGreaterThan(-1);
+    expect(hydrateAt).toBeGreaterThan(-1);
+    expect(openAt).toBeLessThan(hydrateAt);
+
+    // activeId must be read AFTER that open. It is what makes the launch file
+    // drop out of needsHydration, which is what stops the restore — and its
+    // failure-recovery branches — from pushing another document over it.
+    expect(startup.indexOf("const activeId = ft.activeTabId")).toBeGreaterThan(openAt);
+
+    // A matched existing tab is activated without content, so it must be given
+    // the launch bytes or it stays unhydrated behind a real path.
+    expect(startup).toContain("if (!tab.isHydrated) ft.hydrateTab(tab.id, file.content);");
+
+    // A modal in front of the editor would undo the whole point of going first.
+    expect(startup.indexOf("Open Failed")).toBeGreaterThan(hydrateAt);
+  });
+
   it("does not mirror the initial empty file state onto a restored tab", () => {
     // The mount pass of this effect carries INITIAL_FILE_STATE. Applying it wiped
     // the restored tab's identity, bumped its revision so hydration aborted, and
@@ -331,6 +354,29 @@ describe("native filesystem hardening wiring", () => {
     const readFile = functionBody(native, "read_file");
     expect(readFile.indexOf("ensure_allowed_path")).toBeLessThan(
       readFile.indexOf("allow_document_assets"),
+    );
+    // ...and must not pay for the canonical path twice. ensure_allowed_path
+    // already walks every component and canonicalizes; re-deriving it for the
+    // asset grant doubled the authorization cost of every open, which is
+    // measurable on a network path where each component stat is a round trip.
+    expect(readFile).not.toContain("file_ops::canonical_existing_path");
+    expect(functionBody(native, "ensure_allowed_path")).toContain("Ok(canonical_path)");
+    // Re-granting a folder already in the asset scope fires a scope event, and
+    // persisted-scope rewrites its whole state file per event — an unbounded
+    // ratchet that the NEXT startup pays for before the window exists.
+    expect(grant).toContain("if app.asset_protocol_scope().is_allowed(parent)");
+  });
+
+  it("asks the scope the same question once for a path that exists", () => {
+    // is_allowed canonicalizes its argument, so for an existing path
+    // is_allowed(path) and is_allowed(canonical_path) are the same query — and
+    // each canonicalize is a round trip per component on a network share. A
+    // missing leaf cannot be canonicalized and still needs both forms checked.
+    const authorization = functionBody(native, "ensure_allowed_path");
+    expect(authorization).toContain("let allowed = if path_exists_for_scope {");
+    expect(authorization).toContain("app.fs_scope().is_allowed(&canonical_path)");
+    expect(authorization).toContain(
+      "app.fs_scope().is_allowed(path) && app.fs_scope().is_allowed(&canonical_path)",
     );
   });
 });

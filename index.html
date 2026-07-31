@@ -4,6 +4,31 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Markd</title>
+    <script>
+      // Apply the saved theme before the first paint.
+      //
+      // --bg-color is declared only under [data-theme], which React does not set
+      // until useTheme's mount effect runs. Until then var(--bg-color) is
+      // unresolved and the page paints WHITE — so a night-theme user watched a
+      // white rectangle for the whole boot and then a flash to dark. Same key and
+      // same "markd" -> "day" migration useTheme applies; this only pre-applies
+      // the answer, it does not own it.
+      (function () {
+        try {
+          var stored = localStorage.getItem("markd-theme");
+          if (stored === "markd") stored = "day";
+          var theme = stored === "day" || stored === "night" ? stored : "day";
+          var root = document.documentElement;
+          root.dataset.theme = theme;
+          // The theme stylesheet has not been parsed yet on a cold start, so
+          // paint the background from here too; the stylesheet takes over once
+          // it lands.
+          root.style.backgroundColor = theme === "night" ? "#1e1e2e" : "#ffffff";
+        } catch (e) {
+          // Storage disabled — fall through to the default theme.
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -375,7 +375,6 @@ export function App() {
       const isCurrent = () => bufferLoadGuardRef.current.isCurrent(request);
       const ft = fileTabsRef.current;
       const fs = fileStateRef.current;
-      const activeId = ft.activeTabId;
       const failures: RestoreFailureCounts = {};
 
       // Why a read failed decides what to do with the tab. A deleted file is
@@ -403,6 +402,35 @@ export function App() {
         return kind;
       };
 
+      // Open the file the OS handed us BEFORE restoring the session.
+      //
+      // This used to run last, so the document the user double-clicked waited
+      // behind a disk read and a full ProseMirror render of every persisted tab
+      // — and when it was itself the persisted active tab, it was parsed and
+      // rendered twice. Rust has had the path since process start.
+      let openFailure: unknown = null;
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const file = await invoke<{ path: string; name: string; content: string } | null>("get_opened_file");
+        if (file && isCurrent()) {
+          const { tab } = ft.openInTab(file.name, file.path, file.content);
+          // openInTab's matched-existing branch activates a tab without writing
+          // content, so a restored tab would still read as unhydrated while the
+          // editor showed this document — the state that lets a later switch
+          // bind a blank buffer to a real path. Give it the bytes.
+          if (!tab.isHydrated) ft.hydrateTab(tab.id, file.content);
+          fs.handleOpenByPath(file.path, file.content);
+        }
+      } catch (error) {
+        openFailure = error;
+      }
+
+      // Recomputed AFTER the open above. When a launch file claimed the editor
+      // it is now the active tab and is already hydrated, so it drops out of
+      // needsHydration and the active-tab branch below is skipped entirely —
+      // which is what keeps the restore (and its failure-recovery paths) from
+      // pushing another document over the one the user asked for.
+      const activeId = ft.activeTabId;
       const needsHydration = ft.tabs.filter((t) => t.filePath && !t.isHydrated);
 
       // Hydrate active tab first — sets editor content directly
@@ -472,30 +500,17 @@ export function App() {
       const notice = restoreFailureNotice(failures);
       if (notice && isCurrent()) {
         await messageDialog(notice.message, { title: notice.title, kind: "warning" });
-        if (!isCurrent()) return;
       }
 
-      // Open the file passed via CLI arg / OS file association (if any).
-      // Runs after hydration so openInTab can match an already-restored tab and
-      // snapshotActiveTab captures hydrated (not empty) content.
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        const file = await invoke<{ path: string; name: string; content: string } | null>("get_opened_file");
-        if (file && isCurrent()) {
-          fileTabsRef.current.openInTab(file.name, file.path, file.content);
-          fileStateRef.current.handleOpenByPath(file.path, file.content);
-        }
-      } catch (error) {
-        // The OS named a file we could not open. Saying so beats the blank
-        // window the user used to get with no explanation at all.
-        if (isCurrent()) {
-          await messageDialog(
-            isPathAuthorizationError(error)
-              ? "Markd could not open that file. Try File > Open — if that is refused too, the path goes through a symbolic link or junction, which Markd does not currently open."
-              : "Markd could not open that file. Its contents are unchanged.",
-            { title: "Open Failed", kind: "error" },
-          );
-        }
+      // Reported last: a modal in front of the editor is the one thing that
+      // would undo the point of opening the document first.
+      if (openFailure !== null && isCurrent()) {
+        await messageDialog(
+          isPathAuthorizationError(openFailure)
+            ? "Markd could not open that file. Try File > Open — if that is refused too, the path goes through a symbolic link or junction, which Markd does not currently open."
+            : "Markd could not open that file. Its contents are unchanged.",
+          { title: "Open Failed", kind: "error" },
+        );
       }
     })();
   }, [editor]);

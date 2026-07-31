@@ -68,9 +68,19 @@ fn path_inspection_error(error: &std::io::Error) -> String {
 /// passed the filesystem authorization gate. Paths that climb out with `..` are
 /// still refused, because the scope check canonicalizes before matching.
 fn allow_document_assets(app: &tauri::AppHandle, canonical_path: &Path) {
-    if let Some(parent) = canonical_path.parent() {
-        let _ = app.asset_protocol_scope().allow_directory(parent, true);
+    let Some(parent) = canonical_path.parent() else {
+        return;
+    };
+    // Re-granting a folder we already serve is not free: every grant fires a
+    // scope event, and tauri-plugin-persisted-scope rewrites its whole state
+    // file on each one. Without this check, opening files from one folder
+    // rewrote that file once per open and grew it forever — and the plugin
+    // re-canonicalizes every stored entry at the NEXT startup, before the
+    // window exists. Check first; the check is in-memory.
+    if app.asset_protocol_scope().is_allowed(parent) {
+        return;
     }
+    let _ = app.asset_protocol_scope().allow_directory(parent, true);
 }
 
 /// Grant both command and asset-protocol scopes for a user-mediated OS file
@@ -142,9 +152,16 @@ fn get_opened_file(
 /// Reuse the dialog-managed fs scope here so an IPC caller cannot turn an
 /// arbitrary string into filesystem authority. Dialog selections and OS-open
 /// events are the only grant sources; persisted-scope restores those grants.
-fn ensure_allowed_path(app: &tauri::AppHandle, path: &Path) -> Result<(), String> {
+/// Returns the canonical path so callers that need it do not have to walk and
+/// canonicalize a second time — on a network share every component stat is a
+/// round trip, so re-deriving it doubled the cost of opening a file.
+fn ensure_allowed_path(app: &tauri::AppHandle, path: &Path) -> Result<PathBuf, String> {
+    let mut path_exists_for_scope = false;
     let canonical_path = match std::fs::symlink_metadata(path) {
-        Ok(_) => file_ops::canonical_existing_path(path),
+        Ok(_) => {
+            path_exists_for_scope = true;
+            file_ops::canonical_existing_path(path)
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             file_ops::canonical_new_child_path(path)
         }
@@ -152,11 +169,23 @@ fn ensure_allowed_path(app: &tauri::AppHandle, path: &Path) -> Result<(), String
     }
     .map_err(|error| path_inspection_error(&error))?;
 
-    // The submitted path must match the user grant, and its canonical parent
-    // must still match after symlink resolution. Both checks are needed for a
-    // new path because Tauri leaves a missing leaf lexical during scope checks.
-    if app.fs_scope().is_allowed(path) && app.fs_scope().is_allowed(&canonical_path) {
-        Ok(())
+    // The submitted path must match the user grant, and its canonical form must
+    // still match after symlink resolution.
+    //
+    // For a path that EXISTS these are the same question: Tauri's is_allowed
+    // canonicalizes its argument first, so is_allowed(path) resolves to exactly
+    // canonical_path and the second call repeats the first — including its
+    // canonicalize, which on a network share is another round trip per
+    // component. Ask once. For a path whose leaf does NOT exist, is_allowed
+    // cannot canonicalize and falls back to a lexical match, so both forms
+    // genuinely have to be checked.
+    let allowed = if path_exists_for_scope {
+        app.fs_scope().is_allowed(&canonical_path)
+    } else {
+        app.fs_scope().is_allowed(path) && app.fs_scope().is_allowed(&canonical_path)
+    };
+    if allowed {
+        Ok(canonical_path)
     } else {
         Err(path_authorization_error())
     }
@@ -177,14 +206,13 @@ fn io_error(action: &str, error: &std::io::Error) -> String {
 #[tauri::command]
 fn read_file(app: tauri::AppHandle, path: String) -> Result<String, String> {
     let path = Path::new(&path);
-    ensure_allowed_path(&app, path)?;
+    let canonical_path = ensure_allowed_path(&app, path)?;
     let content = std::fs::read_to_string(path).map_err(|e| io_error("read this file", &e))?;
     // Every document open the renderer performs — dialog, Recent Files, file
     // tree, session restore — arrives here, so this is the one place that has to
-    // make the document's images loadable.
-    if let Ok(canonical_path) = file_ops::canonical_existing_path(path) {
-        allow_document_assets(&app, &canonical_path);
-    }
+    // make the document's images loadable. Reuse the canonical path the
+    // authorization gate already produced rather than deriving it again.
+    allow_document_assets(&app, &canonical_path);
     Ok(content)
 }
 
@@ -277,7 +305,7 @@ fn trash_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
 fn path_exists(app: tauri::AppHandle, path: String) -> Result<bool, String> {
     let path = Path::new(&path);
     match ensure_allowed_path(&app, path) {
-        Ok(()) => Ok(path.exists()),
+        Ok(_) => Ok(path.exists()),
         Err(error) if error.starts_with(PATH_UNAVAILABLE_ERROR_CODE) => {
             if nearest_existing_ancestor_is_allowed(&app, path) {
                 Ok(false)

@@ -60,7 +60,14 @@ export function Sidebar({
   // from under us) so they read as stale; the × button removes any entry. In the
   // browser dev server pathExists() returns true, so nothing is flagged there.
   const [missingRecent, setMissingRecent] = useState<Set<string>>(() => new Set());
+  // Only ask about files we are actually showing. Each probe is an IPC round
+  // trip through the full authorization walk, and this effect re-runs on every
+  // recentFiles change — i.e. on each file open, inside the window the user is
+  // waiting for their document. The conditions mirror the render test below.
+  const showsRecentFiles =
+    !collapsed && activeTab === "files" && tree.length === 0 && recentFiles.length > 0;
   useEffect(() => {
+    if (!showsRecentFiles) return;
     if (recentFiles.length === 0) {
       setMissingRecent(new Set());
       return;
@@ -84,7 +91,7 @@ export function Sidebar({
     return () => {
       cancelled = true;
     };
-  }, [recentFiles]);
+  }, [recentFiles, showsRecentFiles]);
   const openTreeMenu = useCallback(
     (e: ReactMouseEvent, entry: FileEntry | null) => {
       if (!canEditTree) return;

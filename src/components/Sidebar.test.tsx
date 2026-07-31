@@ -83,4 +83,36 @@ describe("RecentFilesList", () => {
       expect(items[1]!.classList.contains("markd-recent-missing")).toBe(false);
     });
   });
+
+  it("does not probe the filesystem for a Recent Files list it is not showing", async () => {
+    // These probes are IPC round trips through the full authorization walk, and
+    // the effect re-runs whenever recentFiles changes — i.e. on every file open,
+    // during the exact window the user is waiting for their document. The list
+    // only renders when the sidebar is expanded, on the files tab, with no tree.
+    const base = {
+      tree: [],
+      activeFile: "",
+      activeFilePath: null,
+      editor: null,
+      recentFiles: files,
+      heldModifier: null,
+      onTabChange: vi.fn(),
+      onFileSelect: vi.fn(),
+      onOpenFolder: vi.fn(),
+      onToggle: vi.fn(),
+      onRecentFileSelect: vi.fn(),
+      onRecentFileRemove: vi.fn(),
+    };
+
+    const { rerender } = render(<Sidebar {...base} collapsed activeTab="files" />);
+    await waitFor(() => expect(pathExists).not.toHaveBeenCalled());
+
+    rerender(<Sidebar {...base} collapsed={false} activeTab="outline" />);
+    await waitFor(() => expect(pathExists).not.toHaveBeenCalled());
+
+    // Visible: now it may ask.
+    vi.mocked(pathExists).mockResolvedValue(true);
+    rerender(<Sidebar {...base} collapsed={false} activeTab="files" />);
+    await waitFor(() => expect(pathExists).toHaveBeenCalled());
+  });
 });
