@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useLayoutEffect, useCallback, useRef } from "react";
 import type { FileTab } from "@/hooks/use-file-tabs";
 import { tabDisplayInfo } from "@/lib/tab-display";
 
@@ -23,6 +23,8 @@ export function TabBar({
   onTabAction,
 }: TabBarProps) {
   const [menu, setMenu] = useState<{ x: number; y: number; tab: FileTab } | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const tabRefs = useRef(new Map<string, HTMLDivElement>());
 
   // Dismiss the context menu on any outside click / another right-click / Escape.
   useEffect(() => {
@@ -49,7 +51,41 @@ export function TabBar({
     [menu, onTabAction],
   );
 
-  if (tabs.length <= 1 && !tabs[0]?.filePath && !tabs[0]?.isDirty) return null;
+  const revealActiveTab = useCallback(() => {
+    const list = listRef.current;
+    const activeTab = tabRefs.current.get(activeTabId);
+    if (!list || !activeTab || list.clientWidth === 0) return;
+
+    const tabLeft = activeTab.offsetLeft;
+    const tabRight = tabLeft + activeTab.offsetWidth;
+    const visibleLeft = list.scrollLeft;
+    const visibleRight = visibleLeft + list.clientWidth;
+
+    if (tabLeft < visibleLeft) {
+      list.scrollLeft = tabLeft;
+    } else if (tabRight > visibleRight) {
+      list.scrollLeft = tabRight - list.clientWidth;
+    }
+  }, [activeTabId]);
+
+  useLayoutEffect(() => {
+    revealActiveTab();
+  }, [revealActiveTab, tabs]);
+
+  const isTabBarVisible = !(tabs.length <= 1 && !tabs[0]?.filePath && !tabs[0]?.isDirty);
+
+  // A sidebar toggle or window resize can clip the active tab without changing
+  // tab state. Re-run the same minimal reveal calculation when the list's
+  // viewport changes; this also retries a mount whose initial width was zero.
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(revealActiveTab);
+    observer.observe(list);
+    return () => observer.disconnect();
+  }, [isTabBarVisible, revealActiveTab]);
+
+  if (!isTabBarVisible) return null;
 
   // Shared with the quick-switch overlay so both disambiguate same-named tabs
   // identically (single source of truth — see src/lib/tab-display.ts).
@@ -57,13 +93,17 @@ export function TabBar({
 
   return (
     <div className="markd-tab-bar">
-      <div className="markd-tab-list">
+      <div className="markd-tab-list" ref={listRef}>
         {tabs.map((tab) => {
           const parentDir = display.get(tab.id)?.parentDir ?? null;
 
           return (
             <div
               key={tab.id}
+              ref={(node) => {
+                if (node) tabRefs.current.set(tab.id, node);
+                else tabRefs.current.delete(tab.id);
+              }}
               className={`markd-tab ${tab.id === activeTabId ? "active" : ""} ${tab.isDirty ? "dirty" : ""}`}
               onClick={() => onSwitchTab(tab.id)}
               onContextMenu={(e) => {

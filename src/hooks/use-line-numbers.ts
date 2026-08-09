@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback } from "react";
 
 const STORAGE_KEY = "markd-line-numbers";
 
@@ -6,10 +6,6 @@ export function useLineNumbers() {
   const [lineNumbers, setLineNumbers] = useState(() => {
     return localStorage.getItem(STORAGE_KEY) === "1";
   });
-
-  useEffect(() => {
-    document.documentElement.dataset.lineNumbers = lineNumbers ? "true" : "false";
-  }, [lineNumbers]);
 
   const toggleLineNumbers = useCallback(() => {
     setLineNumbers((prev) => {

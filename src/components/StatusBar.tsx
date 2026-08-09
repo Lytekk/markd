@@ -14,9 +14,8 @@ interface StatusBarProps {
   fullWidth: boolean;
   lineNumbers: boolean;
   /**
-   * Word/char counts captured when the file was opened (null = unknown).
-   * Deltas against it render vivid while dirty, faded once saved, and hide at
-   * zero (e.g. after undoing back to the open-time state).
+   * Visible-text counts derived from authoritative savedContent (null =
+   * unknown). Deltas against it render only while the buffer is dirty.
    */
   statsBaseline: TextStats | null;
   onThemeChange: () => void;
@@ -32,15 +31,13 @@ interface StatusBarProps {
 function StatDelta({
   current,
   baseline,
-  faded,
 }: {
   current: number;
   baseline: number;
-  faded: boolean;
 }) {
   const delta = current - baseline;
   if (delta === 0) return null;
-  const cls = `markd-stat-delta ${delta > 0 ? "plus" : "minus"}${faded ? " faded" : ""}`;
+  const cls = `markd-stat-delta ${delta > 0 ? "plus" : "minus"}`;
   return <span className={cls}>{delta > 0 ? `+${delta}` : `${delta}`}</span>;
 }
 
@@ -105,9 +102,7 @@ export function StatusBar({
     return () => clearTimeout(timer);
   }, [lastSaved]);
 
-  // Source mode counts raw markdown while the baseline counted rendered text —
-  // a delta across those bases is noise, so suppress it there.
-  const showDeltas = statsBaseline !== null && !sourceMode;
+  const showDeltas = statsBaseline !== null && isDirty;
 
   return (
     <div className="markd-status-bar">
@@ -122,13 +117,13 @@ export function StatusBar({
         <span>
           {stats.words} words
           {showDeltas && (
-            <StatDelta current={stats.words} baseline={statsBaseline.words} faded={!isDirty} />
+            <StatDelta current={stats.words} baseline={statsBaseline.words} />
           )}
         </span>
         <span>
           {stats.chars} chars
           {showDeltas && (
-            <StatDelta current={stats.chars} baseline={statsBaseline.chars} faded={!isDirty} />
+            <StatDelta current={stats.chars} baseline={statsBaseline.chars} />
           )}
         </span>
         <button
@@ -155,14 +150,16 @@ export function StatusBar({
         >
           {fullWidth ? "Full" : "Column"}
         </button>
-        <button
-          onClick={onToggleLineNumbers}
-          style={btnStyle}
-          className={lineNumbers ? "status-btn-active" : ""}
-          title="Toggle Line Numbers"
-        >
-          {lineNumbers ? "Lines" : "No Lines"}
-        </button>
+        {sourceMode && (
+          <button
+            onClick={onToggleLineNumbers}
+            style={btnStyle}
+            className={lineNumbers ? "status-btn-active" : ""}
+            title="Toggle Source Line Numbers"
+          >
+            {lineNumbers ? "Lines" : "No Lines"}
+          </button>
+        )}
         <span className="markd-status-divider" aria-hidden="true" />
         <button onClick={onExportHtml} className="markd-status-action" title="Export as HTML">
           <ExportIcon />

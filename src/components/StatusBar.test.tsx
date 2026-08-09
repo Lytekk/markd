@@ -58,16 +58,32 @@ describe("StatusBar width toggle", () => {
 describe("StatusBar source toggle", () => {
   it("keeps a constant Source label and highlights it while source mode is on", () => {
     renderBar({ sourceMode: true });
-    const btn = screen.getByTitle(/Toggle Source/);
+    const btn = screen.getByTitle("Toggle Source (Ctrl+/)");
     expect(btn.textContent).toBe("Source");
     expect(btn.classList.contains("status-btn-active")).toBe(true);
   });
 
   it("does not highlight the Source button in rendered mode", () => {
     renderBar({ sourceMode: false });
-    const btn = screen.getByTitle(/Toggle Source/);
+    const btn = screen.getByTitle("Toggle Source (Ctrl+/)");
     expect(btn.textContent).toBe("Source");
     expect(btn.classList.contains("status-btn-active")).toBe(false);
+  });
+});
+
+describe("StatusBar source line numbers", () => {
+  it("does not offer misleading block counters in rendered mode", () => {
+    renderBar({ sourceMode: false, lineNumbers: true });
+    expect(screen.queryByTitle(/Line Numbers/)).toBeNull();
+  });
+
+  it("shows and toggles exact logical line numbers in source mode", () => {
+    const onToggleLineNumbers = vi.fn();
+    renderBar({ sourceMode: true, lineNumbers: true, onToggleLineNumbers });
+    const button = screen.getByTitle("Toggle Source Line Numbers");
+    expect(button.textContent).toBe("Lines");
+    fireEvent.click(button);
+    expect(onToggleLineNumbers).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -91,7 +107,7 @@ describe("StatusBar filename", () => {
 });
 
 describe("StatusBar word/char deltas", () => {
-  it("shows green (+) and red (-) deltas against the open-time baseline while dirty", () => {
+  it("shows green (+) and red (-) deltas against the saved baseline while dirty", () => {
     const { container } = renderBar({
       statsBaseline: { words: 10, chars: 50 },
       isDirty: true,
@@ -106,19 +122,16 @@ describe("StatusBar word/char deltas", () => {
     expect(deltas[1]!.classList.contains("minus")).toBe(true);
   });
 
-  it("fades the deltas once the file is saved (clean but diverged from open state)", () => {
+  it("clears the deltas once the file is saved", () => {
     const { container } = renderBar({
       statsBaseline: { words: 10, chars: 50 },
       isDirty: false,
     });
     sendStats(12, 48);
-    const deltas = container.querySelectorAll(".markd-stat-delta");
-    expect(deltas).toHaveLength(2);
-    expect(deltas[0]!.classList.contains("faded")).toBe(true);
-    expect(deltas[1]!.classList.contains("faded")).toBe(true);
+    expect(container.querySelectorAll(".markd-stat-delta")).toHaveLength(0);
   });
 
-  it("hides a zero delta (reverted to the open-time state) per-stat", () => {
+  it("hides a zero delta (reverted to the saved state) per-stat", () => {
     const { container } = renderBar({
       statsBaseline: { words: 10, chars: 50 },
       isDirty: false,
@@ -133,14 +146,17 @@ describe("StatusBar word/char deltas", () => {
     expect(container.querySelectorAll(".markd-stat-delta")).toHaveLength(0);
   });
 
-  it("suppresses deltas in source mode (raw-markdown counting basis differs)", () => {
+  it("shows deltas identically in source mode", () => {
     const { container } = renderBar({
       statsBaseline: { words: 10, chars: 50 },
       sourceMode: true,
       isDirty: true,
     });
     sendStats(12, 48);
-    expect(container.querySelectorAll(".markd-stat-delta")).toHaveLength(0);
+    const deltas = container.querySelectorAll(".markd-stat-delta");
+    expect(deltas).toHaveLength(2);
+    expect(deltas[0]!.textContent).toBe("+2");
+    expect(deltas[1]!.textContent).toBe("-2");
   });
 
   it("still shows the plain counts from the stats event", () => {

@@ -59,27 +59,44 @@ export function lineStartOffsets(text: string): number[] {
   return starts;
 }
 
+/** Convert N+1 vertical line boundaries into the height of each logical line. */
+export function lineHeightsFromBoundaries(boundaries: number[]): number[] {
+  const heights: number[] = [];
+  for (let i = 0; i + 1 < boundaries.length; i++) {
+    heights.push(Math.max(0, boundaries[i + 1]! - boundaries[i]!));
+  }
+  return heights;
+}
+
 /**
- * Pixel top of each logical line's FIRST visual row, wrap-aware — one mirror,
- * one layout pass, a zero-width marker per line. Feeds the line-number
- * gutter's variable row heights so numbers stay aligned while soft-wrap is on
- * (a wrapped line spans several visual rows but gets ONE number).
+ * Height of every logical line, including the final wrapped or trailing-empty
+ * line. N line-start sentinels plus one forced next-line sentinel produce N+1
+ * boundaries in one mirror/layout pass. Without the final boundary, the last
+ * line fell back to one CSS row and made the gutter too short to scroll.
  */
-export function measureLineTops(ta: HTMLTextAreaElement, starts: number[]): number[] {
+export function measureLineHeights(ta: HTMLTextAreaElement, starts: number[]): number[] {
   const mirror = createTextareaMirror(ta);
   const text = ta.value;
-  const markers: HTMLSpanElement[] = [];
+  const boundaries: HTMLSpanElement[] = [];
   for (let i = 0; i < starts.length; i++) {
     const marker = document.createElement("span");
-    markers.push(marker);
+    marker.textContent = "\u200b";
+    boundaries.push(marker);
     mirror.appendChild(marker);
     const end = i + 1 < starts.length ? starts[i + 1]! : text.length;
     mirror.appendChild(document.createTextNode(text.slice(starts[i]!, end)));
   }
+  // Force a boundary one visual row after the final logical line. This also
+  // gives an empty document and a document ending in \n their real final row.
+  mirror.appendChild(document.createTextNode("\n"));
+  const endMarker = document.createElement("span");
+  endMarker.textContent = "\u200b";
+  boundaries.push(endMarker);
+  mirror.appendChild(endMarker);
   document.body.appendChild(mirror);
-  const tops = markers.map((m) => m.offsetTop);
+  const tops = boundaries.map((marker) => marker.offsetTop);
   mirror.remove();
-  return tops;
+  return lineHeightsFromBoundaries(tops);
 }
 
 /** Select `range` in the textarea and scroll it to the vertical center. */

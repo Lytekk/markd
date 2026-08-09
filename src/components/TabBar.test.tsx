@@ -1,9 +1,13 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, act } from "@testing-library/react";
 import { TabBar } from "./TabBar";
 import type { FileTab } from "@/hooks/use-file-tabs";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 const tab = (over: Partial<FileTab> & { id: string }): FileTab => ({
   fileName: "Untitled",
@@ -52,6 +56,125 @@ describe("TabBar", () => {
     );
     expect(container.querySelector(".markd-tab")!.classList.contains("dirty")).toBe(false);
     expect(container.querySelector(".markd-tab-dirty-dot")).toBeNull();
+  });
+});
+
+function mockTabStripGeometry(
+  positions: Record<string, { left: number; width: number }>,
+  clientWidth: number | (() => number),
+) {
+  vi.spyOn(HTMLElement.prototype, "offsetLeft", "get").mockImplementation(function (this: HTMLElement) {
+    return positions[this.title]?.left ?? 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return positions[this.title]?.width ?? 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.classList.contains("markd-tab-list")
+      ? typeof clientWidth === "function" ? clientWidth() : clientWidth
+      : 0;
+  });
+}
+
+describe("TabBar active-tab reveal", () => {
+  const tabs = [
+    tab({ id: "t1", fileName: "one.md", filePath: "/p/one.md" }),
+    tab({ id: "t2", fileName: "two.md", filePath: "/p/two.md" }),
+    tab({ id: "t3", fileName: "three.md", filePath: "/p/three.md" }),
+  ];
+
+  it("reveals an active tab that is offscreen on mount", () => {
+    mockTabStripGeometry(
+      {
+        "/p/one.md": { left: 0, width: 70 },
+        "/p/two.md": { left: 70, width: 70 },
+        "/p/three.md": { left: 140, width: 70 },
+      },
+      100,
+    );
+
+    const { container } = render(
+      <TabBar tabs={tabs} activeTabId="t3" onSwitchTab={noop} onCloseTab={noop} onNewTab={noop} />,
+    );
+
+    expect((container.querySelector(".markd-tab-list") as HTMLDivElement).scrollLeft).toBe(110);
+  });
+
+  it("scrolls only enough to reveal newly active tabs clipped on either side", () => {
+    mockTabStripGeometry(
+      {
+        "/p/one.md": { left: 0, width: 40 },
+        "/p/two.md": { left: 50, width: 40 },
+        "/p/three.md": { left: 180, width: 30 },
+      },
+      100,
+    );
+
+    const { container, rerender } = render(
+      <TabBar tabs={tabs} activeTabId="t2" onSwitchTab={noop} onCloseTab={noop} onNewTab={noop} />,
+    );
+    const list = container.querySelector(".markd-tab-list") as HTMLDivElement;
+
+    rerender(<TabBar tabs={tabs} activeTabId="t3" onSwitchTab={noop} onCloseTab={noop} onNewTab={noop} />);
+    expect(list.scrollLeft).toBe(110);
+
+    rerender(<TabBar tabs={tabs} activeTabId="t1" onSwitchTab={noop} onCloseTab={noop} onNewTab={noop} />);
+    expect(list.scrollLeft).toBe(0);
+  });
+
+  it("does not scroll when the newly active tab is already fully visible", () => {
+    mockTabStripGeometry(
+      {
+        "/p/one.md": { left: 0, width: 40 },
+        "/p/two.md": { left: 60, width: 30 },
+        "/p/three.md": { left: 180, width: 30 },
+      },
+      100,
+    );
+
+    const { container, rerender } = render(
+      <TabBar tabs={tabs} activeTabId="t1" onSwitchTab={noop} onCloseTab={noop} onNewTab={noop} />,
+    );
+    const list = container.querySelector(".markd-tab-list") as HTMLDivElement;
+    list.scrollLeft = 50;
+
+    rerender(<TabBar tabs={tabs} activeTabId="t2" onSwitchTab={noop} onCloseTab={noop} onNewTab={noop} />);
+
+    expect(list.scrollLeft).toBe(50);
+  });
+
+  it("reveals the active tab when a width-only resize clips it", () => {
+    let width = 220;
+    let resizeCallback: ResizeObserverCallback | null = null;
+    class MockResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        resizeCallback = callback;
+      }
+      observe() {}
+      disconnect() {}
+    }
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
+    mockTabStripGeometry(
+      {
+        "/p/one.md": { left: 0, width: 70 },
+        "/p/two.md": { left: 70, width: 70 },
+        "/p/three.md": { left: 140, width: 70 },
+      },
+      () => width,
+    );
+
+    const { container } = render(
+      <TabBar tabs={tabs} activeTabId="t3" onSwitchTab={noop} onCloseTab={noop} onNewTab={noop} />,
+    );
+    const list = container.querySelector(".markd-tab-list") as HTMLDivElement;
+    expect(list.scrollLeft).toBe(0);
+
+    width = 100;
+    act(() => {
+      resizeCallback?.([], {} as ResizeObserver);
+    });
+
+    expect(list.scrollLeft).toBe(110);
   });
 });
 
