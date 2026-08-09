@@ -92,6 +92,16 @@ describe("buffer-transition wiring (src/App.tsx)", () => {
     expect(app).toContain("if (activeSaveOwnerRef.current?.tabId === ft.activeTabId) return;");
   });
 
+  it("never retries a superseded active save against a later active tab", () => {
+    const save = app.slice(
+      app.indexOf("const saveActiveTab"),
+      app.indexOf("const saveActiveTabAs"),
+    );
+    expect(save).toContain("shouldRetrySupersededActiveSave");
+    expect(save).toContain("ft.getActiveTabId()");
+    expect(save).toContain("samePath(beforeSave.filePath, fs.getCurrentState().filePath)");
+  });
+
   it("routes every Command Palette save entrypoint through active-tab ownership", () => {
     expect(app).toContain('run: saveActiveTab');
     expect(app).toContain('run: saveActiveTabAs');

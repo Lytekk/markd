@@ -101,6 +101,12 @@ describe("base.css layout", () => {
     expect(app.match(/className="markd-tab-sidebar-toggle"/g)).toHaveLength(1);
     expect(app).not.toContain('className="markd-sidebar-toggle"');
     expect(sidebar).not.toContain('title="Toggle Sidebar"');
+    expect(app).toContain('aria-label="Sidebar"');
+    expect(app).toContain('aria-controls="markd-sidebar"');
+    expect(app).toContain("aria-expanded={!sidebarCollapsed}");
+    expect(sidebar).toContain('id="markd-sidebar"');
+    expect(sidebar).toContain("inert={collapsed}");
+    expect(sidebar).toContain("aria-hidden={collapsed}");
 
     const strip = ruleBody(".markd-tab-strip");
     const toggle = ruleBody(".markd-tab-sidebar-toggle");
@@ -108,6 +114,7 @@ describe("base.css layout", () => {
     expect(strip).toMatch(/display:\s*flex/);
     expect(strip).toMatch(/height:\s*35px/);
     expect(toggle).toMatch(/flex:\s*0\s+0\s+35px/);
+    expect(css).toContain('.markd-tab-sidebar-toggle[aria-expanded="true"]');
     expect(nestedBar).toMatch(/flex:\s*1/);
     expect(nestedBar).toMatch(/min-width:\s*0/);
   });

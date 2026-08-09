@@ -114,3 +114,29 @@ describe("RecentFilesList", () => {
     await waitFor(() => expect(pathExists).toHaveBeenCalled());
   });
 });
+
+describe("Sidebar collapsed accessibility", () => {
+  it("removes its hidden interactive subtree from keyboard and accessibility navigation", () => {
+    const { container } = render(
+      <Sidebar
+        tree={[]}
+        activeFile=""
+        activeFilePath={null}
+        collapsed
+        editor={null}
+        recentFiles={files}
+        activeTab="files"
+        onTabChange={vi.fn()}
+        heldModifier={null}
+        onFileSelect={vi.fn()}
+        onOpenFolder={vi.fn()}
+        onRecentFileSelect={vi.fn()}
+        onRecentFileRemove={vi.fn()}
+      />,
+    );
+
+    const sidebar = container.querySelector(".markd-sidebar")!;
+    expect(sidebar.getAttribute("inert")).not.toBeNull();
+    expect(sidebar.getAttribute("aria-hidden")).toBe("true");
+  });
+});

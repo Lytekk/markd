@@ -195,7 +195,7 @@ body {
   color: var(--text-color);
 }
 
-.markd-tab-sidebar-toggle[aria-pressed="true"] {
+.markd-tab-sidebar-toggle[aria-expanded="true"] {
   color: var(--primary-color);
 }
 

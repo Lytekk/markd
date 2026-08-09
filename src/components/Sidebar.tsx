@@ -126,7 +126,12 @@ export function Sidebar({
   }, [treeMenu]);
 
   return (
-    <aside className={`markd-sidebar ${collapsed ? "collapsed" : ""}`}>
+    <aside
+      id="markd-sidebar"
+      className={`markd-sidebar ${collapsed ? "collapsed" : ""}`}
+      inert={collapsed}
+      aria-hidden={collapsed}
+    >
       <div className="markd-sidebar-header">
         <div className="markd-sidebar-tabs">
           <button

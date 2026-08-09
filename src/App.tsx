@@ -54,7 +54,11 @@ import {
 } from "@/lib/file-change";
 import { samePath } from "@/lib/path-identity";
 import { isPathInside } from "@/lib/path-scope";
-import { saveOutcomeMessage, type SaveOutcome } from "@/lib/save-outcome";
+import {
+  saveOutcomeMessage,
+  shouldRetrySupersededActiveSave,
+  type SaveOutcome,
+} from "@/lib/save-outcome";
 import { reloadDiscardPrompt } from "@/lib/reload-guard";
 import {
   classifyRestoreFailure,
@@ -1106,6 +1110,7 @@ export function App() {
     activeSaveOwnerRef.current = owner;
     try {
       let outcome: SaveOutcome = "failed";
+      let savedRevision = revision;
       try {
         outcome = await (saveAs ? fs.handleSaveAs() : fs.handleSave());
         // A keystroke landing during the write supersedes it: the bytes reached
@@ -1115,12 +1120,27 @@ export function App() {
         // newer bytes too. Once only: someone who keeps typing would loop
         // forever, and the second outcome is reported honestly either way.
         // Never retry a Save As; that would re-open the file chooser.
-        if (outcome === "superseded" && !saveAs) {
+        if (
+          shouldRetrySupersededActiveSave(
+            outcome,
+            saveAs,
+            ft.getActiveTabId(),
+            tabId,
+            samePath(beforeSave.filePath, fs.getCurrentState().filePath),
+          )
+        ) {
+          // The retry owns the newer active-A revision, not the revision that
+          // started the first write. markTabSaved must settle that exact state.
+          savedRevision = ft.getTabRevision(tabId);
           outcome = await fs.handleSave();
         }
       } catch {
         outcome = "failed";
       }
+      // Switching tabs while the write was pending makes the active hook state
+      // belong to a different document. It is neither a failure nor an excuse
+      // to save/announce against that later tab.
+      if (outcome === "superseded" && ft.getActiveTabId() !== tabId) return false;
       if (outcome !== "written") {
         // A real write failure is worth interrupting for — including when the
         // document had no path yet, which the old has-a-path gate silently
@@ -1138,12 +1158,13 @@ export function App() {
         }
         return false;
       }
+      if (ft.getActiveTabId() !== tabId) return false;
       const current = fs.getCurrentState();
       return ft.markTabSaved(tabId, {
         filePath: current.filePath,
         fileName: current.fileName,
         savedContent: current.savedContent,
-        expectedRevision: revision,
+        expectedRevision: savedRevision,
       });
     } finally {
       if (activeSaveOwnerRef.current === owner) activeSaveOwnerRef.current = null;
@@ -2631,8 +2652,9 @@ export function App() {
             className="markd-tab-sidebar-toggle"
             onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
             title={`${sidebarCollapsed ? "Show" : "Hide"} Sidebar (Ctrl+\\)`}
-            aria-label={`${sidebarCollapsed ? "Show" : "Hide"} Sidebar`}
-            aria-pressed={!sidebarCollapsed}
+            aria-label="Sidebar"
+            aria-controls="markd-sidebar"
+            aria-expanded={!sidebarCollapsed}
           >
             <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
               <rect x="1" y="2" width="4" height="12" rx="1" opacity="0.45" />

@@ -357,7 +357,11 @@ describe("native filesystem hardening wiring", () => {
     // a genuine write failure speaks up — including for an untitled document,
     // which the old `beforeSave.filePath` gate excluded.
     expect(save).toContain("saveOutcomeMessage(outcome, beforeSave.fileName)");
-    expect(save).not.toContain("beforeSave.filePath");
+    const nonWrittenBranch = save.slice(
+      save.indexOf('if (outcome !== "written")'),
+      save.indexOf("if (ft.getActiveTabId() !== tabId)"),
+    );
+    expect(nonWrittenBranch).not.toContain("beforeSave.filePath");
     expect(readFileSync("src/lib/save-outcome.ts", "utf8")).toContain("contents remain unsaved");
     const exportHandler = section(app, "const handleExportHtml", "// Sync tab state");
     expect(exportHandler).toContain("Export Failed");
