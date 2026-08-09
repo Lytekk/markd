@@ -42,7 +42,7 @@ describe("useFileState dirty lifecycle", () => {
   });
 });
 
-describe("useFileState openCount (baseline-reset signal)", () => {
+describe("useFileState openCount (open-class load signal)", () => {
   it("bumps on open-class loads but NOT on tab-switch restores", async () => {
     const { result } = renderHook(() => useFileState());
     expect(result.current.openCount).toBe(0);

@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { EditorContent } from "@tiptap/react";
 import type { Editor as TiptapEditor } from "@tiptap/react";
-import { computeTextStats } from "@/lib/text-stats";
+import { computeDocumentTextStats } from "@/lib/text-stats";
 
 interface EditorProps {
   editor: TiptapEditor | null;
@@ -20,8 +20,7 @@ export function Editor({ editor, focusMode }: EditorProps) {
   // which suppresses the `update` event — stats would stay at 0 after load.
   useEffect(() => {
     if (!editor) return;
-    // `doc.textContent` rebuilds the whole document as a string and
-    // computeTextStats then splits it — O(document), and this fired on EVERY
+    // Reading the document text and counting it is O(document), and this fired on EVERY
     // transaction: caret moves, selection changes, focus-mode and search meta
     // transactions, mermaid redraws. None of those change a word count.
     // Gate on docChanged, then coalesce the rest to the end of a typing burst,
@@ -31,13 +30,25 @@ export function Editor({ editor, focusMode }: EditorProps) {
       timer = null;
       window.dispatchEvent(
         new CustomEvent("markd:stats", {
-          detail: computeTextStats(editor.state.doc.textContent),
+          detail: computeDocumentTextStats(editor.state.doc),
         }),
       );
     };
-    const handler = ({ transaction }: { transaction: { docChanged: boolean } }) => {
+    const handler = ({
+      transaction,
+    }: {
+      transaction: { docChanged: boolean; getMeta: (key: string) => unknown };
+    }) => {
       if (!transaction.docChanged) return;
       if (timer !== null) window.clearTimeout(timer);
+      // Tab/open restores use setContent(..., false), whose preventUpdate meta
+      // identifies a programmatic whole-document load. Publish that document's
+      // counts synchronously so the arriving tab never displays the departing
+      // tab's stats during the normal typing coalescing window.
+      if (transaction.getMeta("preventUpdate")) {
+        dispatch();
+        return;
+      }
       timer = window.setTimeout(dispatch, STATS_COALESCE_MS);
     };
     editor.on("transaction", handler);

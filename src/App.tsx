@@ -53,7 +53,12 @@ import {
 import { confirmModal, promptModal } from "@/lib/modal";
 import { normalizeUrl, wordRangeAt } from "@/lib/links";
 import { splitFrontmatter, joinFrontmatter } from "@/lib/frontmatter";
-import { computeTextStats, type TextStats } from "@/lib/text-stats";
+import {
+  computeDocumentTextStats,
+  computeMarkdownTextStats,
+  type TextStats,
+} from "@/lib/text-stats";
+import { MarkdownStatsWorkerClient } from "@/lib/text-stats-worker-client";
 import { canRevertClean, docMatchesSaved, parseSavedDoc, sourceModeIsDirty } from "@/lib/dirty-check";
 import { currentMarkdown, currentDocJSON, editorBufferIsClean, textareaText } from "@/lib/source-truth";
 import { renderSourceHtml } from "@/lib/source-html";
@@ -130,9 +135,9 @@ export function App() {
   const savedDocRef = useRef<PMNode | null>(null);
   const savedFrontmatterRef = useRef<string>("");
   const revertCheckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Word/char-count baselines per tab, captured at OPEN time (not save) — the
-  // status bar shows deltas against these.
-  const statsBaselineMapRef = useRef(new Map<string, TextStats>());
+  // Word/char baseline derived from the active buffer's authoritative saved
+  // bytes. It advances only when savedContent does (open, successful save or
+  // autosave, tab restore), never on a failed/cancelled/superseded write.
   const [statsBaseline, setStatsBaseline] = useState<TextStats | null>(null);
   // Find/replace UI state per tab (session-only) — Ctrl+F/Ctrl+H recall what
   // was last typed for the active tab.
@@ -152,6 +157,12 @@ export function App() {
   sourceModeRef.current = sourceMode;
   const sourceMarkdownRef = useRef(sourceMarkdown);
   sourceMarkdownRef.current = sourceMarkdown;
+  // Latest source buffer awaiting a coalesced stats pass. Immediate stats
+  // publications (tab load / mode toggle) cancel it so a departed buffer can
+  // never overwrite the active tab's counts 150ms later.
+  const pendingStatsMdRef = useRef<string | null>(null);
+  const statsTimerRef = useRef<number | null>(null);
+  const statsWorkerClientRef = useRef<MarkdownStatsWorkerClient | null>(null);
 
   const editor = useEditor({
     extensions: [
@@ -216,6 +227,45 @@ export function App() {
     [editor],
   );
 
+  // Source mode owns a raw Markdown textarea, but its status-bar counts must
+  // mean the same thing as rendered mode. Tokenize in a lazy Web Worker — never
+  // setContent on the live editor — then dispatch canonical visible-text stats.
+  // The synchronous configured-tokenizer path is fail-safe only (no Worker or
+  // worker failure); normal Source typing never blocks the UI with a full parse.
+  const dispatchMarkdownStats = useCallback(
+    (markdown: string) => {
+      if (!editor) return;
+      let client = statsWorkerClientRef.current;
+      if (!client) {
+        client = new MarkdownStatsWorkerClient(
+          () => new Worker(new URL("./lib/text-stats.worker.ts", import.meta.url), { type: "module" }),
+          (stats) => window.dispatchEvent(new CustomEvent("markd:stats", { detail: stats })),
+          (source) => computeMarkdownTextStats(editor, source),
+        );
+        statsWorkerClientRef.current = client;
+      }
+      client.request(markdown);
+    },
+    [editor],
+  );
+
+  const cancelPendingMarkdownStats = useCallback(() => {
+    if (statsTimerRef.current !== null) {
+      window.clearTimeout(statsTimerRef.current);
+      statsTimerRef.current = null;
+    }
+    pendingStatsMdRef.current = null;
+    statsWorkerClientRef.current?.cancel();
+  }, []);
+
+  useEffect(
+    () => () => {
+      statsWorkerClientRef.current?.dispose();
+      statsWorkerClientRef.current = null;
+    },
+    [editor],
+  );
+
   // Register editor methods with file state. Every registration below answers
   // "what is the buffer's current content?" through the source-truth accessors:
   // in source mode the truth is the SourceEditor textarea, and serializing the
@@ -243,6 +293,7 @@ export function App() {
         // showing the DEPARTING tab's text and a later commit would bleed it
         // into this tab.
         if (sourceModeRef.current) {
+          cancelPendingMarkdownStats();
           // textareaText: the DOM normalizes CRLF on write, so the view state
           // must match or every state-computed offset drifts (source-truth.ts).
           const viewMd = textareaText(md);
@@ -254,11 +305,7 @@ export function App() {
           // forgiveness branch, and exact-clean arrivals are already covered
           // by sourceModeIsDirty's md === savedContent branch.
           sourceEntrySavedRef.current = fileStateRef.current.savedContent;
-          window.dispatchEvent(
-            new CustomEvent("markd:stats", {
-              detail: computeTextStats(splitFrontmatter(viewMd).body),
-            }),
-          );
+          dispatchMarkdownStats(viewMd);
         }
       },
     );
@@ -286,6 +333,8 @@ export function App() {
     );
   }, [
     editor,
+    cancelPendingMarkdownStats,
+    dispatchMarkdownStats,
     getEditorMarkdown,
     fileState.registerGetMarkdown,
     fileState.registerSetContent,
@@ -303,8 +352,9 @@ export function App() {
     if (!editor) return;
     const { frontmatter, body } = splitFrontmatter(fileState.savedContent);
     savedFrontmatterRef.current = frontmatter;
-    // A clean buffer IS the saved state — that is what clean means — so share
-    // the editor's own doc without asking.
+    // A clean rendered buffer IS the saved state — that is what clean means —
+    // so share the editor's own doc without asking. Source mode is the exception
+    // after a save because its textarea advances while the detached editor does not.
     //
     // The serialize this replaces is quadratic: prosemirror-markdown's
     // atBlank() is an unanchored /(^|\n)$/ tested against the ENTIRE
@@ -314,9 +364,15 @@ export function App() {
     // including the clean loads that make up almost all of them, where the
     // answer was already known. A dirty tab arriving still needs the standalone
     // parse: the saved state genuinely is not in the editor then.
-    savedDocRef.current = fileState.isDirty
+    // The rendered editor can be shared only when it is both visible and clean.
+    // In Source mode it intentionally trails the textarea even after a save.
+    const savedDoc = fileState.isDirty || sourceModeRef.current
       ? parseSavedDoc(editor, body)
       : editor.state.doc;
+    savedDocRef.current = savedDoc;
+    // Reuse that authoritative saved document for the delta baseline instead
+    // of parsing savedContent a second time in a separate effect.
+    setStatsBaseline(savedDoc ? computeDocumentTextStats(savedDoc) : null);
   }, [editor, fileState.savedContent, fileState.isDirty]);
 
   // Track recent files when files are opened/saved
@@ -331,9 +387,6 @@ export function App() {
   // Latest handleCloseTab, callable from the [filePath]-keyed watcher effect
   // (which must not list it as a dep). Assigned just after its definition below.
   const handleCloseTabRef = useRef<(tabId: string) => Promise<void> | void>(() => {});
-  // Latest buffer awaiting a coalesced stats pass, and its pending timer.
-  const pendingStatsMdRef = useRef<string | null>(null);
-  const statsTimerRef = useRef<number | null>(null);
   // Set once the user has answered the quit prompt, so a re-entrant close
   // request does not ask again.
   const quitConfirmedRef = useRef(false);
@@ -619,6 +672,7 @@ export function App() {
   // Toggle source mode
   const handleToggleSource = useCallback(() => {
     if (!editor) return;
+    cancelPendingMarkdownStats();
     // Defensive: a pending revert check from the rendered editor must not
     // fire across the mode boundary.
     if (revertCheckTimerRef.current) clearTimeout(revertCheckTimerRef.current);
@@ -632,12 +686,7 @@ export function App() {
       sourceEntryMdRef.current = md;
       sourceEntryDirtyRef.current = fileStateRef.current.isDirty;
       sourceEntrySavedRef.current = fileStateRef.current.savedContent;
-      // Footer counts switch to the raw-markdown basis the textarea shows.
-      window.dispatchEvent(
-        new CustomEvent("markd:stats", {
-          detail: computeTextStats(splitFrontmatter(md).body),
-        }),
-      );
+      dispatchMarkdownStats(md);
       setSourceMode(true);
     } else {
       // Switching FROM source: re-parse only if the source actually changed.
@@ -652,7 +701,14 @@ export function App() {
       }
       setSourceMode(false);
     }
-  }, [editor, sourceMode, sourceMarkdown, getEditorMarkdown]);
+  }, [
+    editor,
+    sourceMode,
+    sourceMarkdown,
+    getEditorMarkdown,
+    dispatchMarkdownStats,
+    cancelPendingMarkdownStats,
+  ]);
 
   // Handle source markdown changes — track dirty (string compares only: the
   // buffer is raw text, so revert-to-saved/entry detection is plain equality)
@@ -685,14 +741,10 @@ export function App() {
         const latest = pendingStatsMdRef.current;
         if (latest === null) return;
         pendingStatsMdRef.current = null;
-        window.dispatchEvent(
-          new CustomEvent("markd:stats", {
-            detail: computeTextStats(splitFrontmatter(latest).body),
-          }),
-        );
+        dispatchMarkdownStats(latest);
       }, STATS_COALESCE_MS);
     },
-    [fileState.markDirty, fileState.markClean],
+    [fileState.markDirty, fileState.markClean, dispatchMarkdownStats],
   );
 
   // Insert a snippet body at the caret. Rendered mode routes through the
@@ -889,32 +941,8 @@ export function App() {
     else ft.markTabClean();
   }, [fileState.isDirty]);
 
-  // Word/char baseline for the status-bar deltas: reset on open-class loads
-  // (openCount never bumps on tab switches), restored — or lazily created —
-  // when the active tab changes, pruned alongside closed tabs.
-  useEffect(() => {
-    if (!editor) return;
-    const stats = computeTextStats(editor.state.doc.textContent);
-    statsBaselineMapRef.current.set(fileTabsRef.current.activeTabId, stats);
-    setStatsBaseline(stats);
-  }, [editor, fileState.openCount]);
-
-  useEffect(() => {
-    if (!editor) return;
-    const map = statsBaselineMapRef.current;
-    let stats = map.get(fileTabs.activeTabId);
-    if (!stats) {
-      stats = computeTextStats(editor.state.doc.textContent);
-      map.set(fileTabs.activeTabId, stats);
-    }
-    setStatsBaseline(stats);
-  }, [editor, fileTabs.activeTabId]);
-
   useEffect(() => {
     const live = new Set(fileTabs.tabs.map((t) => t.id));
-    for (const id of [...statsBaselineMapRef.current.keys()]) {
-      if (!live.has(id)) statsBaselineMapRef.current.delete(id);
-    }
     for (const id of [...findStateMapRef.current.keys()]) {
       if (!live.has(id)) findStateMapRef.current.delete(id);
     }
@@ -2245,6 +2273,7 @@ export function App() {
               markdown={sourceMarkdown}
               onMarkdownChange={handleSourceMarkdownChange}
               lineNumbers={lineNumbers}
+              zoom={zoom}
               searchRanges={sourceSearchView?.ranges ?? null}
               searchCurrent={sourceSearchView?.current ?? -1}
             />

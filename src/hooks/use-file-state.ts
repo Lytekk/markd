@@ -32,10 +32,9 @@ export interface FileState {
   savedContent: string;
   lastSaved: number | null;
   /**
-   * Bumped on every open-class load (open / open-by-path / file-select / new)
-   * and NEVER on tab-switch restores. App.tsx uses it as the reset signal for
-   * the word/char-count baseline, which tracks "since the file was opened",
-   * not "since the last save".
+   * Monotonic open-class load count, bumped by open / open-by-path /
+   * file-select / new and NEVER by tab-switch restores. App uses zero to
+   * distinguish untouched initial state from a real empty/untitled buffer.
    */
   openCount: number;
 }

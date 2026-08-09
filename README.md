@@ -14,9 +14,9 @@ Published publicly because it solves a real problem and a few people asked. If i
 
 - WYSIWYG rendered view with a keyboard-shortcut source-mode toggle (Ctrl+/)
 - File / Edit / View / Help menubar with native shortcuts
-- Multi-tab editing with middle-click close, dirty indicators, and Ctrl+T / Ctrl+W / Ctrl+Tab shortcuts
+- Multi-tab editing with middle-click close, dirty indicators, Ctrl+T / Ctrl+W / Ctrl+Tab shortcuts, and an overflowing tab strip that follows the active tab
 - Unsaved changes show a dot on the tab (hover swaps it for the close button) that clears when you save — or undo back to the saved state
-- Live word/char counts with +/− deltas since the file was opened (green/red while unsaved, faded once saved, gone on reopen)
+- Live word/char counts with +/− deltas from the last successful save — identical in rendered and source modes, and cleared when saved
 - Tab session persistence — tabs and scroll position survive Ctrl+R refresh and app restarts
 - Per-tab scroll position remembered across tab switches
 - External file modification detection — prompts to reload when a file changes on disk
@@ -32,7 +32,7 @@ Published publicly because it solves a real problem and a few people asked. If i
 - Unsaved work is guarded on every exit — closing the window, closing a tab, Close All, and reloading from disk all prompt before anything is discarded
 - Close All is recoverable: Ctrl+Shift+T walks back through the tabs it closed
 - Opening a file from Explorer/Finder shows that document first, then restores the rest of your session behind it
-- Line numbers (toggle via status bar) in both rendered and source modes
+- Exact logical line numbers in source mode (toggle via the source-mode status bar)
 - Window size and position remembered across restarts
 - Auto-update — checks GitHub Releases on startup (Ed25519-signed); choose **Install Now**, **Remind Me Later**, or **Skip This Version** (skip is per-version; a newer release prompts again)
 - Two themes (Day, Night) — extendable via CSS custom properties. Startup always paints dark first so launching never flashes white; a Day-theme window cross-fades to light once the app is up

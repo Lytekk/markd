@@ -31,6 +31,14 @@ describe("base.css layout", () => {
     expect(body).toMatch(/overflow-x:\s*auto/);
   });
 
+  test("the tab list owns horizontal overflow while the outer bar keeps New Tab fixed", () => {
+    const bar = ruleBody(".markd-tab-bar");
+    const list = ruleBody(".markd-tab-list");
+    expect(bar, "missing `.markd-tab-bar` rule").toMatch(/overflow:\s*hidden/);
+    expect(list, "missing `.markd-tab-list` rule").toMatch(/overflow-x:\s*auto/);
+    expect(list).toMatch(/position:\s*relative/);
+  });
+
   test("#write max-width is driven by --editor-max-width so Full Width can swap it", () => {
     const body = ruleBody("#write");
     expect(body).not.toBeNull();
@@ -118,10 +126,15 @@ describe("base.css layout", () => {
   // block height has to equal the textarea ROW height (--line-height ×
   // --font-size), not the smaller 12px number glyph's em — otherwise a fixed
   // per-line deficit accumulates and the numbers slide off after scrolling.
-  test("the gutter line height is sized off --font-size, not the smaller number glyph", () => {
-    const body = ruleBody(".markd-line-number");
-    expect(body, "missing `.markd-line-number` rule").not.toBeNull();
-    expect(body).toMatch(/height:\s*calc\(var\(--line-height\)\s*\*\s*var\(--font-size\)\)/);
+  test("the gutter cell follows the logical line while its label centers in the first visual row", () => {
+    const cell = ruleBody(".markd-line-number");
+    expect(cell, "missing `.markd-line-number` rule").not.toBeNull();
+    expect(cell).toMatch(/height:\s*calc\(var\(--line-height\)\s*\*\s*var\(--font-size\)\)/);
+
+    const label = ruleBody(".markd-line-number-label");
+    expect(label, "missing `.markd-line-number-label` rule").not.toBeNull();
+    expect(label).toMatch(/height:\s*calc\(var\(--line-height\)\s*\*\s*var\(--font-size\)\)/);
+    expect(label).toMatch(/align-items:\s*center/);
   });
 
   // With wrapping on, one logical line spans N textarea rows but only one gutter
@@ -131,7 +144,7 @@ describe("base.css layout", () => {
     // User-reported (2026-07-05): source mode must wrap like the rendered
     // view even with line numbers on. The old wrap-off rule is gone; gutter
     // alignment now comes from measured variable-height rows (SourceEditor +
-    // textarea-metrics measureLineTops), so no rule may reintroduce nowrap.
+    // textarea-metrics measureLineHeights), so no rule may reintroduce nowrap.
     const body = ruleBody(".markd-source-editor.with-line-numbers .markd-source-textarea");
     if (body !== null) {
       expect(body).not.toMatch(/white-space:\s*pre\s*;/);
@@ -140,6 +153,11 @@ describe("base.css layout", () => {
     if (backdrop !== null) {
       expect(backdrop).not.toMatch(/white-space:\s*pre\s*;/);
     }
+  });
+
+  test("rendered mode never presents top-level block counters as line numbers", () => {
+    expect(css).not.toMatch(/\[data-line-numbers="true"\]\s+#write\s*>\s*\*/);
+    expect(css).not.toMatch(/counter\((?:line-number)\)/);
   });
 
   test("footer export actions carry a VISIBLE button border so they don't read as toggles", () => {

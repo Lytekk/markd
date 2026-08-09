@@ -177,12 +177,7 @@ body {
   height: 35px;
   padding: 0 4px;
   gap: 2px;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.markd-tab-bar::-webkit-scrollbar {
-  display: none;
+  overflow: hidden;
 }
 
 .markd-tab-list {
@@ -191,6 +186,13 @@ body {
   gap: 2px;
   min-width: 0;
   flex: 1;
+  position: relative;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.markd-tab-list::-webkit-scrollbar {
+  display: none;
 }
 
 .markd-tab {
@@ -788,8 +790,8 @@ body {
   line-height: 1;
 }
 
-/* Word/char deltas vs the open-time baseline: vivid while unsaved, faded once
-   saved, absent at zero. Colors themeable via day.css / night.css. */
+/* Word/char deltas vs the saved baseline: visible only while dirty and absent
+   at zero. Colors themeable via day.css / night.css. */
 .markd-stat-delta {
   margin-left: 4px;
   font-weight: 600;
@@ -801,10 +803,6 @@ body {
 
 .markd-stat-delta.minus {
   color: var(--stat-del-color, #cf222e);
-}
-
-.markd-stat-delta.faded {
-  opacity: 0.55;
 }
 
 /* Sidebar Tabs */
@@ -1713,7 +1711,14 @@ body {
   /* Block height must equal the textarea ROW height (--line-height ×
      --font-size). Using `1em` resolved against the number's own 12px font
      yielded a per-line deficit (e.g. 20.4px vs 27.2px) that accumulated into
-     visible drift after scrolling. The 12px glyph is centered within. */
+     visible drift after scrolling. Wrapped logical lines keep one number,
+     aligned to their first visual row rather than centered across all rows. */
+  height: calc(var(--line-height) * var(--font-size));
+}
+
+.markd-line-number-label {
+  box-sizing: border-box;
+  width: 100%;
   height: calc(var(--line-height) * var(--font-size));
   display: flex;
   align-items: center;
@@ -1753,9 +1758,9 @@ body {
 
 /* Line numbers coexist with soft-wrap (user-reported 2026-07-05: source must
    wrap like the rendered view): each gutter row's height is MEASURED from the
-   wrapped text (SourceEditor measureLineTops), so a line spanning N visual
+   wrapped text (SourceEditor measureLineHeights), so a line spanning N visual
    rows gets one number and an N-row-tall gutter cell. The fixed height on
-   .markd-line-number below is only the pre-measure fallback. */
+   .markd-line-number above is only the pre-measure fallback. */
 
 /* Source view honors Full Width like #write: collapse the centering padding to
    a fixed gutter so the column expands to fill the editor area. */
@@ -1766,31 +1771,6 @@ body {
 
 [data-full-width="true"] .markd-line-gutter {
   left: 0;
-}
-
-/* Rendered mode line numbers (CSS counters on #write blocks) */
-[data-line-numbers="true"] #write {
-  counter-reset: line-number;
-}
-
-[data-line-numbers="true"] #write > * {
-  counter-increment: line-number;
-  position: relative;
-}
-
-[data-line-numbers="true"] #write > *::before {
-  content: counter(line-number);
-  position: absolute;
-  left: -50px;
-  width: 36px;
-  text-align: right;
-  font-family: var(--monospace);
-  font-size: 12px;
-  line-height: inherit;
-  color: var(--text-muted, var(--control-text-color));
-  opacity: 0.4;
-  user-select: none;
-  pointer-events: none;
 }
 
 /* Saved indicator */

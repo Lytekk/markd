@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { lineStartOffsets } from "./textarea-metrics";
+import { lineHeightsFromBoundaries, lineStartOffsets } from "./textarea-metrics";
 
 // Pure companion to the layout-dependent mirror measurement (which is
 // live-verified — jsdom has no layout): the gutter's logical-line starts.
@@ -16,5 +16,15 @@ describe("lineStartOffsets", () => {
 
   it("consecutive newlines produce empty-line rows (textarea parity)", () => {
     expect(lineStartOffsets("a\n\nb")).toEqual([0, 2, 3]);
+  });
+});
+
+describe("lineHeightsFromBoundaries", () => {
+  it("includes the full height of a wrapped final logical line", () => {
+    expect(lineHeightsFromBoundaries([30, 57, 84, 300])).toEqual([27, 27, 216]);
+  });
+
+  it("preserves one row for consecutive blanks and a trailing empty line", () => {
+    expect(lineHeightsFromBoundaries([30, 57, 84, 111, 138])).toEqual([27, 27, 27, 27]);
   });
 });
