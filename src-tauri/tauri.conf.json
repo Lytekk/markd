@@ -15,7 +15,7 @@
         "title": "Markd",
         "width": 1200,
         "height": 800,
-        "minWidth": 600,
+        "minWidth": 640,
         "minHeight": 400,
         "resizable": true,
         "fullscreen": false,

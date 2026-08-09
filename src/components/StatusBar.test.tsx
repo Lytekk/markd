@@ -45,18 +45,18 @@ const sendStats = (words: number, chars: number) =>
   });
 
 describe("StatusBar width toggle", () => {
-  it("labels the button with the CURRENT state — Full when full-width is on", () => {
-    renderBar({ fullWidth: true });
+  it("keeps a constant Full label and expresses Column mode as the inactive state", () => {
+    const { rerender } = renderBar({ fullWidth: false });
     const btn = screen.getByTitle("Toggle Full Width");
     expect(btn.textContent).toBe("Full");
-    expect(btn.classList.contains("status-btn-active")).toBe(true);
-  });
-
-  it("labels the button Column when column (constrained) width is active", () => {
-    renderBar({ fullWidth: false });
-    const btn = screen.getByTitle("Toggle Full Width");
-    expect(btn.textContent).toBe("Column");
     expect(btn.classList.contains("status-btn-active")).toBe(false);
+    expect(btn.getAttribute("aria-pressed")).toBe("false");
+
+    rerender(<StatusBar {...barProps({ fullWidth: true })} />);
+    expect(screen.getByTitle("Toggle Full Width")).toBe(btn);
+    expect(btn.textContent).toBe("Full");
+    expect(btn.classList.contains("status-btn-active")).toBe(true);
+    expect(btn.getAttribute("aria-pressed")).toBe("true");
   });
 });
 
@@ -281,6 +281,23 @@ describe("StatusBar word/char deltas", () => {
     expect(deltas).toHaveLength(2);
     expect(deltas[0]!.textContent).toBe("+2");
     expect(deltas[1]!.textContent).toBe("-2");
+  });
+
+  it("compacts large deltas inside their fixed slots and preserves the exact count", () => {
+    const { container } = renderBar({
+      statsBaseline: { words: 0, chars: 2_200_000 },
+      isDirty: true,
+    });
+    sendStats(12_345, 1_000_000);
+
+    const deltas = container.querySelectorAll(".markd-stat-delta:not(.is-slot-empty)");
+    expect(deltas[0]!.textContent).toBe("+12k");
+    expect(deltas[0]!.getAttribute("title")).toBe("+12345 words");
+    expect(deltas[0]!.getAttribute("aria-label")).toBe("Added 12345 words");
+    expect(deltas[1]!.textContent).toBe("-1.2m");
+    expect(deltas[1]!.getAttribute("title")).toBe("-1200000 characters");
+    expect(deltas[1]!.getAttribute("aria-label")).toBe("Removed 1200000 characters");
+    expect([...deltas].every((delta) => delta.textContent!.length <= 5)).toBe(true);
   });
 
   it("still shows the plain counts from the stats event", () => {

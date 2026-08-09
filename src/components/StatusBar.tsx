@@ -37,22 +37,51 @@ function StatDelta({
   current,
   baseline,
   visible,
+  label,
 }: {
   current: number;
   baseline: number;
   visible: boolean;
+  label: "words" | "characters";
 }) {
   const delta = current - baseline;
   const hasDelta = visible && delta !== 0;
+  const exactDelta = `${delta > 0 ? "+" : ""}${delta}`;
+  const displayDelta = formatStatDelta(delta);
   const cls = [
     "markd-stat-delta",
     hasDelta ? (delta > 0 ? "plus" : "minus") : "is-slot-empty",
   ].join(" ");
   return (
-    <span className={cls} aria-hidden={!hasDelta}>
-      {hasDelta ? (delta > 0 ? `+${delta}` : `${delta}`) : ""}
+    <span
+      className={cls}
+      aria-hidden={!hasDelta}
+      aria-label={hasDelta ? `${delta > 0 ? "Added" : "Removed"} ${Math.abs(delta)} ${label}` : undefined}
+      title={hasDelta ? `${exactDelta} ${label}` : undefined}
+    >
+      {hasDelta ? displayDelta : ""}
     </span>
   );
+}
+
+function formatStatDelta(delta: number): string {
+  const sign = delta > 0 ? "+" : "-";
+  const magnitude = Math.abs(delta);
+  if (magnitude < 10_000) return `${sign}${magnitude}`;
+
+  const units = ["k", "m", "b", "t", "q"];
+  let unitIndex = Math.min(Math.floor(Math.log10(magnitude) / 3) - 1, units.length - 1);
+  let scaled = magnitude / 1000 ** (unitIndex + 1);
+  let rounded = scaled < 10 ? Number(scaled.toFixed(1)) : Math.round(scaled);
+
+  // Values at the top of one unit can round into the next (999,999 → 1m).
+  if (rounded >= 1000 && unitIndex < units.length - 1) {
+    unitIndex += 1;
+    scaled = magnitude / 1000 ** (unitIndex + 1);
+    rounded = scaled < 10 ? Number(scaled.toFixed(1)) : Math.round(scaled);
+  }
+
+  return `${sign}${rounded}${units[unitIndex]}`;
 }
 
 // Download/export glyph shared by the HTML & PDF actions — the icon + bordered
@@ -174,6 +203,7 @@ export function StatusBar({
             current={stats.words}
             baseline={statsBaseline?.words ?? stats.words}
             visible={showDeltas}
+            label="words"
           />
         </span>
         <span className="markd-status-stat" data-status-slot="chars">
@@ -182,6 +212,7 @@ export function StatusBar({
             current={stats.chars}
             baseline={statsBaseline?.chars ?? stats.chars}
             visible={showDeltas}
+            label="characters"
           />
         </span>
         <button
@@ -209,7 +240,7 @@ export function StatusBar({
           aria-pressed={fullWidth}
           data-status-slot="width"
         >
-          {fullWidth ? "Full" : "Column"}
+          Full
         </button>
         <button
           onClick={onToggleLineNumbers}

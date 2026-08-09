@@ -71,7 +71,6 @@ describe("RecentFilesList", () => {
         heldModifier={null}
         onFileSelect={vi.fn()}
         onOpenFolder={vi.fn()}
-        onToggle={vi.fn()}
         onRecentFileSelect={vi.fn()}
         onRecentFileRemove={vi.fn()}
       />,
@@ -99,7 +98,6 @@ describe("RecentFilesList", () => {
       onTabChange: vi.fn(),
       onFileSelect: vi.fn(),
       onOpenFolder: vi.fn(),
-      onToggle: vi.fn(),
       onRecentFileSelect: vi.fn(),
       onRecentFileRemove: vi.fn(),
     };

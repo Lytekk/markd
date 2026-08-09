@@ -30,6 +30,7 @@ import { copyToClipboard } from "@/lib/code-block-enhance";
 import { revealInFileManager } from "@/lib/reveal";
 import { useZoom } from "@/hooks/use-zoom";
 import { TabBar, type TabAction } from "@/components/TabBar";
+import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { createFile, createFolder, exportAsHtml, exportAsPdf, isPathAuthorizationError, isPathUnavailableError, openFile, pathExists, readFileByPath, renamePath, saveFileAs, saveToFile, trashPath } from "@/lib/file-system";
 import { ensureMdExtension, joinPath, parentPath, targetDirForEntry, validateName } from "@/lib/file-tree-ops";
 import {
@@ -95,6 +96,11 @@ const REVERT_CHECK_MS = 250;
 // Word/char counting is O(document); this coalesces it to the end of a typing
 // burst so the status bar still feels live without paying per keystroke.
 const STATS_COALESCE_MS = 150;
+// The footer needs 640 logical px when the content rail owns the whole window.
+// Opening the fixed 260px sidebar adds that rail to the same usable floor.
+const COLLAPSED_WINDOW_MIN_WIDTH = 640;
+const EXPANDED_WINDOW_MIN_WIDTH = 900;
+const WINDOW_MIN_HEIGHT = 400;
 
 interface CloseTabOptions {
   /** The caller already proved this exact buffer clean before detaching it. */
@@ -128,6 +134,36 @@ export function App() {
   const fileState = useFileState();
   const { recentFiles, addRecentFile, removeRecentFile } = useRecentFiles();
   const fileTabs = useFileTabs();
+
+  // Keep native resizing aligned with the collapsible layout. A static 900px
+  // minimum wastes space while the sidebar is closed; a static 640px minimum
+  // lets the open sidebar consume the footer's usable width.
+  useEffect(() => {
+    if (!isTauri()) return;
+    let cancelled = false;
+    const minWidth = sidebarCollapsed
+      ? COLLAPSED_WINDOW_MIN_WIDTH
+      : EXPANDED_WINDOW_MIN_WIDTH;
+    const appWindow = getCurrentWindow();
+    void (async () => {
+      await appWindow.setMinSize(new LogicalSize(minWidth, WINDOW_MIN_HEIGHT));
+      const [physicalSize, scaleFactor] = await Promise.all([
+        appWindow.innerSize(),
+        appWindow.scaleFactor(),
+      ]);
+      if (cancelled) return;
+      const logicalSize = physicalSize.toLogical(scaleFactor);
+      // Raising a Windows minimum does not resize a window that is already
+      // below it (for example after restoring a compact collapsed-sidebar
+      // session). Grow only in that case; lowering the floor never shrinks.
+      if (logicalSize.width < minWidth) {
+        await appWindow.setSize(new LogicalSize(minWidth, logicalSize.height));
+      }
+    })().catch((error: unknown) => console.error("Failed to update window minimum size", error));
+    return () => {
+      cancelled = true;
+    };
+  }, [sidebarCollapsed]);
   const bufferLoadGuardRef = useRef(createLatestRequestGuard());
   // Stable mirrors let asynchronous callbacks and TipTap transactions operate
   // on the current buffer rather than a render-time closure.
@@ -2584,21 +2620,34 @@ export function App() {
         heldModifier={heldModifier}
         onFileSelect={handleFileSelectWithTabs}
         onOpenFolder={fileState.handleOpenFolder}
-        onToggle={() => setSidebarCollapsed((c) => !c)}
         onRecentFileSelect={handleRecentFileSelect}
         onRecentFileRemove={removeRecentFile}
         canEditTree={!!fileState.dirRoot}
         onFileAction={handleFileAction}
       />
       <div className="markd-editor-area">
-        <TabBar
-          tabs={fileTabs.tabs}
-          activeTabId={fileTabs.activeTabId}
-          onSwitchTab={handleSwitchTab}
-          onCloseTab={handleCloseTab}
-          onNewTab={handleNewTab}
-          onTabAction={handleTabAction}
-        />
+        <div className="markd-tab-strip">
+          <button
+            className="markd-tab-sidebar-toggle"
+            onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
+            title={`${sidebarCollapsed ? "Show" : "Hide"} Sidebar (Ctrl+\\)`}
+            aria-label={`${sidebarCollapsed ? "Show" : "Hide"} Sidebar`}
+            aria-pressed={!sidebarCollapsed}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+              <rect x="1" y="2" width="4" height="12" rx="1" opacity="0.45" />
+              <rect x="6" y="2" width="9" height="12" rx="1" opacity="0.75" />
+            </svg>
+          </button>
+          <TabBar
+            tabs={fileTabs.tabs}
+            activeTabId={fileTabs.activeTabId}
+            onSwitchTab={handleSwitchTab}
+            onCloseTab={handleCloseTab}
+            onNewTab={handleNewTab}
+            onTabAction={handleTabAction}
+          />
+        </div>
         <Menubar
           editor={editor}
           sidebarCollapsed={sidebarCollapsed}
@@ -2634,18 +2683,6 @@ export function App() {
           onPrevTab={() => cycleTab(-1)}
         />
         <div className="markd-topbar">
-          {sidebarCollapsed && (
-            <button
-              className="markd-sidebar-toggle"
-              onClick={() => setSidebarCollapsed(false)}
-              title="Show Sidebar (Ctrl+\)"
-            >
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                <rect x="1" y="2" width="4" height="12" rx="1" opacity="0.3" />
-                <rect x="6" y="2" width="9" height="12" rx="1" opacity="0.6" />
-              </svg>
-            </button>
-          )}
           <Toolbar editor={editor} heldModifier={heldModifier} disabled={sourceMode} />
         </div>
         <div className="markd-editor-content">

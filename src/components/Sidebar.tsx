@@ -22,7 +22,6 @@ interface SidebarProps {
   heldModifier: "ctrl" | "alt" | null;
   onFileSelect: (entry: FileEntry) => void;
   onOpenFolder: () => void;
-  onToggle: () => void;
   onRecentFileSelect: (file: RecentFile) => void;
   /** Remove a single entry from the Recent Files list (× button / auto-prune). */
   onRecentFileRemove: (path: string) => void;
@@ -46,7 +45,6 @@ export function Sidebar({
   heldModifier,
   onFileSelect,
   onOpenFolder,
-  onToggle,
   onRecentFileSelect,
   onRecentFileRemove,
   canEditTree,
@@ -154,11 +152,6 @@ export function Sidebar({
               </svg>
             </button>
           )}
-          <button onClick={onToggle} title="Toggle Sidebar">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M10 3L5 8l5 5V3z" />
-            </svg>
-          </button>
         </div>
       </div>
 

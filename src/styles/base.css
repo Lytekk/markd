@@ -33,18 +33,16 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Day/Night cross-fade. `use-theme` adds `.theme-transition` to <html> ONLY for
-   the duration of a swap, then removes it — so colors fade gently (no eye shock)
-   without the transition ever lagging hovers or other UI afterward. `!important`
-   overrides element-specific `transition` declarations during the swap; scoped
-   to no-preference so reduced-motion users get an instant change. */
+/* Day/Night cross-fade. Modern webviews animate one compositor snapshot of the
+   viewport: a long document therefore costs the same as a short one. Older
+   webviews get a bounded surface/chrome fallback — never a universal descendant
+   selector that creates thousands of animations for a large table. useTheme
+   stages that fallback one frame before applying the next palette. */
 @media (prefers-reduced-motion: no-preference) {
-  html.theme-transition,
-  html.theme-transition *,
-  html.theme-transition *::before,
-  html.theme-transition *::after {
-    transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease,
-      fill 0.3s ease, stroke 0.3s ease !important;
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation-duration: 0.5s;
+    animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
   }
 }
 
@@ -168,6 +166,39 @@ body {
 }
 
 /* Tab bar */
+.markd-tab-strip {
+  display: flex;
+  align-items: stretch;
+  height: 35px;
+  min-width: 0;
+  flex-shrink: 0;
+  background: var(--bg-color);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.markd-tab-sidebar-toggle {
+  flex: 0 0 35px;
+  width: 35px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-right: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--control-text-color);
+  cursor: pointer;
+}
+
+.markd-tab-sidebar-toggle:hover {
+  background: var(--item-hover-bg-color);
+  color: var(--text-color);
+}
+
+.markd-tab-sidebar-toggle[aria-pressed="true"] {
+  color: var(--primary-color);
+}
+
 .markd-tab-bar {
   display: flex;
   align-items: center;
@@ -178,6 +209,13 @@ body {
   padding: 0 4px;
   gap: 2px;
   overflow: hidden;
+}
+
+.markd-tab-strip .markd-tab-bar {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border-bottom: 0;
 }
 
 .markd-tab-list {
@@ -423,22 +461,6 @@ body {
   top: -5px;
   left: 100%;
   min-width: 180px;
-}
-
-.markd-sidebar-toggle {
-  background: none;
-  border: none;
-  border-right: 1px solid var(--border-color);
-  color: var(--control-text-color);
-  cursor: pointer;
-  padding: 8px 10px;
-  display: flex;
-  align-items: center;
-}
-
-.markd-sidebar-toggle:hover {
-  background: var(--item-hover-bg-color);
-  color: var(--text-color);
 }
 
 .markd-toolbar {
@@ -848,7 +870,7 @@ body {
    mounted even when clean/zero so counts cannot move the rest of the footer. */
 .markd-status-stat {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 5ch;
+  grid-template-columns: minmax(0, 1fr) 6ch;
   align-items: baseline;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -861,6 +883,10 @@ body {
 }
 
 .markd-stat-delta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   text-align: right;
   font-weight: 600;
 }
@@ -1949,13 +1975,51 @@ body {
   margin: 4px 0;
 }
 
+/* Bounded fallback for webviews without the View Transitions API. Keep this
+   after the canonical component rules: base.test.ts intentionally resolves a
+   selector's first rule as its layout contract. */
+@media (prefers-reduced-motion: no-preference) {
+  html.theme-transition,
+  html.theme-transition body,
+  html.theme-transition .markd-app,
+  html.theme-transition .markd-sidebar,
+  html.theme-transition .markd-tab-strip,
+  html.theme-transition .markd-tab-bar,
+  html.theme-transition .markd-menubar,
+  html.theme-transition .markd-topbar,
+  html.theme-transition .markd-editor-area,
+  html.theme-transition .markd-editor-content,
+  html.theme-transition .markd-editor-scroll,
+  html.theme-transition #write,
+  html.theme-transition .markd-source-editor,
+  html.theme-transition .markd-status-bar,
+  html.theme-transition .markd-menubar-dropdown,
+  html.theme-transition .markd-context-menu,
+  html.theme-transition .markd-find-replace,
+  html.theme-transition .markd-modal,
+  html.theme-transition .markd-command-palette,
+  html.theme-transition .markd-snippet-manager,
+  html.theme-transition .markd-slash-menu,
+  html.theme-transition .markd-sidebar button,
+  html.theme-transition .markd-tab-sidebar-toggle,
+  html.theme-transition .markd-menubar button,
+  html.theme-transition .markd-toolbar button,
+  html.theme-transition .markd-status-bar button {
+    transition: background-color 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+      color 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+      border-color 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+      fill 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+      stroke 0.5s cubic-bezier(0.22, 1, 0.36, 1) !important;
+  }
+}
+
 /* Print / Export — hide every chrome element, force a clean document view. */
 @media print {
   .markd-sidebar,
+  .markd-tab-strip,
   .markd-menubar,
   .markd-topbar,
   .markd-toolbar,
-  .markd-sidebar-toggle,
   .markd-status-bar,
   .markd-find-replace,
   .markd-context-menu {
