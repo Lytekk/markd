@@ -33,18 +33,16 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Day/Night cross-fade. `use-theme` adds `.theme-transition` to <html> ONLY for
-   the duration of a swap, then removes it — so colors fade gently (no eye shock)
-   without the transition ever lagging hovers or other UI afterward. `!important`
-   overrides element-specific `transition` declarations during the swap; scoped
-   to no-preference so reduced-motion users get an instant change. */
+/* Day/Night cross-fade. Modern webviews animate one compositor snapshot of the
+   viewport: a long document therefore costs the same as a short one. Older
+   webviews get a bounded surface/chrome fallback — never a universal descendant
+   selector that creates thousands of animations for a large table. useTheme
+   stages that fallback one frame before applying the next palette. */
 @media (prefers-reduced-motion: no-preference) {
-  html.theme-transition,
-  html.theme-transition *,
-  html.theme-transition *::before,
-  html.theme-transition *::after {
-    transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease,
-      fill 0.3s ease, stroke 0.3s ease !important;
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation-duration: 0.5s;
+    animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
   }
 }
 
@@ -168,6 +166,39 @@ body {
 }
 
 /* Tab bar */
+.markd-tab-strip {
+  display: flex;
+  align-items: stretch;
+  height: 35px;
+  min-width: 0;
+  flex-shrink: 0;
+  background: var(--bg-color);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.markd-tab-sidebar-toggle {
+  flex: 0 0 35px;
+  width: 35px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-right: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--control-text-color);
+  cursor: pointer;
+}
+
+.markd-tab-sidebar-toggle:hover {
+  background: var(--item-hover-bg-color);
+  color: var(--text-color);
+}
+
+.markd-tab-sidebar-toggle[aria-expanded="true"] {
+  color: var(--primary-color);
+}
+
 .markd-tab-bar {
   display: flex;
   align-items: center;
@@ -178,6 +209,13 @@ body {
   padding: 0 4px;
   gap: 2px;
   overflow: hidden;
+}
+
+.markd-tab-strip .markd-tab-bar {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border-bottom: 0;
 }
 
 .markd-tab-list {
@@ -423,22 +461,6 @@ body {
   top: -5px;
   left: 100%;
   min-width: 180px;
-}
-
-.markd-sidebar-toggle {
-  background: none;
-  border: none;
-  border-right: 1px solid var(--border-color);
-  color: var(--control-text-color);
-  cursor: pointer;
-  padding: 8px 10px;
-  display: flex;
-  align-items: center;
-}
-
-.markd-sidebar-toggle:hover {
-  background: var(--item-hover-bg-color);
-  color: var(--text-color);
 }
 
 .markd-toolbar {
@@ -731,12 +753,9 @@ body {
 
 /* Tables
  *
- * `display: block` + `overflow-x: auto` turns wide tables into a horizontally
- * scrollable block instead of bleeding past the 860px column. Without this,
- * tables whose content exceeds the column (e.g. a Key Findings table with
- * long prose in cells) overflow #write; the scroll container has
- * `overflow-x: hidden`, so the excess gets clipped and becomes unreachable.
- * GitHub's markdown rendering uses the same approach.
+ * Standalone HTML exports contain #write but not the live editor shell. Retain
+ * their prior bounded table-local fallback rather than applying a scroll-owner
+ * contract for an element that does not exist in the exported document.
  */
 #write table {
   display: block;
@@ -745,6 +764,24 @@ body {
   border-collapse: collapse;
   width: max-content;
   margin: 0.8em 0;
+}
+
+/* In the live editor, `.markd-editor-scroll` is the ONE horizontal scroll
+ * owner. A table-local scrollbar measures only TipTap's clamped outer box; on
+ * very wide tables its remaining columns live in a second range whose bar can
+ * sit thousands of vertical pixels below the viewport. Keep both wrapper and
+ * table overflow visible here so the table's full intrinsic width contributes
+ * to the editor's persistent scrollbar and that bar reaches every cell.
+ */
+.markd-editor-scroll #write .tableWrapper {
+  overflow-x: visible;
+}
+
+.markd-editor-scroll #write table {
+  display: table;
+  width: max-content;
+  max-width: none;
+  overflow-x: visible;
 }
 
 #write th, #write td {
@@ -762,7 +799,6 @@ body {
 .markd-status-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   padding: 4px 16px;
   font-size: 12px;
   color: var(--control-text-color);
@@ -770,18 +806,58 @@ body {
   background: var(--bg-color);
   flex-shrink: 0;
   gap: 16px;
+  overflow: hidden;
 }
 
-.markd-status-bar .left,
-.markd-status-bar .right {
-  display: flex;
+.markd-status-left {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 5ch;
+  align-items: center;
   gap: 16px;
+  flex: 1 1 12rem;
+  min-width: 12ch;
+}
+
+/* Every mutable footer value owns a fixed track. State may change paint or
+   text inside a track, but never the coordinates of neighboring controls. */
+.markd-status-right {
+  position: relative;
+  display: grid;
+  grid-template-columns: 15ch 16ch 6ch 7ch 8ch 7ch 1px 10ch 10ch 7ch 5ch 11ch;
+  align-items: center;
+  column-gap: 10px;
+  white-space: nowrap;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: none;
+}
+
+.markd-status-right::-webkit-scrollbar {
+  display: none;
+}
+
+.markd-status-right > * {
+  min-width: 0;
 }
 
 .markd-status-filename {
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.markd-status-filename-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .markd-dirty-bullet {
@@ -790,11 +866,33 @@ body {
   line-height: 1;
 }
 
-/* Word/char deltas vs the saved baseline: visible only while dirty and absent
-   at zero. Colors themeable via day.css / night.css. */
+/* Word/char deltas vs the saved baseline. Value and delta subtracks remain
+   mounted even when clean/zero so counts cannot move the rest of the footer. */
+.markd-status-stat {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 6ch;
+  align-items: baseline;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.markd-status-stat-value {
+  overflow: hidden;
+  text-overflow: clip;
+}
+
 .markd-stat-delta {
-  margin-left: 4px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
   font-weight: 600;
+}
+
+.is-slot-empty {
+  visibility: hidden;
 }
 
 .markd-stat-delta.plus {
@@ -1017,6 +1115,29 @@ body {
 .markd-version {
   opacity: 0.7;
   font-size: 11px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.markd-status-zoom {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.markd-status-toggle {
+  width: 100%;
+  padding: 2px 6px;
+  font-size: inherit;
+  color: inherit;
+  cursor: pointer;
+  background: none;
+  border: none;
+  border-radius: 3px;
+}
+
+.markd-status-toggle:disabled {
+  cursor: default;
+  opacity: 0.4;
 }
 
 /* Status bar active button */
@@ -1041,6 +1162,8 @@ body {
   border: 1px solid var(--border-color);
   border-radius: 4px;
   opacity: 0.85;
+  width: 100%;
+  justify-content: center;
 }
 
 .markd-status-bar .markd-status-action:hover {
@@ -1084,6 +1207,12 @@ body {
   z-index: 1000;
 }
 
+/* Confirmations/notices can be opened from another in-app overlay (for
+   example, deleting a snippet). They must remain the pointer/focus owner. */
+.markd-modal-host-backdrop {
+  z-index: 1100;
+}
+
 .markd-modal {
   background: var(--bg-color, #fff);
   color: var(--text-color);
@@ -1095,6 +1224,18 @@ body {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.markd-modal.tone-info {
+  border-color: var(--primary-color, #4a90d9);
+}
+
+.markd-modal.tone-warning {
+  border-color: var(--warning-color, #b7791f);
+}
+
+.markd-modal.tone-error {
+  border-color: var(--danger-color, #d9534f);
 }
 
 .markd-modal-title {
@@ -1778,6 +1919,10 @@ body {
   color: var(--primary-color, #4a9);
   font-size: 11px;
   font-weight: 600;
+  text-align: left;
+}
+
+.markd-saved-indicator.is-visible {
   animation: markd-saved-fade 2s ease-out forwards;
 }
 
@@ -1830,13 +1975,51 @@ body {
   margin: 4px 0;
 }
 
+/* Bounded fallback for webviews without the View Transitions API. Keep this
+   after the canonical component rules: base.test.ts intentionally resolves a
+   selector's first rule as its layout contract. */
+@media (prefers-reduced-motion: no-preference) {
+  html.theme-transition,
+  html.theme-transition body,
+  html.theme-transition .markd-app,
+  html.theme-transition .markd-sidebar,
+  html.theme-transition .markd-tab-strip,
+  html.theme-transition .markd-tab-bar,
+  html.theme-transition .markd-menubar,
+  html.theme-transition .markd-topbar,
+  html.theme-transition .markd-editor-area,
+  html.theme-transition .markd-editor-content,
+  html.theme-transition .markd-editor-scroll,
+  html.theme-transition #write,
+  html.theme-transition .markd-source-editor,
+  html.theme-transition .markd-status-bar,
+  html.theme-transition .markd-menubar-dropdown,
+  html.theme-transition .markd-context-menu,
+  html.theme-transition .markd-find-replace,
+  html.theme-transition .markd-modal,
+  html.theme-transition .markd-command-palette,
+  html.theme-transition .markd-snippet-manager,
+  html.theme-transition .markd-slash-menu,
+  html.theme-transition .markd-sidebar button,
+  html.theme-transition .markd-tab-sidebar-toggle,
+  html.theme-transition .markd-menubar button,
+  html.theme-transition .markd-toolbar button,
+  html.theme-transition .markd-status-bar button {
+    transition: background-color 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+      color 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+      border-color 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+      fill 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+      stroke 0.5s cubic-bezier(0.22, 1, 0.36, 1) !important;
+  }
+}
+
 /* Print / Export — hide every chrome element, force a clean document view. */
 @media print {
   .markd-sidebar,
+  .markd-tab-strip,
   .markd-menubar,
   .markd-topbar,
   .markd-toolbar,
-  .markd-sidebar-toggle,
   .markd-status-bar,
   .markd-find-replace,
   .markd-context-menu {
@@ -1889,6 +2072,15 @@ body {
     margin: 0 !important;
     font-size: 11pt;
     line-height: 1.5;
+  }
+
+  /* Printed pages have no live editor scroll owner. Restore the prior bounded
+     fallback rather than carrying the interactive intrinsic-width rule into
+     paged media. */
+  .markd-editor-scroll #write table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
   }
 
   /* Avoid splitting these across pages where possible */

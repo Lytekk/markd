@@ -10,9 +10,9 @@ export type ThemeId = (typeof THEMES)[number]["id"];
 const STORAGE_KEY = "markd-theme";
 
 // Window during which a global color transition is active on a day/night swap.
-// Kept just above the CSS transition (0.3s) so the fade isn't cut off, then the
+// Kept just above the CSS transition (0.5s) so the fade isn't cut off, then the
 // class is removed so the transition never lags ordinary hovers/UI afterward.
-const THEME_TRANSITION_MS = 350;
+const THEME_TRANSITION_MS = 600;
 
 function getInitialTheme(): ThemeId {
   const stored = localStorage.getItem(STORAGE_KEY);
@@ -26,9 +26,10 @@ export function useTheme() {
   const [activeTheme, setActiveTheme] = useState<ThemeId>(getInitialTheme);
   const firstRun = useRef(true);
 
-  // Apply data-theme on mount and on change. Subsequent swaps add a transient
-  // `.theme-transition` class so colors cross-fade instead of snapping (jarring
-  // to the eyes), then drop it so it can't lag later UI.
+  // Apply data-theme on mount and on change. Subsequent swaps use one native
+  // root snapshot where available, or a transient bounded fallback class, so
+  // colors cross-fade without turning a large document into thousands of
+  // independent animations.
   //
   // The very first application is instant ONLY when the document already boots
   // on the right theme. index.html deliberately boots dark to keep startup from
@@ -41,12 +42,36 @@ export function useTheme() {
     let timer = 0;
 
     const applyWithCrossFade = () => {
+      if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+        html.dataset.theme = activeTheme;
+        return;
+      }
+
+      // WebView2 and current WebKit can cross-fade one compositor snapshot of
+      // the app. This stays smooth even for documents with thousands of table
+      // cells, where assigning a CSS transition to every descendant stalls the
+      // main thread instead of animating it.
+      if (typeof document.startViewTransition === "function") {
+        document.startViewTransition(() => {
+          html.dataset.theme = activeTheme;
+        });
+        return;
+      }
+
+      // Older webviews use the bounded CSS fallback in base.css.
       html.classList.add("theme-transition");
-      html.dataset.theme = activeTheme;
-      timer = window.setTimeout(
-        () => html.classList.remove("theme-transition"),
-        THEME_TRANSITION_MS,
-      );
+      // Install and resolve the transition rules while the old palette is
+      // still active. Changing data-theme in this same rendering step lets the
+      // browser coalesce both style changes, which turns the intended fade into
+      // a snap. The next frame is the ownership boundary between old and new.
+      frame = requestAnimationFrame(() => {
+        void html.offsetWidth;
+        html.dataset.theme = activeTheme;
+        timer = window.setTimeout(
+          () => html.classList.remove("theme-transition"),
+          THEME_TRANSITION_MS,
+        );
+      });
     };
 
     if (firstRun.current) {
@@ -63,11 +88,9 @@ export function useTheme() {
         html.dataset.theme = activeTheme;
         return;
       }
-      // Boot theme is not the user's, so this IS a transition. Wait one frame
-      // first: a cross-fade needs its "from" state to have been painted, and
-      // mount effects run before the browser has committed a paint of anything
-      // React just rendered. Without this it would snap.
-      frame = requestAnimationFrame(applyWithCrossFade);
+      // Boot theme is not the user's, so this IS a transition. The shared path
+      // retains the dark frame until the transition is installed and painted.
+      applyWithCrossFade();
     } else {
       applyWithCrossFade();
     }
@@ -75,6 +98,7 @@ export function useTheme() {
     return () => {
       if (frame) cancelAnimationFrame(frame);
       if (timer) window.clearTimeout(timer);
+      html.classList.remove("theme-transition");
     };
   }, [activeTheme]);
 

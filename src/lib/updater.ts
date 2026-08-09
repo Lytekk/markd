@@ -6,6 +6,46 @@
 
 export const ONE_HOUR_MS = 3_600_000;
 
+export interface UpdateCheckCoordinator {
+  run: (
+    manual: boolean,
+    operation: (isManualRequested: () => boolean) => Promise<void>,
+  ) => Promise<void>;
+}
+
+/**
+ * One updater operation may own check, offer, download, and install at a time.
+ * A manual caller joins an automatic flight and upgrades any not-yet-rendered
+ * messaging to manual semantics instead of starting a second install.
+ */
+export function createUpdateCheckCoordinator(): UpdateCheckCoordinator {
+  let current: {
+    manualRequested: boolean;
+    promise: Promise<void>;
+  } | null = null;
+
+  return {
+    run(manual, operation) {
+      if (current) {
+        if (manual) current.manualRequested = true;
+        return current.promise;
+      }
+
+      const flight = {
+        manualRequested: manual,
+        promise: Promise.resolve(),
+      };
+      current = flight;
+      flight.promise = Promise.resolve()
+        .then(() => operation(() => flight.manualRequested))
+        .finally(() => {
+          if (current === flight) current = null;
+        });
+      return flight.promise;
+    },
+  };
+}
+
 export interface UpdateCheckRecord {
   /** Epoch ms of the last successful check. */
   t: number;
@@ -71,4 +111,16 @@ export function shouldOfferUpdate(
 ): boolean {
   if (manual) return true;
   return skippedVersion !== offeredVersion;
+}
+
+/**
+ * Automatic network checks stay quiet, but once a user explicitly chooses
+ * Install Now the operation is interactive and any install failure must be
+ * surfaced through Markd's in-app notice.
+ */
+export function shouldShowUpdateError(
+  manualCheck: boolean,
+  installWasChosen: boolean,
+): boolean {
+  return manualCheck || installWasChosen;
 }

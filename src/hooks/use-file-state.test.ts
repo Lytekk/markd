@@ -40,6 +40,15 @@ describe("useFileState dirty lifecycle", () => {
     act(() => result.current.markClean());
     expect(result.current.isDirty).toBe(false);
   });
+
+  it("advances the content ownership token on every edit, including while already dirty", () => {
+    const { result } = renderHook(() => useFileState());
+    const initial = result.current.getContentRevision();
+    act(() => result.current.markDirty());
+    expect(result.current.getContentRevision()).toBe(initial + 1);
+    act(() => result.current.markDirty());
+    expect(result.current.getContentRevision()).toBe(initial + 2);
+  });
 });
 
 describe("useFileState openCount (open-class load signal)", () => {
@@ -258,6 +267,97 @@ describe("useFileState save ownership", () => {
       await vi.advanceTimersByTimeAsync(30_000);
     });
     expect(saveToFileMock).toHaveBeenCalledWith("/tmp/a.md", "edited");
+  });
+
+  it("pauses autosave across a modal and resumes with a fresh full debounce", async () => {
+    vi.useFakeTimers();
+    saveToFileMock.mockResolvedValue(true);
+    const { result } = renderHook(() => useFileState());
+    act(() => result.current.registerGetMarkdown(() => "edited"));
+    await act(async () => {
+      await result.current.handleOpenByPath("/tmp/a.md", "saved");
+    });
+    act(() => result.current.markDirty());
+    let pause!: ReturnType<typeof result.current.pauseAutoSave>;
+    act(() => {
+      pause = result.current.pauseAutoSave();
+      result.current.markDirty();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(saveToFileMock).not.toHaveBeenCalled();
+
+    act(() => result.current.resumeAutoSave(pause));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(29_999);
+    });
+    expect(saveToFileMock).not.toHaveBeenCalled();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(saveToFileMock).toHaveBeenCalledWith("/tmp/a.md", "edited");
+  });
+
+  it("does not let a queued autosave start after its path is paused", async () => {
+    vi.useFakeTimers();
+    let finishFirst: ((ok: boolean) => void) | undefined;
+    saveToFileMock
+      .mockImplementationOnce(
+        () => new Promise<boolean>((resolve) => {
+          finishFirst = resolve;
+        }),
+      )
+      .mockResolvedValue(true);
+    const { result } = renderHook(() => useFileState());
+    let markdown = "first edit";
+    act(() => result.current.registerGetMarkdown(() => markdown));
+    await act(async () => {
+      await result.current.handleOpenByPath("/tmp/a.md", "saved");
+    });
+
+    act(() => result.current.markDirty());
+    const precedingSave = result.current.handleSave();
+    expect(saveToFileMock).toHaveBeenCalledTimes(1);
+
+    markdown = "queued autosave";
+    act(() => result.current.markDirty());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(saveToFileMock).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      result.current.pauseAutoSave();
+    });
+    finishFirst?.(true);
+    await act(async () => {
+      await expect(precedingSave).resolves.toBe("superseded");
+      await Promise.resolve();
+    });
+
+    expect(saveToFileMock).toHaveBeenCalledTimes(1);
+    expect(result.current.isDirty).toBe(true);
+  });
+
+  it("can release a modal autosave pause without scheduling a write", async () => {
+    vi.useFakeTimers();
+    saveToFileMock.mockResolvedValue(true);
+    const { result } = renderHook(() => useFileState());
+    act(() => result.current.registerGetMarkdown(() => "edited"));
+    await act(async () => {
+      await result.current.handleOpenByPath("/tmp/a.md", "saved");
+    });
+    act(() => result.current.markDirty());
+    let pause!: ReturnType<typeof result.current.pauseAutoSave>;
+    act(() => {
+      pause = result.current.pauseAutoSave();
+      result.current.cancelAutoSavePause(pause);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(saveToFileMock).not.toHaveBeenCalled();
   });
 
   it("keeps an autosave retry armed when a manual save fails", async () => {

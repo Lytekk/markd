@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { isSaveFailure, saveOutcomeMessage, type SaveOutcome } from "./save-outcome";
+import {
+  isSaveFailure,
+  saveOutcomeMessage,
+  shouldRetrySupersededActiveSave,
+  type SaveOutcome,
+} from "./save-outcome";
 
 describe("isSaveFailure", () => {
   it("treats only a real write failure as a failure", () => {
@@ -39,5 +44,23 @@ describe("saveOutcomeMessage", () => {
     // Previously the error dialog was gated on the document already having a
     // path, so a failed Save As of an untitled buffer was completely silent.
     expect(saveOutcomeMessage("failed", "Untitled")).toContain("Untitled");
+  });
+});
+
+describe("shouldRetrySupersededActiveSave", () => {
+  it("retries a superseded write only while its originating tab remains active", () => {
+    expect(shouldRetrySupersededActiveSave("superseded", false, "tab-a", "tab-a", true)).toBe(true);
+    // A Ctrl+S begun in A must never retry against B after a tab switch.
+    expect(shouldRetrySupersededActiveSave("superseded", false, "tab-b", "tab-a", true)).toBe(false);
+  });
+
+  it("does not retry after the original named path was detached or moved", () => {
+    expect(shouldRetrySupersededActiveSave("superseded", false, "tab-a", "tab-a", false)).toBe(false);
+  });
+
+  it("never re-opens a Save As dialog or retries a completed/failed save", () => {
+    expect(shouldRetrySupersededActiveSave("superseded", true, "tab-a", "tab-a", true)).toBe(false);
+    expect(shouldRetrySupersededActiveSave("written", false, "tab-a", "tab-a", true)).toBe(false);
+    expect(shouldRetrySupersededActiveSave("failed", false, "tab-a", "tab-a", true)).toBe(false);
   });
 });

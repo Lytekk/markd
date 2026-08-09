@@ -28,6 +28,27 @@ export function isSaveFailure(outcome: SaveOutcome): boolean {
 }
 
 /**
+ * A manual save may retry once after its own buffer changed during a slow
+ * write. It must never retry after the user switched to another tab or after
+ * the tab was detached/renamed: the shared active-buffer state no longer owns
+ * the original named file.
+ */
+export function shouldRetrySupersededActiveSave(
+  outcome: SaveOutcome,
+  isSaveAs: boolean,
+  activeTabId: string,
+  ownerTabId: string,
+  hasOriginalNamedPath: boolean,
+): boolean {
+  return (
+    outcome === "superseded" &&
+    !isSaveAs &&
+    activeTabId === ownerTabId &&
+    hasOriginalNamedPath
+  );
+}
+
+/**
  * The message to show for a save outcome, or null when the user should not be
  * interrupted. Untitled documents get the same treatment as named ones.
  */

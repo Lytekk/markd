@@ -4,7 +4,7 @@ import { useEditor } from "@tiptap/react";
 import type { JSONContent } from "@tiptap/core";
 import { Markdown } from "tiptap-markdown";
 import { getExtensions } from "@/lib/editor-extensions";
-import { useFileState } from "@/hooks/use-file-state";
+import { useFileState, type AutoSavePause } from "@/hooks/use-file-state";
 import { useTheme } from "@/hooks/use-theme";
 import { Editor } from "@/components/Editor";
 import { Toolbar } from "@/components/Toolbar";
@@ -30,19 +30,35 @@ import { copyToClipboard } from "@/lib/code-block-enhance";
 import { revealInFileManager } from "@/lib/reveal";
 import { useZoom } from "@/hooks/use-zoom";
 import { TabBar, type TabAction } from "@/components/TabBar";
+import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { createFile, createFolder, exportAsHtml, exportAsPdf, isPathAuthorizationError, isPathUnavailableError, openFile, pathExists, readFileByPath, renamePath, saveFileAs, saveToFile, trashPath } from "@/lib/file-system";
 import { ensureMdExtension, joinPath, parentPath, targetDirForEntry, validateName } from "@/lib/file-tree-ops";
 import {
+  createUpdateCheckCoordinator,
   shouldCheckForUpdate,
   makeUpdateCheckRecord,
   shouldOfferUpdate,
+  shouldShowUpdateError,
   UPDATE_SKIP_KEY,
 } from "@/lib/updater";
-import { shouldPromptForExternalChange, shouldPromptForDeletion } from "@/lib/file-change";
-import { askDialog, messageDialog } from "@/lib/dialogs";
+import {
+  createFileChangePromptCoordinator,
+  fileChangeReadRetryDelay,
+  fileChangeTargetOwnsActivePath,
+  fileChangeTargetIsCurrent,
+  type FileChangeTarget,
+  resolveExternalChangeChoice,
+  shouldKeepDeletedFileOpen,
+  shouldPromptForExternalChange,
+  shouldPromptForDeletion,
+} from "@/lib/file-change";
 import { samePath } from "@/lib/path-identity";
 import { isPathInside } from "@/lib/path-scope";
-import { saveOutcomeMessage, type SaveOutcome } from "@/lib/save-outcome";
+import {
+  saveOutcomeMessage,
+  shouldRetrySupersededActiveSave,
+  type SaveOutcome,
+} from "@/lib/save-outcome";
 import { reloadDiscardPrompt } from "@/lib/reload-guard";
 import {
   classifyRestoreFailure,
@@ -50,7 +66,7 @@ import {
   type RestoreFailureCounts,
   type RestoreFailureKind,
 } from "@/lib/restore-failure";
-import { confirmModal, promptModal } from "@/lib/modal";
+import { confirmModal, isModalOpen, messageModal, promptModal } from "@/lib/modal";
 import { normalizeUrl, wordRangeAt } from "@/lib/links";
 import { splitFrontmatter, joinFrontmatter } from "@/lib/frontmatter";
 import {
@@ -68,6 +84,7 @@ import { extractSourceHeadings } from "@/lib/source-outline";
 import { revealRange } from "@/lib/textarea-metrics";
 import { loadEditorContent } from "@/lib/editor-load";
 import { tabDisplayInfo } from "@/lib/tab-display";
+import { liveDirtyTabs, tabIsLiveDirty } from "@/lib/tab-dirty-state";
 import { saveBackgroundTab } from "@/lib/background-tab-save";
 import { createLatestRequestGuard } from "@/lib/latest-request";
 
@@ -83,6 +100,16 @@ const REVERT_CHECK_MS = 250;
 // Word/char counting is O(document); this coalesces it to the end of a typing
 // burst so the status bar still feels live without paying per keystroke.
 const STATS_COALESCE_MS = 150;
+// The footer needs 640 logical px when the content rail owns the whole window.
+// Opening the fixed 260px sidebar adds that rail to the same usable floor.
+const COLLAPSED_WINDOW_MIN_WIDTH = 640;
+const EXPANDED_WINDOW_MIN_WIDTH = 900;
+const WINDOW_MIN_HEIGHT = 400;
+
+interface CloseTabOptions {
+  /** The caller already proved this exact buffer clean before detaching it. */
+  skipDirtyPrompt?: boolean;
+}
 
 export function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -111,6 +138,36 @@ export function App() {
   const fileState = useFileState();
   const { recentFiles, addRecentFile, removeRecentFile } = useRecentFiles();
   const fileTabs = useFileTabs();
+
+  // Keep native resizing aligned with the collapsible layout. A static 900px
+  // minimum wastes space while the sidebar is closed; a static 640px minimum
+  // lets the open sidebar consume the footer's usable width.
+  useEffect(() => {
+    if (!isTauri()) return;
+    let cancelled = false;
+    const minWidth = sidebarCollapsed
+      ? COLLAPSED_WINDOW_MIN_WIDTH
+      : EXPANDED_WINDOW_MIN_WIDTH;
+    const appWindow = getCurrentWindow();
+    void (async () => {
+      await appWindow.setMinSize(new LogicalSize(minWidth, WINDOW_MIN_HEIGHT));
+      const [physicalSize, scaleFactor] = await Promise.all([
+        appWindow.innerSize(),
+        appWindow.scaleFactor(),
+      ]);
+      if (cancelled) return;
+      const logicalSize = physicalSize.toLogical(scaleFactor);
+      // Raising a Windows minimum does not resize a window that is already
+      // below it (for example after restoring a compact collapsed-sidebar
+      // session). Grow only in that case; lowering the floor never shrinks.
+      if (logicalSize.width < minWidth) {
+        await appWindow.setSize(new LogicalSize(minWidth, logicalSize.height));
+      }
+    })().catch((error: unknown) => console.error("Failed to update window minimum size", error));
+    return () => {
+      cancelled = true;
+    };
+  }, [sidebarCollapsed]);
   const bufferLoadGuardRef = useRef(createLatestRequestGuard());
   // Stable mirrors let asynchronous callbacks and TipTap transactions operate
   // on the current buffer rather than a render-time closure.
@@ -386,10 +443,16 @@ export function App() {
   // stale closures and dependency-driven re-registration loops.
   // Latest handleCloseTab, callable from the [filePath]-keyed watcher effect
   // (which must not list it as a dep). Assigned just after its definition below.
-  const handleCloseTabRef = useRef<(tabId: string) => Promise<void> | void>(() => {});
+  const handleCloseTabRef = useRef<(
+    tabId: string,
+    options?: CloseTabOptions,
+  ) => Promise<void> | void>(() => {});
   // Set once the user has answered the quit prompt, so a re-entrant close
   // request does not ask again.
   const quitConfirmedRef = useRef(false);
+  const quitFlowInFlightRef = useRef(false);
+  const updateCheckCoordinatorRef = useRef(createUpdateCheckCoordinator());
+  const fileChangePromptCoordinatorRef = useRef(createFileChangePromptCoordinator());
 
   /**
    * Put a tab in the editor, reading it from disk first when its bytes have
@@ -575,13 +638,13 @@ export function App() {
 
       const notice = restoreFailureNotice(failures);
       if (notice && isCurrent()) {
-        await messageDialog(notice.message, { title: notice.title, kind: "warning" });
+        await messageModal(notice.message, { title: notice.title, kind: "warning" });
       }
 
       // Reported last: a modal in front of the editor is the one thing that
       // would undo the point of opening the document first.
       if (openFailure !== null && isCurrent()) {
-        await messageDialog(
+        await messageModal(
           isPathAuthorizationError(openFailure)
             ? "Markd could not open that file. Try File > Open — if that is refused too, the path goes through a symbolic link or junction, which Markd does not currently open."
             : "Markd could not open that file. Its contents are unchanged.",
@@ -855,13 +918,22 @@ export function App() {
     document.title = `${fileState.fileName}${fileState.isDirty ? " \u2022" : ""} \u2014 Markd`;
   }, [fileState.fileName, fileState.isDirty]);
 
-  // Browser beforeunload — covers the dev server. Tauri windows ignore it, so
-  // the desktop app needs the onCloseRequested guard below.
+  // Browser beforeunload — covers only the dev/preview server, where browsers
+  // do not permit custom async UI during unload. The desktop app never
+  // registers this native fallback; it uses the in-app onCloseRequested guard.
   useEffect(() => {
+    if (isTauri()) return;
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       // Any tab's unsaved edits count — a background tab's dirty buffer is as
       // lost on unload as the active one's (tabs read via ref at event time).
-      if (fileState.isDirty || fileTabsRef.current.tabs.some((t) => t.isDirty)) {
+      const ft = fileTabsRef.current;
+      if (
+        liveDirtyTabs(
+          ft.getTabsSnapshot(),
+          ft.getActiveTabId(),
+          fileStateRef.current.getCurrentState().isDirty,
+        ).length > 0
+      ) {
         e.preventDefault();
       }
     };
@@ -887,7 +959,7 @@ export function App() {
     try {
       await exportAsHtml(html, fileState.fileName);
     } catch {
-      await messageDialog("The HTML export could not be saved.", {
+      await messageModal("The HTML export could not be saved.", {
         title: "Export Failed",
         kind: "error",
       });
@@ -991,7 +1063,7 @@ export function App() {
           };
         } catch {
           if (bufferLoadGuardRef.current.isCurrent(request)) {
-            await messageDialog(`"${target.fileName}" could not be opened.`, {
+            await messageModal(`"${target.fileName}" could not be opened.`, {
               title: "File Open Failed",
               kind: "error",
             });
@@ -1038,6 +1110,7 @@ export function App() {
     activeSaveOwnerRef.current = owner;
     try {
       let outcome: SaveOutcome = "failed";
+      let savedRevision = revision;
       try {
         outcome = await (saveAs ? fs.handleSaveAs() : fs.handleSave());
         // A keystroke landing during the write supersedes it: the bytes reached
@@ -1047,12 +1120,27 @@ export function App() {
         // newer bytes too. Once only: someone who keeps typing would loop
         // forever, and the second outcome is reported honestly either way.
         // Never retry a Save As; that would re-open the file chooser.
-        if (outcome === "superseded" && !saveAs) {
+        if (
+          shouldRetrySupersededActiveSave(
+            outcome,
+            saveAs,
+            ft.getActiveTabId(),
+            tabId,
+            samePath(beforeSave.filePath, fs.getCurrentState().filePath),
+          )
+        ) {
+          // The retry owns the newer active-A revision, not the revision that
+          // started the first write. markTabSaved must settle that exact state.
+          savedRevision = ft.getTabRevision(tabId);
           outcome = await fs.handleSave();
         }
       } catch {
         outcome = "failed";
       }
+      // Switching tabs while the write was pending makes the active hook state
+      // belong to a different document. It is neither a failure nor an excuse
+      // to save/announce against that later tab.
+      if (outcome === "superseded" && ft.getActiveTabId() !== tabId) return false;
       if (outcome !== "written") {
         // A real write failure is worth interrupting for — including when the
         // document had no path yet, which the old has-a-path gate silently
@@ -1061,21 +1149,22 @@ export function App() {
         // buffer moved on again, so say so rather than aborting in silence.
         const failure = saveOutcomeMessage(outcome, beforeSave.fileName);
         if (failure) {
-          await messageDialog(failure, { title: "Save Failed", kind: "error" });
+          await messageModal(failure, { title: "Save Failed", kind: "error" });
         } else if (outcome === "superseded") {
-          await messageDialog(
+          await messageModal(
             `"${beforeSave.fileName}" was saved, but you have edited it again since. Save once more to store those changes.`,
             { title: "Saved — Newer Changes Pending", kind: "info" },
           );
         }
         return false;
       }
+      if (ft.getActiveTabId() !== tabId) return false;
       const current = fs.getCurrentState();
       return ft.markTabSaved(tabId, {
         filePath: current.filePath,
         fileName: current.fileName,
         savedContent: current.savedContent,
-        expectedRevision: revision,
+        expectedRevision: savedRevision,
       });
     } finally {
       if (activeSaveOwnerRef.current === owner) activeSaveOwnerRef.current = null;
@@ -1085,8 +1174,13 @@ export function App() {
 
   /** Ask before a reload throws away unsaved edits. True means go ahead. */
   const confirmDiscardForReload = useCallback(async (candidates: FileTab[]): Promise<boolean> => {
+    const ft = fileTabsRef.current;
     const prompt = reloadDiscardPrompt(
-      candidates.filter((tab) => tab.isDirty).map((tab) => tab.fileName),
+      liveDirtyTabs(
+        candidates,
+        ft.getActiveTabId(),
+        fileStateRef.current.getCurrentState().isDirty,
+      ).map((tab) => tab.fileName),
     );
     if (!prompt) return true;
     const choice = await confirmModal({
@@ -1102,10 +1196,21 @@ export function App() {
   }, []);
 
   const handleCloseTab = useCallback(
-    async (tabId: string) => {
+    async (tabId: string, options: CloseTabOptions = {}) => {
       const request = bufferLoadGuardRef.current.begin();
-      const tab = fileTabsRef.current.tabs.find((t) => t.id === tabId);
-      if (tab && tab.isDirty) {
+      const ft = fileTabsRef.current;
+      const activeTabId = ft.getActiveTabId();
+      const fs = fileStateRef.current;
+      const activeBufferDirty = fs.getCurrentState().isDirty;
+      let closingContentRevision = tabId === activeTabId
+        ? fs.getContentRevision()
+        : null;
+      const tab = ft.getTabsSnapshot().find((candidate) => candidate.id === tabId);
+      if (
+        tab &&
+        !options.skipDirtyPrompt &&
+        tabIsLiveDirty(tab, activeTabId, activeBufferDirty)
+      ) {
         const choice = await confirmModal({
           title: "Unsaved Changes",
           message: `"${tab.fileName}" has unsaved changes.`,
@@ -1116,10 +1221,23 @@ export function App() {
             { label: "Cancel", value: "cancel" },
           ],
         });
+        if (
+          !bufferLoadGuardRef.current.isCurrent(request) ||
+          !fileTabsRef.current.getTabsSnapshot().some((candidate) => candidate.id === tabId) ||
+          (closingContentRevision !== null &&
+            (fileTabsRef.current.getActiveTabId() !== tabId ||
+              fileStateRef.current.getContentRevision() !== closingContentRevision))
+        ) {
+          return;
+        }
         if (choice === "save") {
-          if (tabId === fileTabsRef.current.activeTabId) {
+          if (tabId === fileTabsRef.current.getActiveTabId()) {
             const saved = await saveActiveTab();
             if (!saved) return;
+            // A successful save advances the hook's ownership token itself.
+            // It proved no edit raced the write, so that new token is still
+            // owned by this close continuation.
+            closingContentRevision = fileStateRef.current.getContentRevision();
           } else {
             const revision = fileTabsRef.current.getTabRevision(tab.id);
             const result = await saveBackgroundTab(tab, { saveToFile, saveFileAs }, () => (
@@ -1129,7 +1247,7 @@ export function App() {
             if (!result.saved) {
               // A real write failure here used to abort the close in silence.
               const failure = saveOutcomeMessage(result.outcome, tab.fileName);
-              if (failure) await messageDialog(failure, { title: "Save Failed", kind: "error" });
+              if (failure) await messageModal(failure, { title: "Save Failed", kind: "error" });
               return;
             }
             if (!fileTabsRef.current.markTabSaved(tab.id, { ...result.saved, expectedRevision: revision })) {
@@ -1142,7 +1260,10 @@ export function App() {
       }
       if (
         !bufferLoadGuardRef.current.isCurrent(request) ||
-        !fileTabsRef.current.tabs.some((candidate) => candidate.id === tabId)
+        !fileTabsRef.current.tabs.some((candidate) => candidate.id === tabId) ||
+        (closingContentRevision !== null &&
+          (fileTabsRef.current.getActiveTabId() !== tabId ||
+            fileStateRef.current.getContentRevision() !== closingContentRevision))
       ) {
         return;
       }
@@ -1169,7 +1290,7 @@ export function App() {
           };
         } catch {
           if (bufferLoadGuardRef.current.isCurrent(request)) {
-            await messageDialog(`"${planned.fileName}" could not be opened.`, {
+            await messageModal(`"${planned.fileName}" could not be opened.`, {
               title: "File Open Failed",
               kind: "error",
             });
@@ -1177,7 +1298,14 @@ export function App() {
           return;
         }
       }
-      if (!bufferLoadGuardRef.current.isCurrent(request)) return;
+      if (
+        !bufferLoadGuardRef.current.isCurrent(request) ||
+        (closingContentRevision !== null &&
+          (fileTabsRef.current.getActiveTabId() !== tabId ||
+            fileStateRef.current.getContentRevision() !== closingContentRevision))
+      ) {
+        return;
+      }
 
       const { switchTo } = fileTabsRef.current.closeTab(tabId);
       if (switchTo) {
@@ -1215,10 +1343,11 @@ export function App() {
     const ft = fileTabsRef.current;
     const activeTabId = ft.getActiveTabId();
     const activeTab = ft.getTabsSnapshot().find((tab) => tab.id === activeTabId);
+    const activeBufferDirty = fileStateRef.current.getCurrentState().isDirty;
     // Save the active buffer before any awaited background write. handleSave is
     // revision-bound inside useFileState; a tab switch or edit during the write
     // returns false rather than accidentally saving whichever tab is current.
-    if (activeTab?.isDirty) {
+    if (activeTab && tabIsLiveDirty(activeTab, activeTabId, activeBufferDirty)) {
       if (!await saveActiveTab()) return false;
     }
 
@@ -1241,7 +1370,7 @@ export function App() {
       if (!result.saved) {
         // Save All stopping dead with no explanation is why this outcome exists.
         const failure = saveOutcomeMessage(result.outcome, tab.fileName);
-        if (failure) await messageDialog(failure, { title: "Save Failed", kind: "error" });
+        if (failure) await messageModal(failure, { title: "Save Failed", kind: "error" });
         return false;
       }
       if (!ft.markTabSaved(tab.id, { ...result.saved, expectedRevision: revision })) return false;
@@ -1253,7 +1382,14 @@ export function App() {
   }, [saveActiveTab]);
 
   const handleCloseAllTabs = useCallback(async () => {
-    const dirtyTabs = fileTabsRef.current.tabs.filter((t) => t.isDirty);
+    const request = bufferLoadGuardRef.current.begin();
+    const ft = fileTabsRef.current;
+    let closingContentRevision = fileStateRef.current.getContentRevision();
+    const dirtyTabs = liveDirtyTabs(
+      ft.getTabsSnapshot(),
+      ft.getActiveTabId(),
+      fileStateRef.current.getCurrentState().isDirty,
+    );
     if (dirtyTabs.length > 0) {
       const choice = await confirmModal({
         title: "Unsaved Changes",
@@ -1265,11 +1401,28 @@ export function App() {
           { label: "Cancel", value: "cancel" },
         ],
       });
+      if (
+        !bufferLoadGuardRef.current.isCurrent(request) ||
+        fileStateRef.current.getContentRevision() !== closingContentRevision
+      ) {
+        return;
+      }
       if (choice === "save") {
         if (!await saveAllDirtyTabs()) return;
+        if (!bufferLoadGuardRef.current.isCurrent(request)) return;
+        // The active save advances the content token itself. saveAllDirtyTabs
+        // only succeeds when no newer edit remains, so this post-save token is
+        // still owned by this close continuation.
+        closingContentRevision = fileStateRef.current.getContentRevision();
       } else if (choice !== "discard") {
         return; // Cancel or dismissed — abort the close.
       }
+    }
+    if (
+      !bufferLoadGuardRef.current.isCurrent(request) ||
+      fileStateRef.current.getContentRevision() !== closingContentRevision
+    ) {
+      return;
     }
     bufferLoadGuardRef.current.invalidate();
     const { switchTo } = fileTabsRef.current.closeAllTabs();
@@ -1297,39 +1450,72 @@ export function App() {
       unlisten = await appWindow.onCloseRequested(async (event) => {
         // Second pass after the user confirmed: let it through.
         if (quitConfirmedRef.current) return;
-        const dirty = fileTabsRef.current.tabs.filter((t) => t.isDirty);
+        // A second OS close event can arrive while the first prompt/save is
+        // pending. It belongs to the same quit attempt: keep the window held
+        // and never enqueue another destructive choice behind the first.
+        if (quitFlowInFlightRef.current) {
+          event.preventDefault();
+          return;
+        }
+        const ft = fileTabsRef.current;
+        const dirty = liveDirtyTabs(
+          ft.getTabsSnapshot(),
+          ft.getActiveTabId(),
+          fileStateRef.current.getCurrentState().isDirty,
+        );
         if (dirty.length === 0) return;
         // Hold the window open while we ask; destroy() below bypasses this
         // handler so the second pass cannot re-prompt.
         event.preventDefault();
-        const choice = await confirmModal({
-          title: "Unsaved Changes",
-          message:
-            dirty.length === 1
-              ? `"${dirty[0]!.fileName}" has unsaved changes.`
-              : `${dirty.length} files have unsaved changes.`,
-          defaultValue: "cancel",
-          buttons: [
-            { label: "Save All", value: "save", variant: "primary" },
-            { label: "Don't Save", value: "discard", variant: "danger" },
-            { label: "Cancel", value: "cancel" },
-          ],
-        });
-        if (choice === "save") {
-          // saveAllDirtyTabs reports false for a failed or cancelled write —
-          // quitting then would discard exactly the work the user asked to keep.
-          if (!(await saveAllDirtyTabs())) return;
-        } else if (choice !== "discard") {
-          return;
-        }
-        quitConfirmedRef.current = true;
+        quitFlowInFlightRef.current = true;
+        const request = bufferLoadGuardRef.current.begin();
+        let closingContentRevision = fileStateRef.current.getContentRevision();
         try {
-          await appWindow.destroy();
-        } catch {
-          // destroy() is ACL-gated; if the permission is ever dropped, fall back
-          // to close(), which re-enters this handler and passes the ref check
-          // above rather than leaving the window permanently unclosable.
-          await appWindow.close();
+          const choice = await confirmModal({
+            title: "Unsaved Changes",
+            message:
+              dirty.length === 1
+                ? `"${dirty[0]!.fileName}" has unsaved changes.`
+                : `${dirty.length} files have unsaved changes.`,
+            defaultValue: "cancel",
+            buttons: [
+              { label: "Save All", value: "save", variant: "primary" },
+              { label: "Don't Save", value: "discard", variant: "danger" },
+              { label: "Cancel", value: "cancel" },
+            ],
+          });
+          if (
+            !bufferLoadGuardRef.current.isCurrent(request) ||
+            fileStateRef.current.getContentRevision() !== closingContentRevision
+          ) {
+            return;
+          }
+          if (choice === "save") {
+            // saveAllDirtyTabs reports false for a failed or cancelled write —
+            // quitting then would discard exactly the work the user asked to keep.
+            if (!(await saveAllDirtyTabs())) return;
+            if (!bufferLoadGuardRef.current.isCurrent(request)) return;
+            closingContentRevision = fileStateRef.current.getContentRevision();
+          } else if (choice !== "discard") {
+            return;
+          }
+          if (
+            !bufferLoadGuardRef.current.isCurrent(request) ||
+            fileStateRef.current.getContentRevision() !== closingContentRevision
+          ) {
+            return;
+          }
+          quitConfirmedRef.current = true;
+          try {
+            await appWindow.destroy();
+          } catch {
+            // destroy() is ACL-gated; if the permission is ever dropped, fall back
+            // to close(), which re-enters this handler and passes the ref check
+            // above rather than leaving the window permanently unclosable.
+            await appWindow.close();
+          }
+        } finally {
+          quitFlowInFlightRef.current = false;
         }
       });
       if (cancelled) {
@@ -1358,7 +1544,7 @@ export function App() {
       opened = await openFile(defaultPath);
     } catch {
       if (bufferLoadGuardRef.current.isCurrent(request)) {
-        await messageDialog("The selected file could not be opened.", {
+        await messageModal("The selected file could not be opened.", {
           title: "File Open Failed",
           kind: "error",
         });
@@ -1419,6 +1605,9 @@ export function App() {
   // Ctrl+K: add / edit / remove a link on the selection (or insert a linked URL).
   const handleEditLink = useCallback(async () => {
     if (!editor) return;
+    const ownerDoc = editor.state.doc;
+    const { from: ownerFrom, to: ownerTo } = editor.state.selection;
+    const ownerSelection = { from: ownerFrom, to: ownerTo };
     const prev = editor.getAttributes("link").href as string | undefined;
     const input = await promptModal({
       title: prev ? "Edit Link" : "Add Link",
@@ -1426,27 +1615,41 @@ export function App() {
       defaultValue: prev ?? "",
       placeholder: "https://…  (leave empty to remove)",
       okLabel: prev ? "Update" : "Add",
+      isCurrent: () => editor.state.doc === ownerDoc,
     });
     if (input === null) return; // cancelled
+    if (editor.state.doc !== ownerDoc) return;
     const url = normalizeUrl(input);
     if (!url) {
-      editor.chain().focus().extendMarkRange("link").unsetLink().run();
+      editor
+        .chain()
+        .focus()
+        .setTextSelection(ownerSelection)
+        .extendMarkRange("link")
+        .unsetLink()
+        .run();
       return;
     }
-    const { from, to } = editor.state.selection;
-    if (from !== to || prev) {
+    if (ownerFrom !== ownerTo || prev) {
       // A selection, or the caret on an existing link → (re)link that range.
-      editor.chain().focus().extendMarkRange("link").setLink({ href: url }).run();
+      editor
+        .chain()
+        .focus()
+        .setTextSelection(ownerSelection)
+        .extendMarkRange("link")
+        .setLink({ href: url })
+        .run();
     } else {
       // No selection: link the word under the caret if there is one; otherwise
       // drop the URL in as its own linked text.
-      const word = wordRangeAt(editor.state.doc, from);
+      const word = wordRangeAt(ownerDoc, ownerFrom);
       if (word) {
         editor.chain().focus().setTextSelection(word).setLink({ href: url }).run();
       } else {
         editor
           .chain()
           .focus()
+          .setTextSelection(ownerSelection)
           .insertContent({
             type: "text",
             text: input.trim(),
@@ -1460,6 +1663,7 @@ export function App() {
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (isModalOpen()) return;
       if (e.ctrlKey || e.metaKey) {
         if (e.key === "F3") {
           e.preventDefault();
@@ -1518,11 +1722,12 @@ export function App() {
             if (e.shiftKey) {
               // Ctrl+Shift+R: reload all tabs from disk
               (async () => {
-                if (!(await confirmDiscardForReload(fileTabsRef.current.tabs))) return;
+                if (!(await confirmDiscardForReload(fileTabsRef.current.getTabsSnapshot()))) return;
                 const request = bufferLoadGuardRef.current.begin();
                 const ft = fileTabsRef.current;
                 const fs = fileStateRef.current;
                 const activeTabId = ft.getActiveTabId();
+                const activeContentRevision = fs.getContentRevision();
                 const tabs = ft
                   .getTabsSnapshot()
                   .map((tab) => ({ tab, revision: ft.getTabRevision(tab.id) }));
@@ -1531,9 +1736,17 @@ export function App() {
                   try {
                     const content = await readFileByPath(tab.filePath);
                     if (!bufferLoadGuardRef.current.isCurrent(request)) return;
-                    if (!ft.hydrateTab(tab.id, content, revision)) continue;
-                    if (tab.id === activeTabId && ft.activeTabId === activeTabId) {
+                    if (tab.id === activeTabId) {
+                      if (
+                        ft.getActiveTabId() !== activeTabId ||
+                        fs.getContentRevision() !== activeContentRevision
+                      ) {
+                        return;
+                      }
+                      if (!ft.hydrateTab(tab.id, content, revision)) return;
                       await fs.handleOpenByPath(tab.filePath, content);
+                    } else {
+                      ft.hydrateTab(tab.id, content, revision);
                     }
                   } catch { /* file gone */ }
                 }
@@ -1547,17 +1760,21 @@ export function App() {
                 (async () => {
                   if (!(await confirmDiscardForReload([active]))) return;
                   const request = bufferLoadGuardRef.current.begin();
-                  const revision = fileTabsRef.current.getTabRevision(active.id);
+                  const ft = fileTabsRef.current;
+                  const fs = fileStateRef.current;
+                  const revision = ft.getTabRevision(active.id);
+                  const contentRevision = fs.getContentRevision();
                   try {
                     const content = await readFileByPath(active.filePath!);
                     if (
                       !bufferLoadGuardRef.current.isCurrent(request) ||
-                      fileTabsRef.current.activeTabId !== active.id ||
-                      !fileTabsRef.current.hydrateTab(active.id, content, revision)
+                      ft.getActiveTabId() !== active.id ||
+                      fs.getContentRevision() !== contentRevision ||
+                      !ft.hydrateTab(active.id, content, revision)
                     ) {
                       return;
                     }
-                    await fileStateRef.current.handleOpenByPath(active.filePath!, content);
+                    await fs.handleOpenByPath(active.filePath!, content);
                   } catch { /* file gone */ }
                 })();
               }
@@ -1707,6 +1924,7 @@ export function App() {
   // Ctrl+MouseWheel zoom
   useEffect(() => {
     const handleWheel = (e: WheelEvent) => {
+      if (isModalOpen()) return;
       if (!(e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
       if (e.deltaY < 0) zoomIn();
@@ -1753,16 +1971,88 @@ export function App() {
   // Rust side emits `file-changed-on-disk`; we then compare on-disk CONTENT to
   // what Markd last loaded/saved. Content comparison (not mtime) means our OWN
   // saves never false-prompt (after a save, disk === savedContent).
-  const fileChangePromptOpen = useRef(false);
   useEffect(() => {
-    const filePath = fileState.filePath;
-    if (!isTauri() || !filePath) return;
+    const activeFilePath = fileState.filePath;
+    if (!isTauri() || !activeFilePath) return;
+    const filePath = activeFilePath;
+    const watcherOwner = Symbol(filePath);
     let cancelled = false;
     let unlisten: (() => void) | null = null;
     let unlistenFocus: (() => void) | null = null;
+    let autoSavePause: AutoSavePause | null = null;
+    let readRetryTimer: number | null = null;
+    let readRetryAttempt = 0;
+    const pauseWatcherAutoSave = () => {
+      if (
+        autoSavePause ||
+        !samePath(fileStateRef.current.getCurrentState().filePath, filePath)
+      ) return;
+      autoSavePause = fileStateRef.current.pauseAutoSave();
+    };
+    const resumeWatcherAutoSave = () => {
+      if (!autoSavePause) return;
+      const pause = autoSavePause;
+      autoSavePause = null;
+      fileStateRef.current.resumeAutoSave(pause);
+    };
+    const cancelWatcherAutoSavePause = () => {
+      if (!autoSavePause) return;
+      const pause = autoSavePause;
+      autoSavePause = null;
+      fileStateRef.current.cancelAutoSavePause(pause);
+    };
+    const clearReadRetry = () => {
+      if (readRetryTimer === null) return;
+      window.clearTimeout(readRetryTimer);
+      readRetryTimer = null;
+    };
+    const scheduleReadRetry = () => {
+      if (cancelled || readRetryTimer !== null) return;
+      const delay = fileChangeReadRetryDelay(readRetryAttempt);
+      readRetryAttempt += 1;
+      readRetryTimer = window.setTimeout(() => {
+        readRetryTimer = null;
+        if (!cancelled) void check();
+      }, delay);
+    };
+    const isPromptTargetCurrent = (promptTarget: FileChangeTarget) => {
+      const ft = fileTabsRef.current;
+      return (
+        !cancelled &&
+        fileChangeTargetIsCurrent(
+          promptTarget,
+          ft.getActiveTabId(),
+          fileStateRef.current.getCurrentState().filePath,
+          fileStateRef.current.getContentRevision(),
+        )
+      );
+    };
+    const promptTargetOwnsActivePath = (promptTarget: FileChangeTarget) => {
+      const ft = fileTabsRef.current;
+      return (
+        !cancelled &&
+        fileChangeTargetOwnsActivePath(
+          promptTarget,
+          ft.getActiveTabId(),
+          fileStateRef.current.getCurrentState().filePath,
+        )
+      );
+    };
 
-    const check = async () => {
-      if (cancelled || fileChangePromptOpen.current) return;
+    const retryCurrentCheck = () => {
+      if (!cancelled) void check();
+    };
+
+    async function check() {
+      if (cancelled) return;
+      // Stop a due autosave before the asynchronous disk read. Otherwise local
+      // dirty bytes can overwrite the external version while its prompt is
+      // still being prepared.
+      pauseWatcherAutoSave();
+      if (fileChangePromptCoordinatorRef.current.isBusy()) {
+        fileChangePromptCoordinatorRef.current.acquire(watcherOwner, retryCurrentCheck);
+        return;
+      }
       let onDisk: string | null = null;
       try {
         onDisk = await readFileByPath(filePath);
@@ -1770,6 +2060,10 @@ export function App() {
         onDisk = null; // read failed — could be a real deletion or a transient race
       }
       if (cancelled) return;
+      if (onDisk !== null) {
+        readRetryAttempt = 0;
+        clearReadRetry();
+      }
 
       // Read failed: the file may have been deleted/moved, or the read just raced
       // an atomic save (write-temp + rename). A definitive existence check tells
@@ -1781,65 +2075,214 @@ export function App() {
         } catch {
           exists = true; // can't determine → don't nag
         }
+        const promptBusy = fileChangePromptCoordinatorRef.current.isBusy();
+        if (!shouldPromptForDeletion(exists, promptBusy)) {
+          if (promptBusy) {
+            pauseWatcherAutoSave();
+            fileChangePromptCoordinatorRef.current.acquire(watcherOwner, retryCurrentCheck);
+          } else {
+            // The path exists but its bytes are temporarily unreadable (most
+            // often an atomic replace window). Keep autosave paused and retry;
+            // resuming here could overwrite the external version unseen.
+            scheduleReadRetry();
+          }
+          return;
+        }
+        const promptTabId = fileTabsRef.current.getActiveTabId();
+        const promptTarget = {
+          tabId: promptTabId,
+          filePath,
+          contentRevision: fileStateRef.current.getContentRevision(),
+          tabRevision: fileTabsRef.current.getTabRevision(promptTabId),
+          fileName: fileStateRef.current.getCurrentState().fileName,
+        };
         // Bail if torn down meanwhile — e.g. the user trashed this file from the
         // sidebar, which detaches it (filePath→null) and re-runs this effect.
-        if (cancelled || fileStateRef.current.filePath !== filePath) return;
-        if (!shouldPromptForDeletion(exists, fileChangePromptOpen.current)) return;
-        fileChangePromptOpen.current = true;
+        if (!isPromptTargetCurrent(promptTarget)) return;
+        pauseWatcherAutoSave();
+        if (
+          !fileChangePromptCoordinatorRef.current.acquire(watcherOwner, retryCurrentCheck)
+        ) {
+          return;
+        }
+        let shouldRecheckAfterDeletion = false;
+        let shouldRetainAutoSavePause = false;
         try {
-          const keep = await askDialog(
-            `"${fileStateRef.current.fileName}" no longer exists on disk — it may have been deleted or moved.\n\nKeep it open in the editor? It becomes an unsaved document you can re-save anywhere.`,
-            { title: "File Deleted", kind: "warning", okLabel: "Keep in Editor", cancelLabel: "Close Tab" },
-          );
-          if (keep) {
+          const choice = await confirmModal({
+            title: "File Deleted",
+            message: `"${promptTarget.fileName}" no longer exists on disk — it may have been deleted or moved.\n\nKeep it open in the editor? It becomes an unsaved document you can re-save anywhere.`,
+            tone: "warning",
+            buttons: [
+              { label: "Keep in Editor", value: "keep", variant: "primary" },
+              { label: "Close Tab", value: "close", variant: "danger" },
+            ],
+            defaultValue: "keep",
+            isCurrent: () => isPromptTargetCurrent(promptTarget),
+          });
+          if (!promptTargetOwnsActivePath(promptTarget)) return;
+          let stillDeleted: boolean;
+          try {
+            stillDeleted = !(await pathExists(filePath));
+          } catch {
+            shouldRetainAutoSavePause = true;
+            scheduleReadRetry();
+            return;
+          }
+          if (!promptTargetOwnsActivePath(promptTarget)) return;
+          if (!stillDeleted) {
+            // The path reappeared while the modal was open (often an atomic
+            // save gap). Reclassify it from fresh content; never detach/close.
+            shouldRecheckAfterDeletion = true;
+            return;
+          }
+          if (!isPromptTargetCurrent(promptTarget)) {
+            // The user edited after the modal closed but before the path probe
+            // settled. The old Close choice no longer owns that newer buffer;
+            // detach it safely and keep every new byte in the editor.
+            fileStateRef.current.detachActiveFile();
+            return;
+          }
+          if (shouldKeepDeletedFileOpen(choice)) {
             // Detach from the now-missing path: the buffer becomes the only copy
             // — kept dirty + close-guarded, autosave timer cancelled, and the
             // watcher torn down (filePath→null re-runs this effect). Same
             // primitive the sidebar trash uses.
             fileStateRef.current.detachActiveFile();
           } else {
-            await handleCloseTabRef.current(fileTabsRef.current.activeTabId);
+            // Break the path binding before the generic dirty-close guard runs.
+            // If the buffer needs saving, its Save action must become Save As;
+            // it must never recreate a deleted path or overwrite a file that
+            // reappeared while the nested modal was open.
+            const deletedBufferWasDirty = fileStateRef.current.getCurrentState().isDirty;
+            fileStateRef.current.detachActiveFile();
+            await handleCloseTabRef.current(promptTarget.tabId, {
+              skipDirtyPrompt: !deletedBufferWasDirty,
+            });
           }
         } finally {
-          fileChangePromptOpen.current = false;
+          fileChangePromptCoordinatorRef.current.release(watcherOwner);
+          if (shouldRecheckAfterDeletion && !cancelled) {
+            void check();
+          } else if (!shouldRetainAutoSavePause || cancelled) {
+            cancelWatcherAutoSavePause();
+          }
         }
         return;
       }
 
+      const promptBusy = fileChangePromptCoordinatorRef.current.isBusy();
+      const liveFileState = fileStateRef.current.getCurrentState();
       if (
-        !shouldPromptForExternalChange(
-          onDisk,
-          fileStateRef.current.savedContent,
-          fileChangePromptOpen.current,
-        )
-      )
+        !shouldPromptForExternalChange(onDisk, liveFileState.savedContent, promptBusy)
+      ) {
+        if (promptBusy) {
+          pauseWatcherAutoSave();
+          fileChangePromptCoordinatorRef.current.acquire(watcherOwner, retryCurrentCheck);
+        } else {
+          resumeWatcherAutoSave();
+        }
         return;
-      fileChangePromptOpen.current = true;
+      }
+      const promptTabId = fileTabsRef.current.getActiveTabId();
+      const promptTarget = {
+        tabId: promptTabId,
+        filePath,
+        contentRevision: fileStateRef.current.getContentRevision(),
+        tabRevision: fileTabsRef.current.getTabRevision(promptTabId),
+      };
+      if (!isPromptTargetCurrent(promptTarget)) return;
+      pauseWatcherAutoSave();
+      if (!fileChangePromptCoordinatorRef.current.acquire(watcherOwner, retryCurrentCheck)) {
+        return;
+      }
+      let shouldRecheckAfterReload = false;
+      let shouldRecheckStaleTarget = false;
+      let shouldValidateAfterKeep = false;
       try {
-        const reload = await askDialog(
-          `"${fileStateRef.current.fileName}" has been modified outside Markd.\n\nReload from disk?`,
-          { title: "File Changed on Disk", kind: "warning" },
+        const promptFileState = fileStateRef.current.getCurrentState();
+        const hasUnsavedEdits = promptFileState.isDirty;
+        const choice = await confirmModal({
+          title: "File Changed on Disk",
+          message: `"${promptFileState.fileName}" has been modified outside Markd.\n\nReload from disk?${
+            hasUnsavedEdits ? " Any unsaved edits in Markd will be discarded." : ""
+          }`,
+          tone: "warning",
+          buttons: [
+            {
+              label: "Reload from Disk",
+              value: "reload",
+              variant: hasUnsavedEdits ? "danger" : "primary",
+            },
+            { label: "Keep Current", value: "keep" },
+          ],
+          defaultValue: "keep",
+          isCurrent: () => isPromptTargetCurrent(promptTarget),
+        });
+        const resolution = resolveExternalChangeChoice(
+          choice,
+          isPromptTargetCurrent(promptTarget),
+          promptTargetOwnsActivePath(promptTarget),
         );
-        if (reload) {
+        if (resolution === "reload") {
+          shouldRecheckAfterReload = true;
           const request = bufferLoadGuardRef.current.begin();
+          let latestOnDisk: string;
+          try {
+            latestOnDisk = await readFileByPath(filePath);
+          } catch {
+            return;
+          }
+          if (!isPromptTargetCurrent(promptTarget)) return;
           const ft = fileTabsRef.current;
-          const activeTabId = ft.activeTabId;
-          const revision = ft.getTabRevision(activeTabId);
           if (
             cancelled ||
-            fileStateRef.current.filePath !== filePath ||
             !bufferLoadGuardRef.current.isCurrent(request) ||
-            !ft.hydrateTab(activeTabId, onDisk, revision)
+            !ft.hydrateTab(promptTarget.tabId, latestOnDisk, promptTarget.tabRevision)
           ) {
             return;
           }
-          await fileStateRef.current.handleOpenByPath(filePath, onDisk);
+          await fileStateRef.current.handleOpenByPath(filePath, latestOnDisk);
+        } else if (resolution === "keep") {
+          shouldValidateAfterKeep = true;
+        } else if (resolution === "recheck") {
+          shouldRecheckStaleTarget = true;
         }
       } finally {
         // Reset in finally so a thrown dialog can't permanently wedge the watcher.
-        fileChangePromptOpen.current = false;
+        fileChangePromptCoordinatorRef.current.release(watcherOwner);
+        // Reload used the freshest completed read. One trailing check closes the
+        // remaining race where another program writes between that read and the
+        // editor apply. Keep Current intentionally does not re-prompt.
+        if ((shouldRecheckAfterReload || shouldRecheckStaleTarget) && !cancelled) {
+          void check();
+        } else if (shouldValidateAfterKeep && !cancelled) {
+          // Same-path watch events are intentionally coalesced while the modal
+          // owns the coordinator. Before autosave resumes, prove the path was
+          // not deleted during that interval. A missing path is reclassified
+          // through the deletion flow; an indeterminate probe stays paused and
+          // retries instead of risking recreation/overwrite.
+          let pathStillExists: boolean | null = null;
+          try {
+            pathStillExists = await pathExists(filePath);
+          } catch {
+            pathStillExists = null;
+          }
+          if (!promptTargetOwnsActivePath(promptTarget)) {
+            cancelWatcherAutoSavePause();
+          } else if (pathStillExists === false) {
+            void check();
+          } else if (pathStillExists === null) {
+            scheduleReadRetry();
+          } else if (fileChangePromptCoordinatorRef.current.isBusy()) {
+            fileChangePromptCoordinatorRef.current.acquire(watcherOwner, retryCurrentCheck);
+          } else {
+            resumeWatcherAutoSave();
+          }
+        } else {
+          cancelWatcherAutoSavePause();
+        }
       }
-    };
+    }
 
     (async () => {
       try {
@@ -1886,6 +2329,8 @@ export function App() {
 
     return () => {
       cancelled = true;
+      clearReadRetry();
+      cancelWatcherAutoSavePause();
       unlisten?.();
       unlistenFocus?.();
       void import("@tauri-apps/api/core")
@@ -1898,88 +2343,96 @@ export function App() {
   // dialog; the startup check stays quiet on no-update but NEVER swallows a
   // thrown check() silently — a swallowed error hid a broken updater (a build
   // compiled without the updater capability) for 21 days.
-  const checkForUpdates = useCallback(async (manual: boolean) => {
-    if (!isTauri()) {
-      if (manual) {
-        const { message } = await import("@tauri-apps/plugin-dialog");
-        await message("Updates are only available in the desktop app.", {
-          title: "Check for Updates",
-          kind: "info",
-        });
-      }
-      return;
-    }
-    if (
-      !manual &&
-      !shouldCheckForUpdate(
-        localStorage.getItem("markd-update-check"),
-        __APP_VERSION__,
-        Date.now(),
-      )
-    ) {
-      return;
-    }
-
-    try {
-      const { check } = await import("@tauri-apps/plugin-updater");
-      const { message } = await import("@tauri-apps/plugin-dialog");
-      const update = await check();
-      // Record only AFTER a successful check, so a thrown check() keeps
-      // retrying rather than being debounced away with a stale marker.
-      localStorage.setItem(
-        "markd-update-check",
-        makeUpdateCheckRecord(__APP_VERSION__, Date.now()),
-      );
-      if (!update) {
-        if (manual) {
-          await message(`You're on the latest version — Markd ${__APP_VERSION__}.`, {
-            title: "No Updates Available",
+  const checkForUpdates = useCallback((manual: boolean): Promise<void> => {
+    return updateCheckCoordinatorRef.current.run(manual, async (isManualRequested) => {
+      if (!isTauri()) {
+        if (isManualRequested()) {
+          await messageModal("Updates are only available in the desktop app.", {
+            title: "Check for Updates",
             kind: "info",
           });
         }
         return;
       }
-
-      // Honor "Skip This Version" on automatic checks only — a manual check is
-      // an explicit ask, so a stored skip must never silently eat its result.
       if (
-        !shouldOfferUpdate(update.version, localStorage.getItem(UPDATE_SKIP_KEY), manual)
+        !isManualRequested() &&
+        !shouldCheckForUpdate(
+          localStorage.getItem("markd-update-check"),
+          __APP_VERSION__,
+          Date.now(),
+        )
       ) {
         return;
       }
 
-      // In-app modal (not dialog.ask) so we get three buttons; immune to
-      // WebView2 native-dialog gating like the rest of the modal system.
-      const choice = await confirmModal({
-        title: "Update Available",
-        message: `Markd ${update.version} is available.\nThe app will close to install and reopen automatically.`,
-        buttons: [
-          { label: "Install Now", value: "install", variant: "primary" },
-          { label: "Remind Me Later", value: "later" },
-          { label: "Skip This Version", value: "skip" },
-        ],
-        defaultValue: "install",
-      });
-      if (choice === "skip") {
-        localStorage.setItem(UPDATE_SKIP_KEY, update.version);
-        return;
-      }
-      // "later" and Esc are both no-ops: the next eligible check re-prompts.
-      // Deliberately NOT clearing a stored skip here — "later" is the weaker
-      // choice and must never silently erase an explicit same-version skip
-      // (re-prompted via manual check); stale skips are inert by exact-match.
-      if (choice !== "install") return;
-      await update.downloadAndInstall();
-    } catch (err) {
-      console.error("Update check failed:", err);
-      if (manual) {
-        const { message } = await import("@tauri-apps/plugin-dialog");
-        await message(`Update check failed:\n${err}`, {
-          title: "Update Error",
-          kind: "error",
+      let installWasChosen = false;
+      try {
+        const { check } = await import("@tauri-apps/plugin-updater");
+        const update = await check();
+        // Record only AFTER a successful check, so a thrown check() keeps
+        // retrying rather than being debounced away with a stale marker.
+        localStorage.setItem(
+          "markd-update-check",
+          makeUpdateCheckRecord(__APP_VERSION__, Date.now()),
+        );
+        if (!update) {
+          if (isManualRequested()) {
+            await messageModal(`You're on the latest version — Markd ${__APP_VERSION__}.`, {
+              title: "No Updates Available",
+              kind: "info",
+            });
+          }
+          return;
+        }
+
+        // Honor "Skip This Version" on automatic checks only — a manual check is
+        // an explicit ask, so a stored skip must never silently eat its result.
+        if (
+          !shouldOfferUpdate(
+            update.version,
+            localStorage.getItem(UPDATE_SKIP_KEY),
+            isManualRequested(),
+          )
+        ) {
+          return;
+        }
+
+        // In-app modal (not dialog.ask) so we get three buttons; immune to
+        // WebView2 native-dialog gating like the rest of the modal system.
+        const offerIsManual = isManualRequested();
+        const choice = await confirmModal({
+          title: "Update Available",
+          message: `Markd ${update.version} is available.\nThe app will close to install and reopen automatically.`,
+          buttons: [
+            { label: "Install Now", value: "install", variant: "primary" },
+            { label: "Remind Me Later", value: "later" },
+            { label: "Skip This Version", value: "skip" },
+          ],
+          defaultValue: "later",
+          policy: offerIsManual ? "normal" : "replaceable",
         });
+        if (choice === "skip") {
+          localStorage.setItem(UPDATE_SKIP_KEY, update.version);
+          return;
+        }
+        // "later" and Esc are both no-ops: the next eligible check re-prompts.
+        // Deliberately NOT clearing a stored skip here — "later" is the weaker
+        // choice and must never silently erase an explicit same-version skip
+        // (re-prompted via manual check); stale skips are inert by exact-match.
+        if (choice !== "install") return;
+        installWasChosen = true;
+        await update.downloadAndInstall();
+      } catch (err) {
+        console.error("Update check failed:", err);
+        if (shouldShowUpdateError(isManualRequested(), installWasChosen)) {
+          const action = installWasChosen ? "Update installation" : "Update check";
+          await messageModal(`${action} failed:\n${err}`, {
+            title: "Update Error",
+            kind: "error",
+          });
+        }
       }
-    }
+    });
   }, []);
 
   // Auto-update check on startup (debounced to 1 hour).
@@ -2001,7 +2454,7 @@ export function App() {
         content = await readFileByPath(entry.path);
       } catch {
         if (bufferLoadGuardRef.current.isCurrent(request)) {
-          await messageDialog(`"${entry.name}" could not be opened.`, {
+          await messageModal(`"${entry.name}" could not be opened.`, {
             title: "File Open Failed",
             kind: "error",
           });
@@ -2039,7 +2492,7 @@ export function App() {
           return;
         }
         removeRecentFile(file.path);
-        await messageDialog(`"${file.name}" no longer exists — removed from Recent Files.`, {
+        await messageModal(`"${file.name}" no longer exists — removed from Recent Files.`, {
           title: "File Not Found",
           kind: "warning",
         });
@@ -2067,7 +2520,7 @@ export function App() {
         if (entry) await revealInFileManager(entry.path);
         return;
       }
-      const root = fileState.dirRoot;
+      const root = fileStateRef.current.getCurrentState().dirRoot;
       if (!root) return;
       const showError = (msg: string) =>
         confirmModal({
@@ -2095,11 +2548,11 @@ export function App() {
           const targetPath = joinPath(dir, finalName);
           if (isFile) {
             await createFile(targetPath);
-            await fileState.refreshTree();
+            await fileStateRef.current.refreshTree();
             await handleFileSelectWithTabs({ kind: "file", name: finalName, path: targetPath });
           } else {
             await createFolder(targetPath);
-            await fileState.refreshTree();
+            await fileStateRef.current.refreshTree();
           }
         } else if (action === "rename" && entry) {
           const next = await promptModal({
@@ -2113,14 +2566,18 @@ export function App() {
           const finalName = entry.kind === "file" ? ensureMdExtension(next.trim()) : next.trim();
           const newPath = joinPath(parentPath(entry.path), finalName);
           await renamePath(entry.path, newPath);
-          if (samePath(fileState.filePath, entry.path)) {
-            fileState.updateActiveFilePath(newPath, finalName);
-            fileTabs.updateTabPath(fileTabs.activeTabId, newPath, finalName);
+          const liveFileState = fileStateRef.current.getCurrentState();
+          const ft = fileTabsRef.current;
+          if (samePath(liveFileState.filePath, entry.path)) {
+            fileStateRef.current.updateActiveFilePath(newPath, finalName);
+            ft.updateTabPath(ft.getActiveTabId(), newPath, finalName);
           } else {
-            const t = fileTabs.tabs.find((tab) => samePath(tab.filePath, entry.path));
-            if (t) fileTabs.updateTabPath(t.id, newPath, finalName);
+            const tab = ft.getTabsSnapshot().find((candidate) =>
+              samePath(candidate.filePath, entry.path)
+            );
+            if (tab) ft.updateTabPath(tab.id, newPath, finalName);
           }
-          await fileState.refreshTree();
+          await fileStateRef.current.refreshTree();
         } else if (action === "delete" && entry) {
           const choice = await confirmModal({
             title: "Delete",
@@ -2137,29 +2594,22 @@ export function App() {
           // one. A dirty background tab kept its filePath, so the next Save All
           // wrote it straight back — recreating the file the user had just sent
           // to the recycle bin, with no prompt.
-          if (isPathInside(fileState.filePath, entry.path)) fileState.detachActiveFile();
-          for (const tab of fileTabsRef.current.tabs) {
+          const liveFileState = fileStateRef.current.getCurrentState();
+          if (isPathInside(liveFileState.filePath, entry.path)) {
+            fileStateRef.current.detachActiveFile();
+          }
+          for (const tab of fileTabsRef.current.getTabsSnapshot()) {
             if (isPathInside(tab.filePath, entry.path)) {
               fileTabsRef.current.updateTabPath(tab.id, null, tab.fileName);
             }
           }
-          await fileState.refreshTree();
+          await fileStateRef.current.refreshTree();
         }
       } catch (e) {
         await showError(e instanceof Error ? e.message : String(e));
       }
     },
-    [
-      fileState.dirRoot,
-      fileState.filePath,
-      fileState.refreshTree,
-      fileState.updateActiveFilePath,
-      fileState.detachActiveFile,
-      fileTabs.tabs,
-      fileTabs.updateTabPath,
-      fileTabs.activeTabId,
-      handleFileSelectWithTabs,
-    ],
+    [handleFileSelectWithTabs],
   );
 
   const handleCloseFindReplace = useCallback(() => {
@@ -2191,21 +2641,35 @@ export function App() {
         heldModifier={heldModifier}
         onFileSelect={handleFileSelectWithTabs}
         onOpenFolder={fileState.handleOpenFolder}
-        onToggle={() => setSidebarCollapsed((c) => !c)}
         onRecentFileSelect={handleRecentFileSelect}
         onRecentFileRemove={removeRecentFile}
         canEditTree={!!fileState.dirRoot}
         onFileAction={handleFileAction}
       />
       <div className="markd-editor-area">
-        <TabBar
-          tabs={fileTabs.tabs}
-          activeTabId={fileTabs.activeTabId}
-          onSwitchTab={handleSwitchTab}
-          onCloseTab={handleCloseTab}
-          onNewTab={handleNewTab}
-          onTabAction={handleTabAction}
-        />
+        <div className="markd-tab-strip">
+          <button
+            className="markd-tab-sidebar-toggle"
+            onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
+            title={`${sidebarCollapsed ? "Show" : "Hide"} Sidebar (Ctrl+\\)`}
+            aria-label="Sidebar"
+            aria-controls="markd-sidebar"
+            aria-expanded={!sidebarCollapsed}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+              <rect x="1" y="2" width="4" height="12" rx="1" opacity="0.45" />
+              <rect x="6" y="2" width="9" height="12" rx="1" opacity="0.75" />
+            </svg>
+          </button>
+          <TabBar
+            tabs={fileTabs.tabs}
+            activeTabId={fileTabs.activeTabId}
+            onSwitchTab={handleSwitchTab}
+            onCloseTab={handleCloseTab}
+            onNewTab={handleNewTab}
+            onTabAction={handleTabAction}
+          />
+        </div>
         <Menubar
           editor={editor}
           sidebarCollapsed={sidebarCollapsed}
@@ -2241,18 +2705,6 @@ export function App() {
           onPrevTab={() => cycleTab(-1)}
         />
         <div className="markd-topbar">
-          {sidebarCollapsed && (
-            <button
-              className="markd-sidebar-toggle"
-              onClick={() => setSidebarCollapsed(false)}
-              title="Show Sidebar (Ctrl+\)"
-            >
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                <rect x="1" y="2" width="4" height="12" rx="1" opacity="0.3" />
-                <rect x="6" y="2" width="9" height="12" rx="1" opacity="0.6" />
-              </svg>
-            </button>
-          )}
           <Toolbar editor={editor} heldModifier={heldModifier} disabled={sourceMode} />
         </div>
         <div className="markd-editor-content">

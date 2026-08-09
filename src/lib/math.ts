@@ -15,7 +15,7 @@
 // literal, escaped `\$` is literal, and a raw `<` inside math is attribute-escaped
 // (not HTML-shredded). See CLAUDE.md math design note for the full rationale.
 
-import { Node, mergeAttributes, type Editor } from "@tiptap/core";
+import { Node, mergeAttributes, type NodeViewRendererProps } from "@tiptap/core";
 import katex from "katex";
 import markdownItKatex from "@vscode/markdown-it-katex";
 import { promptModal } from "./modal";
@@ -69,8 +69,10 @@ export function setupMathMarkdown(md: MdLike): void {
 /** NodeView factory: a non-editable element whose innerHTML is the KaTeX render
     of the node's raw `latex` attribute. Re-rendered whenever the attribute
     changes (atom nodes are replaced wholesale, so `update` re-renders). */
-function mathNodeView(displayMode: boolean) {
-  return (props: { node: { attrs: Record<string, unknown> }; editor: Editor; getPos: unknown }) => {
+export function createMathNodeView(displayMode: boolean) {
+  return (props: Pick<NodeViewRendererProps, "node" | "editor" | "getPos">) => {
+    let isDestroyed = false;
+    const expectedType = props.node.type;
     const latex = typeof props.node.attrs.latex === "string" ? props.node.attrs.latex : "";
     const dom = document.createElement(displayMode ? "div" : "span");
     dom.className = displayMode ? "markd-math-block" : "markd-math-inline";
@@ -79,25 +81,48 @@ function mathNodeView(displayMode: boolean) {
     dom.title = "Double-click to edit";
     dom.innerHTML = renderMathToHtml(latex, displayMode);
     // Double-click to edit the raw LaTeX (single click still selects the atom).
-    dom.addEventListener("dblclick", (e) => {
+    const handleDoubleClick = (e: Event) => {
       e.preventDefault();
       const current = typeof props.node.attrs.latex === "string" ? props.node.attrs.latex : "";
+      const ownerDoc = props.editor.state.doc;
       void promptModal({
         title: displayMode ? "Edit math block" : "Edit inline math",
         label: "LaTeX",
         defaultValue: current,
         okLabel: "Save",
+        isCurrent: () =>
+          !isDestroyed && !props.editor.isDestroyed && props.editor.state.doc === ownerDoc,
       }).then((next) => {
-        if (next == null) return; // cancelled
-        const pos = typeof props.getPos === "function" ? (props.getPos as () => number)() : null;
-        if (pos == null) return;
+        if (next == null || isDestroyed || props.editor.isDestroyed) return;
+        if (props.editor.state.doc !== ownerDoc) return;
+        let pos: number;
+        try {
+          pos = props.getPos();
+        } catch {
+          // getPos() is allowed to become invalid after its NodeView leaves the
+          // document. A late modal result is obsolete, not an editor failure.
+          return;
+        }
+        if (!Number.isInteger(pos) || pos < 0 || pos > props.editor.state.doc.content.size) return;
+        const liveNode = props.editor.state.doc.nodeAt(pos);
+        if (!liveNode || liveNode.type !== expectedType) return;
         props.editor.chain().command(({ tr }) => {
+          if (tr.doc !== ownerDoc) return false;
+          const transactionNode = tr.doc.nodeAt(pos);
+          if (!transactionNode || transactionNode.type !== expectedType) return false;
           tr.setNodeAttribute(pos, "latex", next);
           return true;
         }).run();
       });
-    });
-    return { dom };
+    };
+    dom.addEventListener("dblclick", handleDoubleClick);
+    return {
+      dom,
+      destroy() {
+        isDestroyed = true;
+        dom.removeEventListener("dblclick", handleDoubleClick);
+      },
+    };
   };
 }
 
@@ -127,7 +152,7 @@ export const InlineMath = Node.create({
   },
 
   addNodeView() {
-    return mathNodeView(false);
+    return createMathNodeView(false);
   },
 
   addStorage() {
@@ -172,7 +197,7 @@ export const BlockMath = Node.create({
   },
 
   addNodeView() {
-    return mathNodeView(true);
+    return createMathNodeView(true);
   },
 
   addStorage() {

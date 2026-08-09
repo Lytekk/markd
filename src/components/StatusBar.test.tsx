@@ -7,8 +7,10 @@ afterEach(cleanup);
 
 const noop = vi.fn();
 
-function renderBar(over: Partial<ComponentProps<typeof StatusBar>> = {}) {
-  const props: ComponentProps<typeof StatusBar> = {
+function barProps(
+  over: Partial<ComponentProps<typeof StatusBar>> = {},
+): ComponentProps<typeof StatusBar> {
+  return {
     fileName: "notes.md",
     filePath: "/p/notes.md",
     isDirty: false,
@@ -29,7 +31,10 @@ function renderBar(over: Partial<ComponentProps<typeof StatusBar>> = {}) {
     zoom: 100,
     ...over,
   };
-  return render(<StatusBar {...props} />);
+}
+
+function renderBar(over: Partial<ComponentProps<typeof StatusBar>> = {}) {
+  return render(<StatusBar {...barProps(over)} />);
 }
 
 const sendStats = (words: number, chars: number) =>
@@ -40,18 +45,18 @@ const sendStats = (words: number, chars: number) =>
   });
 
 describe("StatusBar width toggle", () => {
-  it("labels the button with the CURRENT state — Full when full-width is on", () => {
-    renderBar({ fullWidth: true });
+  it("keeps a constant Full label and expresses Column mode as the inactive state", () => {
+    const { rerender } = renderBar({ fullWidth: false });
     const btn = screen.getByTitle("Toggle Full Width");
     expect(btn.textContent).toBe("Full");
-    expect(btn.classList.contains("status-btn-active")).toBe(true);
-  });
-
-  it("labels the button Column when column (constrained) width is active", () => {
-    renderBar({ fullWidth: false });
-    const btn = screen.getByTitle("Toggle Full Width");
-    expect(btn.textContent).toBe("Column");
     expect(btn.classList.contains("status-btn-active")).toBe(false);
+    expect(btn.getAttribute("aria-pressed")).toBe("false");
+
+    rerender(<StatusBar {...barProps({ fullWidth: true })} />);
+    expect(screen.getByTitle("Toggle Full Width")).toBe(btn);
+    expect(btn.textContent).toBe("Full");
+    expect(btn.classList.contains("status-btn-active")).toBe(true);
+    expect(btn.getAttribute("aria-pressed")).toBe("true");
   });
 });
 
@@ -72,9 +77,29 @@ describe("StatusBar source toggle", () => {
 });
 
 describe("StatusBar source line numbers", () => {
-  it("does not offer misleading block counters in rendered mode", () => {
-    renderBar({ sourceMode: false, lineNumbers: true });
-    expect(screen.queryByTitle(/Line Numbers/)).toBeNull();
+  it("keeps one Lines slot mounted while making it unavailable in rendered mode", () => {
+    const onToggleLineNumbers = vi.fn();
+    const { rerender } = renderBar({
+      sourceMode: false,
+      lineNumbers: true,
+      onToggleLineNumbers,
+    });
+    const button = screen.getByRole("button", { name: /Lines/ }) as HTMLButtonElement;
+    expect(button.textContent).toBe("Lines");
+    expect(button.disabled).toBe(true);
+    expect(button.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(button);
+    expect(onToggleLineNumbers).not.toHaveBeenCalled();
+
+    rerender(
+      <StatusBar
+        {...barProps({ sourceMode: true, lineNumbers: true, onToggleLineNumbers })}
+      />,
+    );
+    const enabled = screen.getByRole("button", { name: /Lines/ }) as HTMLButtonElement;
+    expect(enabled).toBe(button);
+    expect(enabled.disabled).toBe(false);
+    expect(enabled.getAttribute("aria-pressed")).toBe("true");
   });
 
   it("shows and toggles exact logical line numbers in source mode", () => {
@@ -84,6 +109,99 @@ describe("StatusBar source line numbers", () => {
     expect(button.textContent).toBe("Lines");
     fireEvent.click(button);
     expect(onToggleLineNumbers).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("StatusBar fixed slot topology", () => {
+  const slots = (container: HTMLElement, side: "left" | "right") =>
+    Array.from(container.querySelector(`.markd-status-${side}`)!.children).map(
+      (node) => (node as HTMLElement).dataset.statusSlot,
+    );
+
+  it("keeps every footer slot mounted and ordered across all state changes", () => {
+    const initial = barProps();
+    const { container, rerender } = render(<StatusBar {...initial} />);
+    const leftBefore = Array.from(container.querySelector(".markd-status-left")!.children);
+    const rightBefore = Array.from(container.querySelector(".markd-status-right")!.children);
+
+    expect(slots(container, "left")).toEqual(["filename", "saved"]);
+    expect(slots(container, "right")).toEqual([
+      "words",
+      "chars",
+      "focus",
+      "source",
+      "width",
+      "lines",
+      "divider",
+      "html",
+      "pdf",
+      "theme",
+      "zoom",
+      "version",
+    ]);
+
+    rerender(
+      <StatusBar
+        {...barProps({
+          fileName: "a-very-different-name.md",
+          isDirty: true,
+          lastSaved: 123,
+          sourceMode: true,
+          focusMode: true,
+          fullWidth: true,
+          lineNumbers: true,
+          statsBaseline: { words: 1, chars: 2 },
+          theme: "night",
+          zoom: 200,
+        })}
+      />,
+    );
+    sendStats(123456, 987654);
+
+    expect(slots(container, "left")).toEqual(["filename", "saved"]);
+    expect(slots(container, "right")).toEqual([
+      "words",
+      "chars",
+      "focus",
+      "source",
+      "width",
+      "lines",
+      "divider",
+      "html",
+      "pdf",
+      "theme",
+      "zoom",
+      "version",
+    ]);
+    const leftAfter = Array.from(container.querySelector(".markd-status-left")!.children);
+    const rightAfter = Array.from(container.querySelector(".markd-status-right")!.children);
+    expect(leftAfter.every((node, index) => node === leftBefore[index])).toBe(true);
+    expect(rightAfter.every((node, index) => node === rightBefore[index])).toBe(true);
+    expect(container.querySelectorAll(".markd-stat-delta")).toHaveLength(2);
+    expect(container.querySelectorAll(".markd-dirty-bullet")).toHaveLength(1);
+  });
+
+  it("fully reveals a focused control inside the narrow-window rail", () => {
+    const { container } = renderBar();
+    const rail = container.querySelector(".markd-status-right") as HTMLDivElement;
+    const theme = screen.getByTitle("Toggle Theme");
+    Object.defineProperty(rail, "clientWidth", { configurable: true, value: 100 });
+    Object.defineProperty(theme, "offsetLeft", { configurable: true, value: 150 });
+    Object.defineProperty(theme, "offsetWidth", { configurable: true, value: 30 });
+
+    rail.scrollLeft = 0;
+    fireEvent.focus(theme);
+    expect(rail.scrollLeft).toBe(81);
+
+    Object.defineProperty(theme, "offsetLeft", { configurable: true, value: 20 });
+    rail.scrollLeft = 80;
+    fireEvent.focus(theme);
+    expect(rail.scrollLeft).toBe(19);
+
+    Object.defineProperty(theme, "offsetLeft", { configurable: true, value: 60 });
+    rail.scrollLeft = 50;
+    fireEvent.focus(theme);
+    expect(rail.scrollLeft).toBe(50);
   });
 });
 
@@ -102,7 +220,10 @@ describe("StatusBar filename", () => {
 
   it("renders no dirty bullet when clean", () => {
     const { container } = renderBar({ isDirty: false });
-    expect(container.querySelector(".markd-dirty-bullet")).toBeNull();
+    const bullet = container.querySelector(".markd-dirty-bullet")!;
+    expect(bullet).not.toBeNull();
+    expect(bullet.classList.contains("is-slot-empty")).toBe(true);
+    expect(bullet.getAttribute("aria-hidden")).toBe("true");
   });
 });
 
@@ -113,7 +234,7 @@ describe("StatusBar word/char deltas", () => {
       isDirty: true,
     });
     sendStats(12, 48);
-    const deltas = container.querySelectorAll(".markd-stat-delta");
+    const deltas = container.querySelectorAll(".markd-stat-delta:not(.is-slot-empty)");
     expect(deltas).toHaveLength(2);
     expect(deltas[0]!.textContent).toBe("+2");
     expect(deltas[0]!.classList.contains("plus")).toBe(true);
@@ -128,7 +249,8 @@ describe("StatusBar word/char deltas", () => {
       isDirty: false,
     });
     sendStats(12, 48);
-    expect(container.querySelectorAll(".markd-stat-delta")).toHaveLength(0);
+    expect(container.querySelectorAll(".markd-stat-delta")).toHaveLength(2);
+    expect(container.querySelectorAll(".markd-stat-delta:not(.is-slot-empty)")).toHaveLength(0);
   });
 
   it("hides a zero delta (reverted to the saved state) per-stat", () => {
@@ -137,13 +259,15 @@ describe("StatusBar word/char deltas", () => {
       isDirty: false,
     });
     sendStats(10, 50);
-    expect(container.querySelectorAll(".markd-stat-delta")).toHaveLength(0);
+    expect(container.querySelectorAll(".markd-stat-delta")).toHaveLength(2);
+    expect(container.querySelectorAll(".markd-stat-delta:not(.is-slot-empty)")).toHaveLength(0);
   });
 
   it("shows no deltas without a baseline", () => {
     const { container } = renderBar({ statsBaseline: null, isDirty: true });
     sendStats(12, 48);
-    expect(container.querySelectorAll(".markd-stat-delta")).toHaveLength(0);
+    expect(container.querySelectorAll(".markd-stat-delta")).toHaveLength(2);
+    expect(container.querySelectorAll(".markd-stat-delta:not(.is-slot-empty)")).toHaveLength(0);
   });
 
   it("shows deltas identically in source mode", () => {
@@ -153,10 +277,27 @@ describe("StatusBar word/char deltas", () => {
       isDirty: true,
     });
     sendStats(12, 48);
-    const deltas = container.querySelectorAll(".markd-stat-delta");
+    const deltas = container.querySelectorAll(".markd-stat-delta:not(.is-slot-empty)");
     expect(deltas).toHaveLength(2);
     expect(deltas[0]!.textContent).toBe("+2");
     expect(deltas[1]!.textContent).toBe("-2");
+  });
+
+  it("compacts large deltas inside their fixed slots and preserves the exact count", () => {
+    const { container } = renderBar({
+      statsBaseline: { words: 0, chars: 2_200_000 },
+      isDirty: true,
+    });
+    sendStats(12_345, 1_000_000);
+
+    const deltas = container.querySelectorAll(".markd-stat-delta:not(.is-slot-empty)");
+    expect(deltas[0]!.textContent).toBe("+12k");
+    expect(deltas[0]!.getAttribute("title")).toBe("+12345 words");
+    expect(deltas[0]!.getAttribute("aria-label")).toBe("Added 12345 words");
+    expect(deltas[1]!.textContent).toBe("-1.2m");
+    expect(deltas[1]!.getAttribute("title")).toBe("-1200000 characters");
+    expect(deltas[1]!.getAttribute("aria-label")).toBe("Removed 1200000 characters");
+    expect([...deltas].every((delta) => delta.textContent!.length <= 5)).toBe(true);
   });
 
   it("still shows the plain counts from the stats event", () => {

@@ -1,10 +1,42 @@
-import { describe, test, expect } from "vitest";
+import { describe, test, expect, vi } from "vitest";
 import {
+  createUpdateCheckCoordinator,
   shouldCheckForUpdate,
   makeUpdateCheckRecord,
   ONE_HOUR_MS,
   shouldOfferUpdate,
+  shouldShowUpdateError,
 } from "./updater";
+
+describe("createUpdateCheckCoordinator", () => {
+  test("coalesces automatic and manual callers into one operation and upgrades messaging", async () => {
+    const coordinator = createUpdateCheckCoordinator();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const observedManual = vi.fn();
+    const firstOperation = vi.fn(async (isManualRequested: () => boolean) => {
+      await gate;
+      observedManual(isManualRequested());
+    });
+    const duplicateOperation = vi.fn(async () => {});
+
+    const automatic = coordinator.run(false, firstOperation);
+    const manual = coordinator.run(true, duplicateOperation);
+
+    expect(manual).toBe(automatic);
+    expect(firstOperation).toHaveBeenCalledTimes(0);
+    expect(duplicateOperation).not.toHaveBeenCalled();
+    release();
+    await automatic;
+    expect(firstOperation).toHaveBeenCalledTimes(1);
+    expect(observedManual).toHaveBeenCalledWith(true);
+
+    await coordinator.run(false, duplicateOperation);
+    expect(duplicateOperation).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("shouldCheckForUpdate", () => {
   const NOW = 1_000_000_000_000;
@@ -76,5 +108,16 @@ describe("shouldOfferUpdate", () => {
 
   test("treats an empty stored value as no skip", () => {
     expect(shouldOfferUpdate(OFFERED, "", false)).toBe(true);
+  });
+});
+
+describe("shouldShowUpdateError", () => {
+  test("shows failures from a user-selected automatic install", () => {
+    expect(shouldShowUpdateError(false, true)).toBe(true);
+  });
+
+  test("shows manual check failures and keeps unattended automatic checks quiet", () => {
+    expect(shouldShowUpdateError(true, false)).toBe(true);
+    expect(shouldShowUpdateError(false, false)).toBe(false);
   });
 });

@@ -1,7 +1,10 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import type { Editor } from "@tiptap/react";
-import { ContextMenu } from "./ContextMenu";
+import { ContextMenu, promptAndInsertImage } from "./ContextMenu";
+import { promptModal } from "@/lib/modal";
+
+vi.mock("@/lib/modal", () => ({ promptModal: vi.fn() }));
 
 function makeEditor(inTable: boolean): Editor {
   return { isActive: (name: string) => inTable && name === "table" } as unknown as Editor;
@@ -51,5 +54,36 @@ describe("ContextMenu", () => {
     render(<ContextMenu editor={makeEditor(false)} />);
     fireEvent.contextMenu(document.body);
     expect(screen.queryByText("Insert Image")).toBeNull();
+  });
+
+  it("does not insert a deferred image into a replacement tab document", async () => {
+    let resolve!: (value: string | null) => void;
+    vi.mocked(promptModal).mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    const originalDoc = {};
+    const state = { doc: originalDoc, selection: { from: 7, to: 7 } };
+    const setImage = vi.fn();
+    const editor = {
+      state,
+      isDestroyed: false,
+      chain: () => ({
+        focus: () => ({
+          setTextSelection: () => ({ setImage: () => ({ run: setImage }) }),
+        }),
+      }),
+    } as unknown as Editor;
+
+    const pending = promptAndInsertImage(editor);
+    const request = vi.mocked(promptModal).mock.calls[0]![0];
+    expect(request.isCurrent?.()).toBe(true);
+    state.doc = {};
+    expect(request.isCurrent?.()).toBe(false);
+    resolve("https://example.com/image.png");
+    await pending;
+
+    expect(setImage).not.toHaveBeenCalled();
   });
 });

@@ -19,6 +19,33 @@ export interface SlashItem {
   run: (editor: Editor, range: Range) => void;
 }
 
+function promptAndInsertMath(
+  editor: Editor,
+  range: Range,
+  type: "blockMath" | "inlineMath",
+  prompt: Parameters<typeof promptModal>[0],
+): void {
+  editor.chain().focus().deleteRange(range).run();
+  const ownerDoc = editor.state.doc;
+  const insertionPos = range.from;
+
+  void promptModal({
+    ...prompt,
+    isCurrent: () => !editor.isDestroyed && editor.state.doc === ownerDoc,
+  }).then((latex) => {
+    if (latex == null || !latex.trim() || editor.isDestroyed) return;
+    // App tabs intentionally share one Editor instance. setContent() swaps its
+    // ProseMirror document when the active tab changes, so a deferred prompt
+    // must stay bound to the document that opened it.
+    if (editor.state.doc !== ownerDoc) return;
+    editor
+      .chain()
+      .focus()
+      .insertContentAt(insertionPos, { type, attrs: { latex: latex.trim() } })
+      .run();
+  });
+}
+
 /** Each command deletes the typed "/query" first, then applies the block. */
 export const SLASH_ITEMS: SlashItem[] = [
   { title: "Heading 1", keywords: "h1 title", run: (e, r) => e.chain().focus().deleteRange(r).toggleHeading({ level: 1 }).run() },
@@ -35,9 +62,11 @@ export const SLASH_ITEMS: SlashItem[] = [
     title: "Math Block",
     keywords: "latex katex equation formula tex display",
     run: (e, r) => {
-      e.chain().focus().deleteRange(r).run();
-      void promptModal({ title: "Insert math block", label: "LaTeX", placeholder: "\\int_0^1 x^2\\,dx", okLabel: "Insert" }).then((latex) => {
-        if (latex != null && latex.trim()) e.chain().focus().insertContent({ type: "blockMath", attrs: { latex: latex.trim() } }).run();
+      promptAndInsertMath(e, r, "blockMath", {
+        title: "Insert math block",
+        label: "LaTeX",
+        placeholder: "\\int_0^1 x^2\\,dx",
+        okLabel: "Insert",
       });
     },
   },
@@ -45,9 +74,11 @@ export const SLASH_ITEMS: SlashItem[] = [
     title: "Inline Math",
     keywords: "latex katex equation formula tex",
     run: (e, r) => {
-      e.chain().focus().deleteRange(r).run();
-      void promptModal({ title: "Insert inline math", label: "LaTeX", placeholder: "e^{i\\pi}+1=0", okLabel: "Insert" }).then((latex) => {
-        if (latex != null && latex.trim()) e.chain().focus().insertContent({ type: "inlineMath", attrs: { latex: latex.trim() } }).run();
+      promptAndInsertMath(e, r, "inlineMath", {
+        title: "Insert inline math",
+        label: "LaTeX",
+        placeholder: "e^{i\\pi}+1=0",
+        okLabel: "Insert",
       });
     },
   },

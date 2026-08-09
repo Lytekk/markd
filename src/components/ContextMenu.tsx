@@ -21,6 +21,22 @@ interface MenuItem {
 
 type MenuEntry = MenuItem | "separator";
 
+export async function promptAndInsertImage(editor: Editor): Promise<void> {
+  const ownerDoc = editor.state.doc;
+  const { from, to } = editor.state.selection;
+  const ownerSelection = { from, to };
+  const url = await promptModal({
+    title: "Insert Image",
+    label: "Image URL or path",
+    placeholder: "https://…  or  ./image.png",
+    okLabel: "Insert",
+    validate: (value) => (value ? null : "Enter a URL or path"),
+    isCurrent: () => !editor.isDestroyed && editor.state.doc === ownerDoc,
+  });
+  if (!url || editor.isDestroyed || editor.state.doc !== ownerDoc) return;
+  editor.chain().focus().setTextSelection(ownerSelection).setImage({ src: url }).run();
+}
+
 const MENU_ITEMS: MenuEntry[] = [
   {
     label: "Cut",
@@ -65,16 +81,9 @@ const MENU_ITEMS: MenuEntry[] = [
   },
   {
     label: "Insert Image",
-    action: async (e) => {
+    action: (editor) => {
       // window.prompt is suppressed by WebView2 — use the in-app modal.
-      const url = await promptModal({
-        title: "Insert Image",
-        label: "Image URL or path",
-        placeholder: "https://…  or  ./image.png",
-        okLabel: "Insert",
-        validate: (v) => (v ? null : "Enter a URL or path"),
-      });
-      if (url) e.chain().focus().setImage({ src: url }).run();
+      void promptAndInsertImage(editor);
     },
   },
   {

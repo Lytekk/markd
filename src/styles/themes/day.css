@@ -1,46 +1,47 @@
-/* Day Theme — light mode */
+/* Day Theme — warm parchment drafting surface */
 [data-theme="day"] {
-  /* Core */
-  --bg-color: #ffffff;
-  --text-color: #1a1a2e;
-  --primary-color: #4361ee;
+  /* Core — warm paper avoids the clinical glare of pure white while preserving
+     a light reading surface. */
+  --bg-color: #fcf5e5;
+  --text-color: #2c2823;
+  --primary-color: #3f5f8a;
   /* Status-bar word/char delta colors (added/removed vs open baseline) */
-  --stat-add-color: #1a7f37;
-  --stat-del-color: #cf222e;
+  --stat-add-color: #2d6a3f;
+  --stat-del-color: #a43d45;
   --font-family: "Segoe UI", "Inter", -apple-system, BlinkMacSystemFont, Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-size: 16px;
   --line-height: 1.7;
   --monospace: "Cascadia Code", "JetBrains Mono", "Fira Code", "SF Mono", Consolas, monospace;
 
   /* Sidebar */
-  --side-bar-bg-color: #f8f9fa;
-  --border-color: #e9ecef;
-  --control-text-color: #868e96;
-  --item-hover-bg-color: #e9ecef;
+  --side-bar-bg-color: #eee3cf;
+  --border-color: #cdbfa7;
+  --control-text-color: #665d53;
+  --item-hover-bg-color: #e6d8be;
   --item-hover-text-color: inherit;
-  --active-file-bg-color: #e7f0ff;
-  --active-file-text-color: #1a1a2e;
+  --active-file-bg-color: #d6dfe8;
+  --active-file-text-color: #2c2823;
 
   /* Editor */
-  --select-text-bg-color: #b5d5ff;
-  --blockquote-border-color: #4361ee;
-  --blockquote-color: #495057;
-  --code-bg-color: #eef0f2;
-  --code-block-bg-color: #f3f4f6;
-  --code-block-border-color: #d8dade;
-  --table-header-bg: #f1f3f5;
-  --heading-flash-bg: rgba(67, 97, 238, 0.22);
+  --select-text-bg-color: #cdd9e6;
+  --blockquote-border-color: #3f5f8a;
+  --blockquote-color: #5e574f;
+  --code-bg-color: #e9ddc7;
+  --code-block-bg-color: #e5d9c3;
+  --code-block-border-color: #c9b99e;
+  --table-header-bg: #e8dbc4;
+  --heading-flash-bg: rgba(63, 95, 138, 0.22);
 
   /* Syntax */
-  --code-comment: #868e96;
-  --code-keyword: #e03131;
-  --code-string: #2f9e44;
-  --code-number: #4361ee;
-  --code-builtin: #7048e8;
-  --code-function: #1971c2;
-  --code-variable: #e8590c;
+  --code-comment: #625b52;
+  --code-keyword: #9b2837;
+  --code-string: #2f673c;
+  --code-number: #365f91;
+  --code-builtin: #66459a;
+  --code-function: #2a5e87;
+  --code-variable: #8a451c;
 
   /* Scrollbar */
-  --scrollbar-color: rgba(0, 0, 0, 0.12);
-  --scrollbar-hover-color: rgba(0, 0, 0, 0.2);
+  --scrollbar-color: rgba(44, 40, 35, 0.22);
+  --scrollbar-hover-color: rgba(44, 40, 35, 0.36);
 }

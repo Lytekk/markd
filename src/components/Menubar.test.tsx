@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { Menubar } from "./Menubar";
+import { ModalHost } from "./ModalHost";
 
 function renderMenubar(overrides: Record<string, unknown> = {}) {
   const props = {
@@ -33,7 +34,12 @@ function renderMenubar(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  render(<Menubar {...(props as any)} />);
+  render(
+    <>
+      <Menubar {...(props as any)} />
+      <ModalHost />
+    </>,
+  );
   return props;
 }
 
@@ -50,5 +56,13 @@ describe("Menubar", () => {
     for (const label of ["File", "Edit", "View", "Help"]) {
       expect(screen.getByRole("button", { name: label })).toBeTruthy();
     }
+  });
+
+  it("opens About Markd in the app modal instead of a native popup", async () => {
+    renderMenubar();
+    fireEvent.click(screen.getByRole("button", { name: "Help" }));
+    fireEvent.click(screen.getByText("About Markd"));
+    expect(await screen.findByRole("dialog", { name: "About Markd" })).toBeTruthy();
+    expect(screen.getByText(/A distraction-free markdown editor/)).toBeTruthy();
   });
 });

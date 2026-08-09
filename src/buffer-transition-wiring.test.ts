@@ -52,11 +52,54 @@ describe("buffer-transition wiring (src/App.tsx)", () => {
     );
   });
 
+  it("uses synchronous active-buffer dirtiness for every destructive close path", () => {
+    expect(app).toContain("tabIsLiveDirty(tab, activeTabId, activeBufferDirty)");
+    expect((app.match(/liveDirtyTabs\(/g) ?? []).length).toBeGreaterThanOrEqual(4);
+    expect(app).toContain("fileStateRef.current.getCurrentState().isDirty");
+  });
+
+  it("guards every post-confirm active reload with the per-edit content token", () => {
+    expect((app.match(/getContentRevision\(\)/g) ?? []).length).toBeGreaterThanOrEqual(5);
+    expect(
+      (app.match(/contentRevision: fileStateRef\.current\.getContentRevision\(\)/g) ?? [])
+        .length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(app).toContain("fs.getContentRevision() !== contentRevision");
+  });
+
+  it("does not let post-confirm edits slip through Close All or native quit", () => {
+    const closeAll = app.slice(
+      app.indexOf("const handleCloseAllTabs"),
+      app.indexOf("// Desktop quit guard"),
+    );
+    expect(closeAll).toContain("bufferLoadGuardRef.current.begin()");
+    expect(closeAll).toContain("closingContentRevision");
+    expect(closeAll).toMatch(/getContentRevision\(\) !== closingContentRevision/);
+
+    const quit = app.slice(
+      app.indexOf("// Desktop quit guard"),
+      app.indexOf("const handleNewTab", app.indexOf("// Desktop quit guard")),
+    );
+    expect(quit).toContain("bufferLoadGuardRef.current.begin()");
+    expect(quit).toContain("closingContentRevision");
+    expect(quit).toMatch(/getContentRevision\(\) !== closingContentRevision/);
+  });
+
   it("lets an owning active save settle its captured tab before the generic mirror", () => {
     expect(app).toContain("const activeSaveOwnerRef");
     expect(app).toContain("const saveActiveTab");
     expect(app).toContain("expectedRevision: revision");
     expect(app).toContain("if (activeSaveOwnerRef.current?.tabId === ft.activeTabId) return;");
+  });
+
+  it("never retries a superseded active save against a later active tab", () => {
+    const save = app.slice(
+      app.indexOf("const saveActiveTab"),
+      app.indexOf("const saveActiveTabAs"),
+    );
+    expect(save).toContain("shouldRetrySupersededActiveSave");
+    expect(save).toContain("ft.getActiveTabId()");
+    expect(save).toContain("samePath(beforeSave.filePath, fs.getCurrentState().filePath)");
   });
 
   it("routes every Command Palette save entrypoint through active-tab ownership", () => {
