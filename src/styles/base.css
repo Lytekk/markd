@@ -1166,6 +1166,12 @@ body {
   z-index: 1000;
 }
 
+/* Confirmations/notices can be opened from another in-app overlay (for
+   example, deleting a snippet). They must remain the pointer/focus owner. */
+.markd-modal-host-backdrop {
+  z-index: 1100;
+}
+
 .markd-modal {
   background: var(--bg-color, #fff);
   color: var(--text-color);
@@ -1177,6 +1183,18 @@ body {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.markd-modal.tone-info {
+  border-color: var(--primary-color, #4a90d9);
+}
+
+.markd-modal.tone-warning {
+  border-color: var(--warning-color, #b7791f);
+}
+
+.markd-modal.tone-error {
+  border-color: var(--danger-color, #d9534f);
 }
 
 .markd-modal-title {

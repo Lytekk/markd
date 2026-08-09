@@ -22,6 +22,11 @@ const AUTO_SAVE_DELAY_MS = 30_000;
 const AUTO_SAVE_RETRY_DELAY_MS = 5_000;
 const AUTO_SAVE_MAX_RETRIES = 3;
 
+export interface AutoSavePause {
+  id: symbol;
+  filePath: string | null;
+}
+
 export interface FileState {
   fileName: string;
   filePath: string | null;
@@ -66,6 +71,7 @@ export function useFileState() {
   // visible buffer must stay dirty for a later save.
   const contentRevisionRef = useRef(0);
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoSavePausesRef = useRef(new Map<symbol, string | null>());
   const scheduleAutoSaveRef = useRef<(revision: number, filePath: string | null, attempt?: number) => void>(
     () => {},
   );
@@ -74,6 +80,12 @@ export function useFileState() {
       clearTimeout(autoSaveTimerRef.current);
       autoSaveTimerRef.current = null;
     }
+  }, []);
+  const isAutoSavePaused = useCallback((filePath: string | null) => {
+    for (const pausedPath of autoSavePausesRef.current.values()) {
+      if (pausedPath === filePath) return true;
+    }
+    return false;
   }, []);
 
   const getMarkdownRef = useRef<(() => string) | null>(null);
@@ -92,17 +104,21 @@ export function useFileState() {
     [],
   );
 
+  /** Exact active-buffer generation; advances on every edit and replacement. */
+  const getContentRevision = useCallback(() => contentRevisionRef.current, []);
+
   const getCurrentState = useCallback(() => stateRef.current, []);
 
   const scheduleAutoSave = useCallback(
     (revision: number, filePath: string | null, attempt = 0) => {
       clearAutoSave();
-      if (!filePath) return;
+      if (!filePath || isAutoSavePaused(filePath)) return;
 
       autoSaveTimerRef.current = setTimeout(() => {
         void (async () => {
           const current = stateRef.current;
           if (
+            isAutoSavePaused(filePath) ||
             contentRevisionRef.current !== revision ||
             !current.isDirty ||
             current.filePath !== filePath
@@ -116,6 +132,7 @@ export function useFileState() {
           );
           const ok = await queueFileWrite(filePath, async () => {
             if (
+              isAutoSavePaused(filePath) ||
               contentRevisionRef.current !== revision ||
               stateRef.current.filePath !== filePath
             ) {
@@ -149,9 +166,35 @@ export function useFileState() {
         })();
       }, attempt === 0 ? AUTO_SAVE_DELAY_MS : AUTO_SAVE_RETRY_DELAY_MS);
     },
-    [clearAutoSave, updateState],
+    [clearAutoSave, isAutoSavePaused, updateState],
   );
   scheduleAutoSaveRef.current = scheduleAutoSave;
+
+  const pauseAutoSave = useCallback((): AutoSavePause => {
+    const pause = { id: Symbol("autosave-pause"), filePath: stateRef.current.filePath };
+    autoSavePausesRef.current.set(pause.id, pause.filePath);
+    clearAutoSave();
+    return pause;
+  }, [clearAutoSave]);
+
+  const resumeAutoSave = useCallback(
+    (pause: AutoSavePause) => {
+      if (!autoSavePausesRef.current.delete(pause.id)) return;
+      const current = stateRef.current;
+      if (
+        current.isDirty &&
+        current.filePath === pause.filePath &&
+        !isAutoSavePaused(current.filePath)
+      ) {
+        scheduleAutoSave(contentRevisionRef.current, current.filePath);
+      }
+    },
+    [isAutoSavePaused, scheduleAutoSave],
+  );
+
+  const cancelAutoSavePause = useCallback((pause: AutoSavePause) => {
+    autoSavePausesRef.current.delete(pause.id);
+  }, []);
 
   const markDirty = useCallback(() => {
     const revision = ++contentRevisionRef.current;
@@ -424,12 +467,22 @@ export function useFileState() {
     updateState((prev) => ({ ...prev, filePath: null, isDirty: true }));
   }, [clearAutoSave, updateState]);
 
-  useEffect(() => clearAutoSave, [clearAutoSave]);
+  useEffect(
+    () => () => {
+      clearAutoSave();
+      autoSavePausesRef.current.clear();
+    },
+    [clearAutoSave],
+  );
 
   return {
     ...state,
     markDirty,
     markClean,
+    getContentRevision,
+    pauseAutoSave,
+    resumeAutoSave,
+    cancelAutoSavePause,
     handleOpen,
     handleOpenFolder,
     handleSave,

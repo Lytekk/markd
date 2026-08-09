@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Editor as TiptapEditor } from "@tiptap/react";
-import { messageDialog } from "@/lib/dialogs";
+import { messageModal } from "@/lib/modal";
 
 export interface MenuItem {
   label: string;
@@ -193,7 +193,7 @@ export function Menubar(props: MenubarProps) {
         {
           label: "About Markd",
           onSelect: () =>
-            void messageDialog(
+            void messageModal(
               `Markd ${__APP_VERSION__}\n\nA distraction-free markdown editor.`,
               { title: "About Markd" },
             ),

@@ -207,6 +207,11 @@ describe("base.css layout", () => {
     expect(empty).not.toMatch(/display:\s*none/);
   });
 
+  test("first-class confirmations sit above other in-app overlays", () => {
+    const host = ruleBody(".markd-modal-host-backdrop");
+    expect(host, "missing dedicated ModalHost layer").toMatch(/z-index:\s*1100/);
+  });
+
   // Day/Night swap cross-fades colors via a transient `.theme-transition` class
   // (use-theme adds it only during the swap) so the change doesn't shock the eyes.
   test("theme swap cross-fades colors via a .theme-transition rule that transitions background-color", () => {

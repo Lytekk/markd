@@ -28,8 +28,11 @@ describe("Tauri capabilities (src-tauri/capabilities/default.json)", () => {
     expect(perms).toContain("updater:default");
   });
 
-  it("grants dialog:default — askDialog()/messageDialog() need ask/message", () => {
-    expect(perms).toContain("dialog:default");
+  it("grants only native file pickers, never native ask/message/confirm popups", () => {
+    expect(perms.filter((permission) => permission.startsWith("dialog:"))).toEqual([
+      "dialog:allow-open",
+      "dialog:allow-save",
+    ]);
   });
 
   it("grants opener:allow-reveal-item-in-dir — the tab/file-tree 'Reveal in File Explorer' action needs it", () => {
