@@ -762,7 +762,6 @@ body {
 .markd-status-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   padding: 4px 16px;
   font-size: 12px;
   color: var(--control-text-color);
@@ -770,18 +769,58 @@ body {
   background: var(--bg-color);
   flex-shrink: 0;
   gap: 16px;
+  overflow: hidden;
 }
 
-.markd-status-bar .left,
-.markd-status-bar .right {
-  display: flex;
+.markd-status-left {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 5ch;
+  align-items: center;
   gap: 16px;
+  flex: 1 1 12rem;
+  min-width: 12ch;
+}
+
+/* Every mutable footer value owns a fixed track. State may change paint or
+   text inside a track, but never the coordinates of neighboring controls. */
+.markd-status-right {
+  position: relative;
+  display: grid;
+  grid-template-columns: 15ch 16ch 6ch 7ch 8ch 7ch 1px 10ch 10ch 7ch 5ch 11ch;
+  align-items: center;
+  column-gap: 10px;
+  white-space: nowrap;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: none;
+}
+
+.markd-status-right::-webkit-scrollbar {
+  display: none;
+}
+
+.markd-status-right > * {
+  min-width: 0;
 }
 
 .markd-status-filename {
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.markd-status-filename-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .markd-dirty-bullet {
@@ -790,11 +829,29 @@ body {
   line-height: 1;
 }
 
-/* Word/char deltas vs the saved baseline: visible only while dirty and absent
-   at zero. Colors themeable via day.css / night.css. */
+/* Word/char deltas vs the saved baseline. Value and delta subtracks remain
+   mounted even when clean/zero so counts cannot move the rest of the footer. */
+.markd-status-stat {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 5ch;
+  align-items: baseline;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.markd-status-stat-value {
+  overflow: hidden;
+  text-overflow: clip;
+}
+
 .markd-stat-delta {
-  margin-left: 4px;
+  text-align: right;
   font-weight: 600;
+}
+
+.is-slot-empty {
+  visibility: hidden;
 }
 
 .markd-stat-delta.plus {
@@ -1017,6 +1074,29 @@ body {
 .markd-version {
   opacity: 0.7;
   font-size: 11px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.markd-status-zoom {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.markd-status-toggle {
+  width: 100%;
+  padding: 2px 6px;
+  font-size: inherit;
+  color: inherit;
+  cursor: pointer;
+  background: none;
+  border: none;
+  border-radius: 3px;
+}
+
+.markd-status-toggle:disabled {
+  cursor: default;
+  opacity: 0.4;
 }
 
 /* Status bar active button */
@@ -1041,6 +1121,8 @@ body {
   border: 1px solid var(--border-color);
   border-radius: 4px;
   opacity: 0.85;
+  width: 100%;
+  justify-content: center;
 }
 
 .markd-status-bar .markd-status-action:hover {
@@ -1778,6 +1860,10 @@ body {
   color: var(--primary-color, #4a9);
   font-size: 11px;
   font-weight: 600;
+  text-align: left;
+}
+
+.markd-saved-indicator.is-visible {
   animation: markd-saved-fade 2s ease-out forwards;
 }
 

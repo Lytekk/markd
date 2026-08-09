@@ -176,6 +176,37 @@ describe("base.css layout", () => {
     expect(body).toMatch(/background:/);
   });
 
+  test("the footer uses fixed tracks and invisible placeholders so state cannot move siblings", () => {
+    const bar = ruleBody(".markd-status-bar");
+    const left = ruleBody(".markd-status-left");
+    const right = ruleBody(".markd-status-right");
+    const filename = ruleBody(".markd-status-filename");
+    const stats = ruleBody(".markd-status-stat");
+    const empty = ruleBody(".is-slot-empty");
+
+    expect(bar, "missing status-bar layout rule").toMatch(/display:\s*flex/);
+    expect(bar, "wide footer contents must not scroll the editor shell").toMatch(
+      /overflow:\s*hidden/,
+    );
+    expect(left, "missing fixed left status region").toMatch(/display:\s*grid/);
+    expect(left).toMatch(/flex:\s*1\s+1\s+12rem/);
+    expect(left).toMatch(/min-width:\s*12ch/);
+    expect(right, "missing fixed right status tracks").toMatch(/display:\s*grid/);
+    expect(right).toMatch(/position:\s*relative/);
+    expect(right).toMatch(/grid-template-columns:/);
+    expect(right, "narrow windows must scroll only the fixed footer tracks").toMatch(
+      /overflow-x:\s*auto/,
+    );
+    expect(right).toMatch(/min-width:\s*0/);
+    expect(filename, "filename must be bounded instead of pushing controls").toMatch(/overflow:\s*hidden/);
+    expect(filename).toMatch(/text-overflow:\s*ellipsis/);
+    expect(stats, "numeric status cells need stable digit geometry").toMatch(
+      /font-variant-numeric:\s*tabular-nums/,
+    );
+    expect(empty, "inactive content must retain its slot").toMatch(/visibility:\s*hidden/);
+    expect(empty).not.toMatch(/display:\s*none/);
+  });
+
   // Day/Night swap cross-fades colors via a transient `.theme-transition` class
   // (use-theme adds it only during the swap) so the change doesn't shock the eyes.
   test("theme swap cross-fades colors via a .theme-transition rule that transitions background-color", () => {

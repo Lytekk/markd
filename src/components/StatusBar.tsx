@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import type { TextStats } from "@/lib/text-stats";
 
 interface StatusBarProps {
@@ -28,17 +28,31 @@ interface StatusBarProps {
   zoom: number;
 }
 
+// offset* values are integer layout pixels while getBoundingClientRect can end
+// on a fractional device pixel. Keep one layout pixel of breathing room so a
+// focused control is never left hairline-clipped at the rail edge.
+const FOCUS_REVEAL_MARGIN_PX = 1;
+
 function StatDelta({
   current,
   baseline,
+  visible,
 }: {
   current: number;
   baseline: number;
+  visible: boolean;
 }) {
   const delta = current - baseline;
-  if (delta === 0) return null;
-  const cls = `markd-stat-delta ${delta > 0 ? "plus" : "minus"}`;
-  return <span className={cls}>{delta > 0 ? `+${delta}` : `${delta}`}</span>;
+  const hasDelta = visible && delta !== 0;
+  const cls = [
+    "markd-stat-delta",
+    hasDelta ? (delta > 0 ? "plus" : "minus") : "is-slot-empty",
+  ].join(" ");
+  return (
+    <span className={cls} aria-hidden={!hasDelta}>
+      {hasDelta ? (delta > 0 ? `+${delta}` : `${delta}`) : ""}
+    </span>
+  );
 }
 
 // Download/export glyph shared by the HTML & PDF actions — the icon + bordered
@@ -84,6 +98,7 @@ export function StatusBar({
 }: StatusBarProps) {
   const [stats, setStats] = useState<TextStats>({ words: 0, chars: 0 });
   const [showSaved, setShowSaved] = useState(false);
+  const rightRailRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -104,89 +119,154 @@ export function StatusBar({
 
   const showDeltas = statsBaseline !== null && isDirty;
 
+  const revealFocusedSlot = (target: EventTarget | null) => {
+    const rail = rightRailRef.current;
+    const slot = target instanceof HTMLElement
+      ? target.closest<HTMLElement>("[data-status-slot]")
+      : null;
+    if (!rail || !slot || slot.parentElement !== rail || rail.clientWidth === 0) return;
+    const slotStart = slot.offsetLeft;
+    const slotEnd = slotStart + slot.offsetWidth;
+    const viewStart = rail.scrollLeft;
+    const viewEnd = viewStart + rail.clientWidth;
+    if (slotStart < viewStart) {
+      rail.scrollLeft = Math.max(0, slotStart - FOCUS_REVEAL_MARGIN_PX);
+    } else if (slotEnd > viewEnd) {
+      rail.scrollLeft = slotEnd - rail.clientWidth + FOCUS_REVEAL_MARGIN_PX;
+    }
+  };
+
   return (
     <div className="markd-status-bar">
-      <div className="left">
-        <span className="markd-status-filename" title={filePath ?? undefined}>
-          {fileName}
-          {isDirty && <span className="markd-dirty-bullet">●</span>}
+      <div className="left markd-status-left">
+        <span
+          className="markd-status-filename"
+          title={filePath ?? undefined}
+          aria-label={`${fileName}${isDirty ? ", unsaved changes" : ""}`}
+          data-status-slot="filename"
+        >
+          <span className="markd-status-filename-text">{fileName}</span>
+          <span
+            className={`markd-dirty-bullet${isDirty ? "" : " is-slot-empty"}`}
+            aria-hidden="true"
+          >
+            ●
+          </span>
         </span>
-        {showSaved && <span className="markd-saved-indicator">Saved</span>}
+        <span
+          className={`markd-saved-indicator${showSaved ? " is-visible" : " is-slot-empty"}`}
+          role="status"
+          aria-live="polite"
+          aria-hidden={!showSaved}
+          data-status-slot="saved"
+        >
+          Saved
+        </span>
       </div>
-      <div className="right">
-        <span>
-          {stats.words} words
-          {showDeltas && (
-            <StatDelta current={stats.words} baseline={statsBaseline.words} />
-          )}
+      <div
+        ref={rightRailRef}
+        className="right markd-status-right"
+        onFocus={(event) => revealFocusedSlot(event.target)}
+      >
+        <span className="markd-status-stat" data-status-slot="words">
+          <span className="markd-status-stat-value">{stats.words} words</span>
+          <StatDelta
+            current={stats.words}
+            baseline={statsBaseline?.words ?? stats.words}
+            visible={showDeltas}
+          />
         </span>
-        <span>
-          {stats.chars} chars
-          {showDeltas && (
-            <StatDelta current={stats.chars} baseline={statsBaseline.chars} />
-          )}
+        <span className="markd-status-stat" data-status-slot="chars">
+          <span className="markd-status-stat-value">{stats.chars} chars</span>
+          <StatDelta
+            current={stats.chars}
+            baseline={statsBaseline?.chars ?? stats.chars}
+            visible={showDeltas}
+          />
         </span>
         <button
           onClick={onToggleFocusMode}
-          style={btnStyle}
-          className={focusMode ? "status-btn-active" : ""}
+          className={`markd-status-toggle${focusMode ? " status-btn-active" : ""}`}
           title="Toggle Focus Mode"
+          aria-pressed={focusMode}
+          data-status-slot="focus"
         >
           Focus
         </button>
         <button
           onClick={onToggleSource}
-          style={btnStyle}
-          className={sourceMode ? "status-btn-active" : ""}
+          className={`markd-status-toggle${sourceMode ? " status-btn-active" : ""}`}
           title="Toggle Source (Ctrl+/)"
+          aria-pressed={sourceMode}
+          data-status-slot="source"
         >
           Source
         </button>
         <button
           onClick={onToggleFullWidth}
-          style={btnStyle}
-          className={fullWidth ? "status-btn-active" : ""}
+          className={`markd-status-toggle${fullWidth ? " status-btn-active" : ""}`}
           title="Toggle Full Width"
+          aria-pressed={fullWidth}
+          data-status-slot="width"
         >
           {fullWidth ? "Full" : "Column"}
         </button>
-        {sourceMode && (
-          <button
-            onClick={onToggleLineNumbers}
-            style={btnStyle}
-            className={lineNumbers ? "status-btn-active" : ""}
-            title="Toggle Source Line Numbers"
-          >
-            {lineNumbers ? "Lines" : "No Lines"}
-          </button>
-        )}
-        <span className="markd-status-divider" aria-hidden="true" />
-        <button onClick={onExportHtml} className="markd-status-action" title="Export as HTML">
+        <button
+          onClick={onToggleLineNumbers}
+          className={`markd-status-toggle markd-status-lines${
+            sourceMode && lineNumbers ? " status-btn-active" : ""
+          }`}
+          title={sourceMode ? "Toggle Source Line Numbers" : "Lines are available in Source mode"}
+          aria-label={sourceMode ? "Lines" : "Lines (available in Source mode)"}
+          aria-pressed={sourceMode && lineNumbers}
+          disabled={!sourceMode}
+          data-status-slot="lines"
+        >
+          Lines
+        </button>
+        <span
+          className="markd-status-divider"
+          aria-hidden="true"
+          data-status-slot="divider"
+        />
+        <button
+          onClick={onExportHtml}
+          className="markd-status-action"
+          title="Export as HTML"
+          data-status-slot="html"
+        >
           <ExportIcon />
           HTML
         </button>
-        <button onClick={onExportPdf} className="markd-status-action" title="Export as PDF">
+        <button
+          onClick={onExportPdf}
+          className="markd-status-action"
+          title="Export as PDF"
+          data-status-slot="pdf"
+        >
           <ExportIcon />
           PDF
         </button>
-        <button onClick={onThemeChange} style={btnStyle} title="Toggle Theme">
+        <button
+          onClick={onThemeChange}
+          className="markd-status-toggle"
+          title="Toggle Theme"
+          data-status-slot="theme"
+        >
           {theme}
         </button>
-        <span style={{ opacity: zoom === 100 ? 0.5 : 0.7 }} title="Zoom level (Ctrl+0 to reset)">
+        <span
+          className="markd-status-zoom"
+          style={{ opacity: zoom === 100 ? 0.5 : 0.7 }}
+          title="Zoom level (Ctrl+0 to reset)"
+          data-status-slot="zoom"
+        >
           {zoom}%
         </span>
-        <span className="markd-version">v{__APP_VERSION__}</span>
+        <span className="markd-version" data-status-slot="version">
+          v{__APP_VERSION__}
+        </span>
       </div>
     </div>
   );
 }
-
-const btnStyle: React.CSSProperties = {
-  background: "none",
-  border: "none",
-  color: "inherit",
-  cursor: "pointer",
-  fontSize: "inherit",
-  padding: "2px 6px",
-  borderRadius: 3,
-};
