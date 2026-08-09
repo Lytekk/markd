@@ -731,12 +731,9 @@ body {
 
 /* Tables
  *
- * `display: block` + `overflow-x: auto` turns wide tables into a horizontally
- * scrollable block instead of bleeding past the 860px column. Without this,
- * tables whose content exceeds the column (e.g. a Key Findings table with
- * long prose in cells) overflow #write; the scroll container has
- * `overflow-x: hidden`, so the excess gets clipped and becomes unreachable.
- * GitHub's markdown rendering uses the same approach.
+ * Standalone HTML exports contain #write but not the live editor shell. Retain
+ * their prior bounded table-local fallback rather than applying a scroll-owner
+ * contract for an element that does not exist in the exported document.
  */
 #write table {
   display: block;
@@ -745,6 +742,24 @@ body {
   border-collapse: collapse;
   width: max-content;
   margin: 0.8em 0;
+}
+
+/* In the live editor, `.markd-editor-scroll` is the ONE horizontal scroll
+ * owner. A table-local scrollbar measures only TipTap's clamped outer box; on
+ * very wide tables its remaining columns live in a second range whose bar can
+ * sit thousands of vertical pixels below the viewport. Keep both wrapper and
+ * table overflow visible here so the table's full intrinsic width contributes
+ * to the editor's persistent scrollbar and that bar reaches every cell.
+ */
+.markd-editor-scroll #write .tableWrapper {
+  overflow-x: visible;
+}
+
+.markd-editor-scroll #write table {
+  display: table;
+  width: max-content;
+  max-width: none;
+  overflow-x: visible;
 }
 
 #write th, #write td {
@@ -1993,6 +2008,15 @@ body {
     margin: 0 !important;
     font-size: 11pt;
     line-height: 1.5;
+  }
+
+  /* Printed pages have no live editor scroll owner. Restore the prior bounded
+     fallback rather than carrying the interactive intrinsic-width rule into
+     paged media. */
+  .markd-editor-scroll #write table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
   }
 
   /* Avoid splitting these across pages where possible */

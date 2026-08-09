@@ -17,12 +17,35 @@ function ruleBody(selector: string): string | null {
 }
 
 describe("base.css layout", () => {
-  test("#write table gets a horizontal scroll block so wide tables don't escape the 860px column", () => {
-    const body = ruleBody("#write table");
-    expect(body, "missing `#write table` rule").not.toBeNull();
-    expect(body).toMatch(/display:\s*block/);
-    expect(body).toMatch(/overflow-x:\s*auto/);
-    expect(body).toMatch(/max-width:\s*100%/);
+  test("wide tables contribute their full width to the editor's single horizontal scrollbar", () => {
+    const editor = ruleBody(".markd-editor-scroll");
+    const wrapper = ruleBody(".markd-editor-scroll #write .tableWrapper");
+    const table = ruleBody(".markd-editor-scroll #write table");
+
+    expect(editor, "missing editor scroll-owner rule").not.toBeNull();
+    expect(wrapper, "missing live non-scrolling TipTap table-wrapper rule").not.toBeNull();
+    expect(table, "missing live table overflow rule").not.toBeNull();
+    expect(editor!).toMatch(/overflow-x:\s*auto/);
+    expect(wrapper!).toMatch(/overflow-x:\s*visible/);
+    expect(table!).toMatch(/display:\s*table/);
+    expect(table!).toMatch(/width:\s*max-content/);
+    expect(table!).toMatch(/max-width:\s*none/);
+    expect(table!).toMatch(/overflow-x:\s*visible/);
+    expect(table!).not.toMatch(/overflow-x:\s*(?:auto|scroll)/);
+  });
+
+  test("standalone HTML exports retain their prior fallback without the live editor shell", () => {
+    const table = ruleBody("#write table");
+    expect(table, "missing standalone `#write table` fallback").not.toBeNull();
+    expect(table!).toMatch(/display:\s*block/);
+    expect(table!).toMatch(/max-width:\s*100%/);
+    expect(table!).toMatch(/overflow-x:\s*auto/);
+  });
+
+  test("print restores the prior bounded fallback outside the live scroll owner", () => {
+    expect(css).toMatch(
+      /@media print[\s\S]*\.markd-editor-scroll #write table\s*\{[^}]*display:\s*block[^}]*max-width:\s*100%[^}]*overflow-x:\s*auto/,
+    );
   });
 
   test(".markd-editor-scroll shows a horizontal scrollbar when content exceeds width", () => {
