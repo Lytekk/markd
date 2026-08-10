@@ -108,6 +108,13 @@ export interface TextareaBackendDeps {
   onResults?: (ranges: TextRange[], currentIndex: number) => void;
   /** Injectable for tests (default selects + centers via textarea-metrics). */
   reveal?: (ta: HTMLTextAreaElement, range: TextRange, afterEdit: boolean) => void;
+  /**
+   * Controlled textareas should report edits through their React onChange
+   * handler. Direct native input listeners run before React's controlled-value
+   * bookkeeping and can clobber the edit; standalone consumers may retain the
+   * legacy listener by leaving this enabled.
+   */
+  listenToInput?: boolean;
 }
 
 export function textareaSearchBackend(deps: TextareaBackendDeps): SearchBackend {
@@ -139,19 +146,31 @@ export function textareaSearchBackend(deps: TextareaBackendDeps): SearchBackend 
   let boundTa: HTMLTextAreaElement | null = null;
   const onInput = () => {
     recompute(boundTa?.value ?? deps.getText(), false);
-    notify();
+    // The textarea is controlled by React. Its native input listener runs on
+    // the target before React's delegated onChange handler; publishing the
+    // highlight state synchronously would re-render SourceEditor first and
+    // write the old value back, losing an Enter/newline and clamping the
+    // caret to EOF. Let the controlled handler commit the edit first.
+    notify(true);
   };
   const syncInputBinding = () => {
-    const want = results.length > 0 ? deps.getTextarea() : null;
+    const want = deps.listenToInput !== false && results.length > 0 ? deps.getTextarea() : null;
     if (boundTa === want) return;
     boundTa?.removeEventListener("input", onInput);
     boundTa = want;
     boundTa?.addEventListener("input", onInput);
   };
-  const notify = () => {
+  let resultNotification = 0;
+  const notify = (deferResults = false) => {
     syncInputBinding();
-    deps.onResults?.(results, currentIndex);
-    listeners.forEach((l) => l());
+    const token = ++resultNotification;
+    const publish = () => {
+      if (token !== resultNotification) return;
+      deps.onResults?.(results, currentIndex);
+      listeners.forEach((l) => l());
+    };
+    if (deferResults) queueMicrotask(publish);
+    else publish();
   };
   const reveal = (afterEdit = false) => {
     const r = results[currentIndex];
