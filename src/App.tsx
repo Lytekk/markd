@@ -779,6 +779,13 @@ export function App() {
   const handleSourceMarkdownChange = useCallback(
     (md: string) => {
       setSourceMarkdown(md);
+      // SourceEditor is controlled by React. Refresh search from the same
+      // onChange path, after this state update commits, instead of attaching a
+      // competing native input listener that can reset Enter to EOF.
+      queueMicrotask(() => {
+        const backend = searchBackendRef.current;
+        if (sourceModeRef.current && backend?.getState().count) backend.refresh();
+      });
       const fs = fileStateRef.current;
       // Every textarea mutation advances the save revision, even if it happens
       // to return to the saved bytes and clears dirty immediately afterward.
@@ -867,6 +874,7 @@ export function App() {
         getTextarea: () =>
           document.querySelector<HTMLTextAreaElement>(".markd-source-textarea"),
         onResults: (ranges, current) => setSourceSearchView({ ranges, current }),
+        listenToInput: false,
       });
     }
     return editor ? editorSearchBackend(editor) : null;

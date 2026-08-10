@@ -86,7 +86,7 @@ describe("textareaSearchBackend", () => {
     expect(backend.getState().count).toBe(2);
   });
 
-  it("recomputes on textarea input, preserving the index when still valid", () => {
+  it("recomputes on textarea input, preserving the index when still valid", async () => {
     const { backend, ta } = makeBackend("m m m");
     backend.apply({ ...OPTS, searchTerm: "m" });
     const onChange = vi.fn();
@@ -94,8 +94,38 @@ describe("textareaSearchBackend", () => {
     backend.next();
     ta.value = "m m m m";
     ta.dispatchEvent(new Event("input"));
+    await Promise.resolve();
     expect(onChange).toHaveBeenCalled();
     expect(backend.getState()).toEqual({ count: 4, currentIndex: 1, error: null });
+  });
+
+  it("projects input results after the controlled textarea records the edit", async () => {
+    let controlledValue = "cat dog";
+    const ta = document.createElement("textarea");
+    ta.value = controlledValue;
+    const onResults = vi.fn(() => {
+      // Model React writing the last committed prop during a render. If the
+      // search listener runs before the textarea's input handler, this
+      // clobbers the just-typed value and sends the caret to the end.
+      ta.value = controlledValue;
+    });
+    const backend = textareaSearchBackend({
+      getText: () => controlledValue,
+      setText: vi.fn(),
+      getTextarea: () => ta,
+      onResults,
+    });
+
+    backend.apply({ ...OPTS, searchTerm: "cat" });
+    ta.addEventListener("input", () => {
+      controlledValue = ta.value;
+    });
+    ta.value = "cat\n dog";
+    ta.dispatchEvent(new Event("input"));
+
+    expect(controlledValue).toBe("cat\n dog");
+    await Promise.resolve();
+    expect(ta.value).toBe("cat\n dog");
   });
 
   it("surfaces regex errors through getState", () => {
