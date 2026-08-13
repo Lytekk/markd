@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type MouseEvent as ReactMouseEvent } 
 import type { Editor } from "@tiptap/react";
 import type { FileEntry } from "@/lib/file-system";
 import { pathExists } from "@/lib/file-system";
+import { samePath } from "@/lib/path-identity";
 import type { RecentFile } from "@/hooks/use-recent-files";
 import type { HeadingEntry } from "@/lib/section-commands";
 import { OutlinePanel } from "@/components/OutlinePanel";
@@ -12,7 +13,6 @@ export type FileTreeAction = "new-file" | "new-folder" | "rename" | "delete" | "
 
 interface SidebarProps {
   tree: FileEntry[];
-  activeFile: string;
   activeFilePath: string | null;
   collapsed: boolean;
   editor: Editor | null;
@@ -35,7 +35,6 @@ interface SidebarProps {
 
 export function Sidebar({
   tree,
-  activeFile,
   activeFilePath,
   collapsed,
   editor,
@@ -184,7 +183,7 @@ export function Sidebar({
           ) : (
             <FileTree
               entries={tree}
-              activeFile={activeFile}
+              activeFilePath={activeFilePath}
               onFileSelect={onFileSelect}
               onContext={openTreeMenu}
             />
@@ -298,12 +297,12 @@ export function RecentFilesList({
 
 function FileTree({
   entries,
-  activeFile,
+  activeFilePath,
   onFileSelect,
   onContext,
 }: {
   entries: FileEntry[];
-  activeFile: string;
+  activeFilePath: string | null;
   onFileSelect: (entry: FileEntry) => void;
   onContext?: (e: ReactMouseEvent, entry: FileEntry) => void;
 }) {
@@ -313,7 +312,7 @@ function FileTree({
         <FileTreeItem
           key={entry.path}
           entry={entry}
-          activeFile={activeFile}
+          activeFilePath={activeFilePath}
           onFileSelect={onFileSelect}
           onContext={onContext}
         />
@@ -324,12 +323,12 @@ function FileTree({
 
 function FileTreeItem({
   entry,
-  activeFile,
+  activeFilePath,
   onFileSelect,
   onContext,
 }: {
   entry: FileEntry;
-  activeFile: string;
+  activeFilePath: string | null;
   onFileSelect: (entry: FileEntry) => void;
   onContext?: (e: ReactMouseEvent, entry: FileEntry) => void;
 }) {
@@ -343,7 +342,10 @@ function FileTreeItem({
     }
   }, [entry, onFileSelect]);
 
-  const isActive = entry.kind === "file" && entry.name === activeFile;
+  // Basenames are not identities: a workspace can contain many README.md or
+  // AGENTS.md files, and the active document may even belong to another open
+  // project. Highlight only the exact path owned by the active buffer.
+  const isActive = entry.kind === "file" && samePath(entry.path, activeFilePath);
 
   return (
     <>
@@ -366,7 +368,7 @@ function FileTreeItem({
       {entry.kind === "directory" && expanded && entry.children && (
         <FileTree
           entries={entry.children}
-          activeFile={activeFile}
+          activeFilePath={activeFilePath}
           onFileSelect={onFileSelect}
           onContext={onContext}
         />

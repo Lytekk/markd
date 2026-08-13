@@ -61,7 +61,6 @@ describe("RecentFilesList", () => {
     const { container } = render(
       <Sidebar
         tree={[]}
-        activeFile=""
         activeFilePath={null}
         collapsed={false}
         editor={null}
@@ -90,7 +89,6 @@ describe("RecentFilesList", () => {
     // only renders when the sidebar is expanded, on the files tab, with no tree.
     const base = {
       tree: [],
-      activeFile: "",
       activeFilePath: null,
       editor: null,
       recentFiles: files,
@@ -120,7 +118,6 @@ describe("Sidebar collapsed accessibility", () => {
     const { container } = render(
       <Sidebar
         tree={[]}
-        activeFile=""
         activeFilePath={null}
         collapsed
         editor={null}
@@ -138,5 +135,63 @@ describe("Sidebar collapsed accessibility", () => {
     const sidebar = container.querySelector(".markd-sidebar")!;
     expect(sidebar.getAttribute("inert")).not.toBeNull();
     expect(sidebar.getAttribute("aria-hidden")).toBe("true");
+  });
+});
+
+describe("Sidebar active file identity", () => {
+  it("highlights only the exact path when multiple files share a basename", () => {
+    const tree = [
+      {
+        name: "project-a",
+        path: "/work/project-a",
+        kind: "directory" as const,
+        depth: 0,
+        children: [
+          {
+            name: "AGENTS.md",
+            path: "/work/project-a/AGENTS.md",
+            kind: "file" as const,
+            depth: 1,
+          },
+        ],
+      },
+      {
+        name: "project-b",
+        path: "/work/project-b",
+        kind: "directory" as const,
+        depth: 0,
+        children: [
+          {
+            name: "AGENTS.md",
+            path: "/work/project-b/AGENTS.md",
+            kind: "file" as const,
+            depth: 1,
+          },
+        ],
+      },
+    ];
+
+    const { container } = render(
+      <Sidebar
+        tree={tree}
+        activeFilePath="/work/project-b/AGENTS.md"
+        collapsed={false}
+        editor={null}
+        recentFiles={[]}
+        activeTab="files"
+        onTabChange={vi.fn()}
+        heldModifier={null}
+        onFileSelect={vi.fn()}
+        onOpenFolder={vi.fn()}
+        onRecentFileSelect={vi.fn()}
+        onRecentFileRemove={vi.fn()}
+      />,
+    );
+
+    const agentsRows = Array.from(container.querySelectorAll(".markd-file-item"))
+      .filter((row) => row.querySelector(".name")?.textContent === "AGENTS.md");
+    expect(agentsRows).toHaveLength(2);
+    expect(agentsRows[0]!.classList.contains("active")).toBe(false);
+    expect(agentsRows[1]!.classList.contains("active")).toBe(true);
   });
 });

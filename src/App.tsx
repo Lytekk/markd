@@ -1719,8 +1719,8 @@ export function App() {
           case "s":
             e.preventDefault();
             if (e.shiftKey) {
-              // Ctrl+Shift+S: save all dirty tabs
-              void saveAllDirtyTabs();
+              // Ctrl+Shift+S: save the active document under a new path.
+              void saveActiveTabAs();
             } else {
               void saveActiveTab();
             }
@@ -1912,8 +1912,8 @@ export function App() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [
-    saveAllDirtyTabs,
     saveActiveTab,
+    saveActiveTabAs,
     confirmDiscardForReload,
     handleOpenFile,
     handleToggleSource,
@@ -2637,7 +2637,6 @@ export function App() {
     <div className="markd-app" data-mod={heldModifier ?? undefined}>
       <Sidebar
         tree={fileState.dirTree}
-        activeFile={fileState.fileName}
         activeFilePath={fileState.filePath}
         collapsed={sidebarCollapsed}
         editor={editor}
