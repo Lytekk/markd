@@ -43,6 +43,7 @@ import {
 } from "@/lib/updater";
 import {
   createFileChangePromptCoordinator,
+  defaultExternalChangeChoice,
   fileChangeReadRetryDelay,
   fileChangeTargetOwnsActivePath,
   fileChangeTargetIsCurrent,
@@ -2223,7 +2224,7 @@ export function App() {
             },
             { label: "Keep Current", value: "keep" },
           ],
-          defaultValue: "keep",
+          defaultValue: defaultExternalChangeChoice(hasUnsavedEdits),
           isCurrent: () => isPromptTargetCurrent(promptTarget),
         });
         const resolution = resolveExternalChangeChoice(

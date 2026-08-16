@@ -168,11 +168,13 @@ describe("user-facing dialog surface policy", () => {
     ).toEqual(["src/App.tsx"]);
   });
 
-  it("gives file-change confirmations explicit safe in-app defaults", () => {
+  it("gives file-change confirmations explicit data-loss-safe in-app defaults", () => {
     const app = readFileSync("src/App.tsx", "utf8");
     expect(app).not.toMatch(/\baskDialog\b/);
     expect(app).toMatch(/title:\s*"File Deleted"[\s\S]{0,700}defaultValue:\s*"keep"/);
-    expect(app).toMatch(/title:\s*"File Changed on Disk"[\s\S]{0,700}defaultValue:\s*"keep"/);
+    expect(app).toMatch(
+      /title:\s*"File Changed on Disk"[\s\S]{0,700}defaultValue:\s*defaultExternalChangeChoice\(hasUnsavedEdits\)/,
+    );
   });
 
   it("binds file-change continuations to their original tab and reloads fresh bytes", () => {

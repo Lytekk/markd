@@ -135,6 +135,11 @@ export function shouldKeepDeletedFileOpen(choice: string | null): boolean {
   return choice !== "close";
 }
 
+/** Enter follows the primary reload action unless that could discard local edits. */
+export function defaultExternalChangeChoice(hasUnsavedEdits: boolean): "reload" | "keep" {
+  return hasUnsavedEdits ? "keep" : "reload";
+}
+
 /** Reloading can discard local edits, so only the explicit Reload action wins. */
 export function shouldReloadExternalChange(choice: string | null): boolean {
   return choice === "reload";

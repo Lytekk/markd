@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   createFileChangePromptCoordinator,
+  defaultExternalChangeChoice,
   fileChangeReadRetryDelay,
   fileChangeTargetOwnsActivePath,
   fileChangeTargetIsCurrent,
@@ -62,6 +63,11 @@ describe("shouldPromptForDeletion", () => {
 });
 
 describe("in-app file-change choices", () => {
+  it("defaults Enter to reload only when the Markd buffer is clean", () => {
+    expect(defaultExternalChangeChoice(false)).toBe("reload");
+    expect(defaultExternalChangeChoice(true)).toBe("keep");
+  });
+
   it("keeps and detaches a deleted file unless Close Tab was chosen explicitly", () => {
     expect(shouldKeepDeletedFileOpen("keep")).toBe(true);
     expect(shouldKeepDeletedFileOpen(null)).toBe(true);
