@@ -12,32 +12,34 @@
   font: inherit;
   letter-spacing: inherit;
 }
+/* Markdown roles follow the supplied Sublime/Monokai reference. Darker
+   equivalents retain contrast against the day theme's parchment background. */
 .markd-source-syntax {
-  --source-heading: #315c9b;
-  --source-emphasis: #82419d;
-  --source-code: #956020;
-  --source-link: #167277;
-  --source-muted: #6c7564;
+  --source-heading: #995100;
+  --source-emphasis: #ac2160;
+  --source-code: #b32931;
+  --source-link-label: #006c85;
+  --source-link-url: #477400;
+  --source-muted: #66705c;
 }
 [data-theme="night"] .markd-source-syntax {
-  --source-heading: #89b4fa;
-  --source-emphasis: #cba6f7;
-  --source-code: #f9e2af;
-  --source-link: #89dceb;
+  --source-heading: #ffad33;
+  --source-emphasis: #ff5b9b;
+  --source-code: #ff6969;
+  --source-link-label: #66d9ef;
+  --source-link-url: #a6e22e;
   --source-muted: #a6b38f;
 }
-.markd-source-syntax .hljs-section { color: var(--source-heading); }
-.markd-source-syntax .hljs-strong,
-.markd-source-syntax .hljs-emphasis { color: var(--source-emphasis); }
-.markd-source-syntax .hljs-code,
-.markd-source-syntax .hljs-string { color: var(--source-code); }
-.markd-source-syntax .hljs-link,
-.markd-source-syntax .hljs-symbol,
-.markd-source-syntax .hljs-attr { color: var(--source-link); }
-.markd-source-syntax .hljs-bullet,
-.markd-source-syntax .hljs-quote,
-.markd-source-syntax .hljs-comment,
-.markd-source-syntax .hljs-meta { color: var(--source-muted); }
+/* Outer scopes precede inline scopes: emphasized text inside a heading or
+   quote retains its own color. Font metrics stay identical to the input. */
+.markd-source-syntax .source-heading { color: var(--source-heading); }
+.markd-source-syntax .source-quote { color: var(--source-muted); }
+.markd-source-syntax .source-list { color: var(--source-heading); }
+.markd-source-syntax .source-strong,
+.markd-source-syntax .source-emphasis { color: var(--source-emphasis); }
+.markd-source-syntax .source-code { color: var(--source-code); }
+.markd-source-syntax .source-link-label { color: var(--source-link-label); }
+.markd-source-syntax .source-link-url { color: var(--source-link-url); }
 .markd-source-backdrop.markd-source-syntax mark { color: inherit; }
 @media (forced-colors: active) {
   .markd-source-textarea.markd-source-colored { color: CanvasText; caret-color: CanvasText; }
