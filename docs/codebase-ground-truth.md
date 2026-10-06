@@ -194,8 +194,11 @@ the others.
 
 ### Shared editing follow-up (2026-10-06)
 
-Source coloring uses Lowlight Markdown/YAML tokens rendered as escaped React text
-in the existing search backdrop. Markdown roles are mapped separately from YAML:
+Source coloring uses Lezer CommonMark/GFM syntax nodes with exact source offsets
+and Lowlight for YAML frontmatter, rendered as escaped React text in the existing
+search backdrop. Markdown code spans, escaped delimiters and unfinished emphasis
+respect block boundaries, including inside quotes; they cannot open a color span
+across later sections. Markdown roles are mapped separately from YAML:
 headings are orange, emphasis pink, code red, link labels cyan, and destinations
 green, with darker equivalents for the light theme. Nested inline roles override
 heading/quote colors, and ordinary prose retains the theme text color. Token colors do not change font metrics; input,
