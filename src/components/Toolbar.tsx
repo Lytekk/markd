@@ -1,16 +1,17 @@
+import type { SourceCommand } from "@/lib/source-commands";
 import { useCallback, type ReactNode } from "react";
 import type { Editor } from "@tiptap/react";
 
 interface ToolbarProps {
   editor: Editor | null;
   heldModifier: "ctrl" | "alt" | null;
-  /** Source mode: the buttons drive the (hidden, stale) ProseMirror doc, so
-   * they must not accept input while the textarea owns the buffer. */
+  /** Optional host lock; Source mode routes through onSourceCommand. */
   disabled?: boolean;
+  onSourceCommand?: (command: SourceCommand) => void;
 }
 
 interface ToolbarButton {
-  label: string;
+  label: SourceCommand;
   shortcut?: string;
   icon: ReactNode;
   action: (editor: Editor) => void;
@@ -21,7 +22,7 @@ interface ToolbarButton {
 function formatTitle(label: string, shortcut?: string): string {
   if (!shortcut) return label;
   let combo: string;
-  if (shortcut.startsWith("⌥")) combo = `Alt+${shortcut.slice(1)}`;
+  if (shortcut.startsWith("⌥")) combo = `Ctrl+Alt+${shortcut.slice(1)}`;
   else if (shortcut.startsWith("⇧")) combo = `Ctrl+Shift+${shortcut.slice(1)}`;
   else combo = `Ctrl+${shortcut}`;
   return `${label} (${combo})`;
@@ -222,12 +223,14 @@ const BUTTONS: (ToolbarButton | "separator")[] = [
   },
 ];
 
-export function Toolbar({ editor, heldModifier, disabled = false }: ToolbarProps) {
+export function Toolbar({ editor, heldModifier, disabled = false, onSourceCommand }: ToolbarProps) {
   const handleClick = useCallback(
     (btn: ToolbarButton) => {
-      if (editor && !disabled) btn.action(editor);
+      if (disabled) return;
+      if (onSourceCommand) onSourceCommand(btn.label);
+      else if (editor) btn.action(editor);
     },
-    [editor, disabled],
+    [editor, disabled, onSourceCommand],
   );
 
   if (!editor) return null;
@@ -238,13 +241,14 @@ export function Toolbar({ editor, heldModifier, disabled = false }: ToolbarProps
         if (btn === "separator") {
           return <div key={i} className="separator" />;
         }
-        const active = !disabled && (btn.isActive?.(editor) ?? false);
+        const active = !disabled && !onSourceCommand && (btn.isActive?.(editor) ?? false);
         return (
           <button
             key={btn.label}
             title={disabled ? `${btn.label} — rendered mode only` : formatTitle(btn.label, btn.shortcut)}
             className={active ? "active" : ""}
             disabled={disabled}
+            onMouseDown={(e) => e.preventDefault()}
             onClick={() => handleClick(btn)}
           >
             {btn.icon}

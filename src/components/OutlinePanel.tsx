@@ -3,6 +3,7 @@ import type { Editor } from "@tiptap/react";
 import { extractHeadings, type HeadingEntry } from "@/lib/section-commands";
 import { computeHiddenSet, hasChildren } from "@/lib/outline-tree";
 import { clampActiveHeading } from "@/lib/outline-active";
+import { textOffsetTops } from "@/lib/textarea-metrics";
 import { flashWhenInView } from "@/lib/heading-flash";
 
 interface OutlinePanelProps {
@@ -83,22 +84,28 @@ export function OutlinePanel({ editor, sourceHeadings, onSourceHeadingClick }: O
   }, [editor]);
 
   useEffect(() => {
-    if (sourceHeadings) return;
     if (!editor || headings.length === 0) {
       setActiveHeadingIndex(null);
       return;
     }
 
-    const scrollContainer = editor.view.dom.closest(".markd-editor-scroll");
+    const scrollContainer = sourceHeadings
+      ? document.querySelector<HTMLTextAreaElement>(".markd-source-textarea")
+      : editor.view.dom.closest(".markd-editor-scroll");
     if (!scrollContainer) return;
 
+    let sourceTops: number[] | null = null;
+    const measureSource = () => {
+      if (sourceHeadings) sourceTops = textOffsetTops(scrollContainer as HTMLTextAreaElement, sourceHeadings.map(h => h.pos));
+    };
+    measureSource();
     let frame: number | null = null;
     const updateActive = () => {
       frame = null;
       // After an outline click we pin the clicked heading active and ignore the
       // smooth-scroll's transient scroll events for ~700ms (see handleClick).
       if (performance.now() < suppressSpyUntilRef.current) return;
-      const h = headingsRef.current;
+      const h = sourceHeadings ?? headingsRef.current;
       if (h.length === 0) return;
 
       const containerRect = scrollContainer.getBoundingClientRect();
@@ -106,6 +113,10 @@ export function OutlinePanel({ editor, sourceHeadings, onSourceHeadingClick }: O
       let candidate = 0;
 
       for (let i = h.length - 1; i >= 0; i--) {
+        if (sourceTops) {
+          if (sourceTops[i]! <= scrollContainer.scrollTop + scrollContainer.clientHeight * 0.4) { candidate = i; break; }
+          continue;
+        }
         const dom = editor.view.nodeDOM(h[i]!.pos);
         const el = dom instanceof HTMLElement ? dom : (dom as Node)?.parentElement;
         if (el instanceof HTMLElement) {
@@ -134,9 +145,12 @@ export function OutlinePanel({ editor, sourceHeadings, onSourceHeadingClick }: O
 
     // NOTE: rAF deduplication (not throttling) — coalesces multiple scroll events into one computation per frame
     scrollContainer.addEventListener("scroll", onScroll, { passive: true });
+    const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => { measureSource(); onScroll(); }) : null;
+    resizeObserver?.observe(scrollContainer);
     updateActive();
 
     return () => {
+      resizeObserver?.disconnect();
       scrollContainer.removeEventListener("scroll", onScroll);
       if (frame !== null) cancelAnimationFrame(frame);
     };
@@ -164,6 +178,7 @@ export function OutlinePanel({ editor, sourceHeadings, onSourceHeadingClick }: O
       // Source mode: jump the textarea caret — the PM scroll/flash machinery
       // below targets a detached view there.
       if (sourceHeadings) {
+        suppressSpyUntilRef.current = performance.now() + 700;
         setActiveHeadingIndex(index);
         onSourceHeadingClick?.(pos);
         return;

@@ -88,6 +88,11 @@ export function Menubar(props: MenubarProps) {
   const [openIndex, setOpenIndex] = useState<number | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
+  const focusActive = () => {
+    if (sourceMode) document.querySelector<HTMLTextAreaElement>(".markd-source-textarea")?.focus({ preventScroll: true });
+    else editor?.commands.focus(undefined, { scrollIntoView: false });
+  };
+  const clipboard = (command: "cut" | "copy" | "paste") => { focusActive(); runExec(command); };
   const menus: Menu[] = [
     {
       label: "File",
@@ -114,35 +119,35 @@ export function Menubar(props: MenubarProps) {
         {
           label: "Undo",
           shortcut: "Ctrl+Z",
-          onSelect: () => editor?.chain().focus().undo().run(),
+          onSelect: () => { focusActive(); editor?.commands.undo(); },
           disabled: !editor?.can().undo(),
         },
         {
           label: "Redo",
           shortcut: "Ctrl+Shift+Z",
-          onSelect: () => editor?.chain().focus().redo().run(),
+          onSelect: () => { focusActive(); editor?.commands.redo(); },
           disabled: !editor?.can().redo(),
         },
         "separator",
         {
           label: "Cut",
           shortcut: "Ctrl+X",
-          onSelect: () => runExec("cut"),
+          onSelect: () => clipboard("cut"),
         },
         {
           label: "Copy",
           shortcut: "Ctrl+C",
-          onSelect: () => runExec("copy"),
+          onSelect: () => clipboard("copy"),
         },
         {
           label: "Paste",
           shortcut: "Ctrl+V",
-          onSelect: () => runExec("paste"),
+          onSelect: () => clipboard("paste"),
         },
         {
           label: "Select All",
           shortcut: "Ctrl+A",
-          onSelect: () => editor?.chain().focus().selectAll().run(),
+          onSelect: () => { focusActive(); if (sourceMode) document.querySelector<HTMLTextAreaElement>(".markd-source-textarea")?.select(); else editor?.commands.selectAll(); },
         },
         "separator",
         { label: "Find…", shortcut: "Ctrl+F", onSelect: onFind },
@@ -235,7 +240,7 @@ export function Menubar(props: MenubarProps) {
   };
 
   return (
-    <div className="markd-menubar" ref={rootRef}>
+    <div className="markd-menubar" ref={rootRef} onMouseDown={(e) => e.preventDefault()}>
       {menus.map((menu, i) => (
         <div
           key={menu.label}

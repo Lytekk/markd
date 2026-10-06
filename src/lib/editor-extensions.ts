@@ -1,3 +1,4 @@
+import { SharedEditing, type EditingBridge } from "@/lib/shared-editing";
 import StarterKit from "@tiptap/starter-kit";
 import { Extension } from "@tiptap/core";
 import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
@@ -38,6 +39,7 @@ const StrikeShortcut = Extension.create({
 
 export interface ExtensionOptions {
   getFileDir: () => string;
+  editingBridge?: EditingBridge;
 }
 
 export function getExtensions(opts: ExtensionOptions) {
@@ -46,10 +48,12 @@ export function getExtensions(opts: ExtensionOptions) {
   applyMinimalEscaping();
   return [
     StarterKit.configure({
+      history: opts.editingBridge ? false : undefined,
       codeBlock: false, // replaced by CodeBlockLowlight
       text: false, // replaced by FaithfulText (no HTML-entity escaping on save)
       code: false, // replaced by FaithfulCode (bold/italic may wrap code spans)
     }),
+    ...(opts.editingBridge ? [SharedEditing.configure({ bridge: opts.editingBridge })] : []),
     FaithfulText,
     FaithfulCode,
     RawInlineHTML,

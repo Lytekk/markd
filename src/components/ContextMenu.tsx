@@ -215,6 +215,7 @@ export function ContextMenu({ editor }: ContextMenuProps) {
   return (
     <div
       ref={menuRef}
+      onMouseDown={(event) => event.preventDefault()}
       className="markd-context-menu"
       style={{ left: position.x, top: position.y }}
     >
@@ -228,6 +229,7 @@ export function ContextMenu({ editor }: ContextMenuProps) {
             className="markd-context-item"
             onClick={(e) => {
               e.stopPropagation();
+              editor.commands.focus(undefined, { scrollIntoView: false });
               item.action(editor);
               setPosition(null);
             }}

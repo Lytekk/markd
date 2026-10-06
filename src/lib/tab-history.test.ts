@@ -5,7 +5,7 @@ import StarterKit from "@tiptap/starter-kit";
 import { useFileTabs } from "@/hooks/use-file-tabs";
 import { useFileState } from "@/hooks/use-file-state";
 import { loadEditorContent } from "./editor-load";
-import { createSourceHistory, recordSourceEdit, travelSourceHistory } from "./source-history";
+import { createEditHistory, recordSourceEdit, travelEditHistory } from "./edit-history";
 
 afterEach(() => { cleanup(); localStorage.clear(); });
 
@@ -51,23 +51,23 @@ it("carries rendered history through tab snapshots and file-state restore; disk 
 
 it("carries source history through snapshots and restore without persisting it to disk", () => {
   const { result } = renderHook(() => ({ tabs: useFileTabs(), file: useFileState() }));
-  let history = createSourceHistory("alpha");
+  let history = createEditHistory("alpha");
   result.current.tabs.registerGetMarkdown(() => history.current.text);
-  result.current.tabs.registerGetSourceHistory(() => history);
+  result.current.tabs.registerGetEditHistory(() => history);
   result.current.file.registerSetContent((md, _dir, _json, _dirty, _state, savedHistory) => {
-    history = savedHistory ?? createSourceHistory(md);
+    history = savedHistory ?? createEditHistory(md);
   });
   const aId = result.current.tabs.activeTabId;
   recordSourceEdit(history, "alpha edit");
   act(() => { result.current.tabs.newTab(); });
-  history = createSourceHistory("beta");
+  history = createEditHistory("beta");
   recordSourceEdit(history, "beta edit");
   act(() => {
     result.current.file.restoreState(result.current.tabs.switchTab(aId)!);
   });
-  expect(travelSourceHistory(history, false)?.text).toBe("alpha");
-  expect(travelSourceHistory(history, false)).toBeUndefined();
-  expect(travelSourceHistory(history, true)?.text).toBe("alpha edit");
+  expect(travelEditHistory(history, false)?.text).toBe("alpha");
+  expect(travelEditHistory(history, false)).toBeUndefined();
+  expect(travelEditHistory(history, true)?.text).toBe("alpha edit");
   act(() => { result.current.tabs.hydrateTab(aId, "reloaded"); });
-  expect(result.current.tabs.activeTab.sourceHistory).toBeUndefined();
+  expect(result.current.tabs.activeTab.editHistory).toBeUndefined();
 });

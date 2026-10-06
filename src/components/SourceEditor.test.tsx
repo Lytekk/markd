@@ -136,3 +136,14 @@ it("preserves independent source undo and redo across tab switches", () => {
   expect(textarea().value).toBe("beta edit");
   view.unmount();
 });
+
+it("restores the arriving tab selection after its longer text has committed", () => {
+  const a = { past: [], future: [], current: { text: "longer document selection", start: 16, end: 25 } };
+  const b = { past: [], future: [], current: { text: "short", start: 0, end: 5 } };
+  const props = { onMarkdownChange: () => {}, lineNumbers: false, zoom: 100 };
+  const view = render(<SourceEditor {...props} markdown={b.current.text} history={b} />);
+  view.rerender(<SourceEditor {...props} markdown={a.current.text} history={a} />);
+  const ta = view.container.querySelector("textarea")!;
+  expect(ta.value.slice(ta.selectionStart, ta.selectionEnd)).toBe("selection");
+  view.unmount();
+});

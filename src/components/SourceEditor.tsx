@@ -1,11 +1,14 @@
-import { createSourceHistory, recordSourceEdit, travelSourceHistory, type SourceHistory } from "@/lib/source-history";
-import { useState, useEffect, useMemo, useRef, useCallback, type ReactNode } from "react";
+import { sourceSyntax, type SyntaxSpan } from "@/lib/source-syntax";
+import { applySourceCommand, sourceShortcut } from "@/lib/source-commands";
+import { createEditHistory, recordSourceEdit, travelEditHistory, type EditHistory } from "@/lib/edit-history";
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, type ReactNode } from "react";
 import type { TextRange } from "@/lib/text-search";
-import { lineStartOffsets, measureLineHeights } from "@/lib/textarea-metrics";
+import { lineStartOffsets, measureLineHeights, revealRange } from "@/lib/textarea-metrics";
 
 interface SourceEditorProps {
   markdown: string;
-  history?: SourceHistory;
+  history?: EditHistory;
+  onHistory?: (redo: boolean) => void;
   onMarkdownChange: (md: string) => void;
   lineNumbers: boolean;
   /** Font zoom changes wrapping/row height without changing the textarea box. */
@@ -18,57 +21,57 @@ interface SourceEditorProps {
 const GUTTER_MEASURE_DELAY_MS = 80;
 
 // The backdrop is a text twin painted behind the transparent textarea: same
-// metrics, transparent glyphs, only the <mark> backgrounds visible. A plain
+// metrics, syntax-colored glyphs and optional search marks. A plain
 // textarea cannot style sub-ranges, and its selection is invisible while the
 // find panel keeps focus — this is the standard highlight-backdrop technique.
-function renderHighlightSegments(
-  text: string,
-  ranges: TextRange[],
-  current: number,
-): ReactNode[] {
-  const out: ReactNode[] = [];
-  let cursor = 0;
-  ranges.forEach((r, i) => {
-    if (r.start > cursor) out.push(text.slice(cursor, r.start));
-    out.push(
-      <mark key={i} className={i === current ? "markd-search-current" : undefined}>
-        {text.slice(r.start, r.end)}
-      </mark>,
-    );
-    cursor = r.end;
+function renderHighlightSegments(text: string, syntax: SyntaxSpan[], ranges: TextRange[], current: number): ReactNode[] {
+  const boundaries = [...new Set([0, text.length, ...syntax.flatMap(s => [s.start, s.end]), ...ranges.flatMap(r => [r.start, r.end])])].sort((a, b) => a - b);
+  let token = 0, match = 0;
+  return boundaries.slice(0, -1).map((start, i) => {
+    const end = boundaries[i + 1]!;
+    while (token < syntax.length && syntax[token]!.end <= start) token++;
+    while (match < ranges.length && ranges[match]!.end <= start) match++;
+    const found = ranges[match] && ranges[match]!.start <= start && ranges[match]!.end >= end;
+    const content = text.slice(start, end);
+    return <span key={start} className={syntax[token]?.className || undefined}>
+      {found ? <mark className={match === current ? "markd-search-current" : undefined}>{content}</mark> : content}
+    </span>;
   });
-  out.push(text.slice(cursor));
-  return out;
 }
 
 export function SourceEditor({
   markdown,
   history: tabHistory,
+  onHistory,
   onMarkdownChange,
   lineNumbers,
   zoom,
   searchRanges,
   searchCurrent,
 }: SourceEditorProps) {
-  const localHistory = useRef(createSourceHistory(markdown));
+  const localHistory = useRef(createEditHistory(markdown));
   const history = tabHistory ?? localHistory.current;
   const historyRef = useRef(history);
   historyRef.current = history;
   const [value, setValue] = useState(markdown);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const displayedHistoryRef = useRef<SourceHistory | null>(null);
+  const displayedHistoryRef = useRef<EditHistory | null>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
   const backdropRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     recordSourceEdit(history, markdown);
     setValue(markdown);
+  }, [markdown, history]);
+
+  useLayoutEffect(() => {
     const ta = textareaRef.current;
+    if (value !== markdown) return;
     if (ta && displayedHistoryRef.current !== history) {
       ta.setSelectionRange(history.current.start, history.current.end);
     }
     displayedHistoryRef.current = history;
-  }, [markdown, history]);
+  }, [value, markdown, history]);
 
   useEffect(() => {
     textareaRef.current?.focus();
@@ -76,26 +79,54 @@ export function SourceEditor({
 
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      recordSourceEdit(history, e.target.value, e.target.selectionStart, e.target.selectionEnd);
+      recordSourceEdit(history, e.target.value, e.target.selectionStart, e.target.selectionEnd, (e.nativeEvent as InputEvent).inputType);
       setValue(e.target.value);
       onMarkdownChange(e.target.value);
     },
     [onMarkdownChange, history],
   );
 
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta || !onHistory) return;
+    const onBeforeInput = (event: InputEvent) => {
+      if (event.inputType !== "historyUndo" && event.inputType !== "historyRedo") return;
+      event.preventDefault();
+      onHistory(event.inputType === "historyRedo");
+    };
+    ta.addEventListener("beforeinput", onBeforeInput);
+    return () => ta.removeEventListener("beforeinput", onBeforeInput);
+  }, [onHistory]);
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (e.nativeEvent.isComposing) return;
+      const command = sourceShortcut(e.nativeEvent);
+      if (command) {
+        e.preventDefault();
+        const ta = e.currentTarget;
+        const next = applySourceCommand(value, { start: ta.selectionStart, end: ta.selectionEnd }, command);
+        recordSourceEdit(history, next.text, next.start, next.end);
+        setValue(next.text);
+        onMarkdownChange(next.text);
+        requestAnimationFrame(() => {
+          if (historyRef.current === history && textareaRef.current === ta) revealRange(ta, next);
+        });
+        return;
+      }
       if ((e.ctrlKey || e.metaKey) && !e.altKey &&
           (e.key.toLowerCase() === "z" || e.key.toLowerCase() === "y")) {
         e.preventDefault();
-        const next = travelSourceHistory(history, e.shiftKey || e.key.toLowerCase() === "y");
+        const redo = e.shiftKey || e.key.toLowerCase() === "y";
+        if (onHistory) { onHistory(redo); return; }
+        const next = travelEditHistory(history, redo);
         if (next) {
           setValue(next.text);
           onMarkdownChange(next.text);
           const textarea = e.currentTarget;
           requestAnimationFrame(() => {
             if (textareaRef.current === textarea && historyRef.current === history && history.current === next) {
-              textarea.setSelectionRange(next.start, next.end);
+              revealRange(textarea, next);
             }
           });
         }
@@ -113,12 +144,12 @@ export function SourceEditor({
         onMarkdownChange(newValue);
         requestAnimationFrame(() => {
           if (textareaRef.current === textarea && historyRef.current === history) {
-            textarea.selectionStart = textarea.selectionEnd = start + 2;
+            revealRange(textarea, { start: start + 2, end: start + 2 });
           }
         });
       }
     },
-    [value, onMarkdownChange, history],
+    [value, onMarkdownChange, history, onHistory],
   );
 
   // Keep the backdrop's box and scroll in lockstep with the textarea. The
@@ -209,17 +240,18 @@ export function SourceEditor({
     };
   }, [lineNumbers, measureGutter]);
 
-  // Memoized so unrelated re-renders (line-number toggle, focus churn) don't
-  // rebuild the whole-document segment list; content/match changes still do —
-  // unavoidable, the text changed. Known bound (review-noted): with the panel
-  // open on very large docs this is O(doc length) per keystroke.
-  const highlightSegments = useMemo(
-    () =>
-      searchRanges && searchRanges.length > 0
-        ? renderHighlightSegments(value, searchRanges, searchCurrent ?? -1)
-        : null,
-    [value, searchRanges, searchCurrent],
-  );
+  // Never paint stale colored text over live typing. Until the coalesced
+  // tokenizer catches up, render the exact current text with its base color.
+  const [syntax, setSyntax] = useState(() => ({ text: markdown, spans: sourceSyntax(markdown) }));
+  useEffect(() => {
+    if (syntax.text === value) return;
+    const timer = window.setTimeout(() => setSyntax({ text: value, spans: sourceSyntax(value) }), 60);
+    return () => window.clearTimeout(timer);
+  }, [value, syntax.text]);
+  const highlightSegments = useMemo(() => renderHighlightSegments(
+    value, syntax.text === value ? syntax.spans : [{ start: 0, end: value.length, className: "" }],
+    searchRanges ?? [], searchCurrent ?? -1,
+  ), [value, syntax, searchRanges, searchCurrent]);
 
   return (
     <div className={`markd-source-editor ${lineNumbers ? "with-line-numbers" : ""}`}>
@@ -237,18 +269,23 @@ export function SourceEditor({
         </div>
       )}
       {highlightSegments && (
-        <div className="markd-source-backdrop" ref={backdropRef} aria-hidden="true">
+        <div className="markd-source-backdrop markd-source-syntax" ref={backdropRef} aria-hidden="true">
           {highlightSegments}
           {"\n"}
         </div>
       )}
       <textarea
         ref={textareaRef}
-        className="markd-source-textarea"
+        className="markd-source-textarea markd-source-colored"
         value={value}
         onSelect={(e) => {
+          if (history.current.start !== e.currentTarget.selectionStart || history.current.end !== e.currentTarget.selectionEnd) {
+            history.group = undefined;
+            history.current.rendered = undefined;
+          }
           history.current.start = e.currentTarget.selectionStart;
           history.current.end = e.currentTarget.selectionEnd;
+          history.current.sourceSelectionMapped = true;
         }}
         onChange={handleChange}
         onKeyDown={handleKeyDown}

@@ -29,10 +29,10 @@ describe("source-truth wiring (src/App.tsx)", () => {
     expect(app.match(/registerIsClean\(/g) ?? []).toHaveLength(1);
   });
 
-  it("keeps exactly one bare editor.commands.setContent (the source-exit toggle)", () => {
+  it("routes every content load through the selection-aware loader", () => {
     // Content loads go through loadEditorContent (undo-bleed class, v0.3.17);
     // source-mode capture goes through the accessors above. New bare setContent
     // calls are how both bug classes re-enter — justify any addition here.
-    expect(app.match(/editor\.commands\.setContent\(/g) ?? []).toHaveLength(1);
+    expect(app.match(/editor\.commands\.setContent\(/g) ?? []).toHaveLength(0);
   });
 });

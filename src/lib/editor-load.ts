@@ -43,6 +43,13 @@ export function loadEditorContent(
   // it gets a fresh (empty) state while every other plugin keeps its decorations,
   // so updateState is a near-no-op render. Verified to still clear undo.
   const history = state.plugins.find((p) => isHistoryPlugin(p, state));
+  if (!history && editor.extensionManager.extensions.some(extension => extension.name === "sharedEditing")) {
+    // The tab-owned shared timeline lives outside ProseMirror plugin state.
+    if (snapshot?.doc.eq(state.doc)) {
+      view.updateState(state.apply(state.tr.setSelection(snapshot.selection.getBookmark().resolve(state.doc)).setStoredMarks(snapshot.storedMarks)));
+    }
+    return;
+  }
   if (!history) {
     // Fallback: if history can't be located (e.g. a future TipTap change),
     // recreate the whole state so the undo-isolation guarantee always holds.
