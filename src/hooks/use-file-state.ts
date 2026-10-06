@@ -1,3 +1,5 @@
+import type { SourceHistory } from "@/lib/source-history";
+import type { EditorState } from "@tiptap/pm/state";
 import { useState, useCallback, useRef, useEffect } from "react";
 import type { JSONContent } from "@tiptap/core";
 import { resolveSaveContent } from "@/lib/markdown-fidelity";
@@ -90,7 +92,7 @@ export function useFileState() {
 
   const getMarkdownRef = useRef<(() => string) | null>(null);
   const setContentRef = useRef<
-    ((md: string, fileDir: string, docJSON?: JSONContent, isDirty?: boolean) => void) | null
+    ((md: string, fileDir: string, docJSON?: JSONContent, isDirty?: boolean, editorState?: EditorState, sourceHistory?: SourceHistory) => void) | null
   >(null);
 
   const registerGetMarkdown = useCallback((fn: () => string) => {
@@ -98,7 +100,7 @@ export function useFileState() {
   }, []);
 
   const registerSetContent = useCallback(
-    (fn: (md: string, fileDir: string, docJSON?: JSONContent, isDirty?: boolean) => void) => {
+    (fn: (md: string, fileDir: string, docJSON?: JSONContent, isDirty?: boolean, editorState?: EditorState, sourceHistory?: SourceHistory) => void) => {
       setContentRef.current = fn;
     },
     [],
@@ -413,6 +415,8 @@ export function useFileState() {
       lastSaved?: number | null;
       /** Cached PM JSON of content's body — restore via this (fast) when present. */
       docJSON?: JSONContent;
+      editorState?: EditorState;
+      sourceHistory?: SourceHistory;
     }) => {
       const revision = ++contentRevisionRef.current;
       clearAutoSave();
@@ -424,6 +428,8 @@ export function useFileState() {
         // to seed source mode's entry-dirty baseline (a dirty tab arriving in
         // source mode must not inherit the previous tab's entry flag).
         snapshot.isDirty,
+        snapshot.docJSON ? snapshot.editorState : undefined,
+        snapshot.sourceHistory,
       );
       updateState((prev) => ({
         ...prev,

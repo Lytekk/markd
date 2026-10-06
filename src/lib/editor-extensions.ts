@@ -7,7 +7,7 @@ import TableHeader from "@tiptap/extension-table-header";
 import TaskList from "@tiptap/extension-task-list";
 import TaskItem from "@tiptap/extension-task-item";
 import Placeholder from "@tiptap/extension-placeholder";
-import Link from "@tiptap/extension-link";
+import { PathAwareLink } from "@/lib/path-aware-link";
 import { common, createLowlight } from "lowlight";
 import { SearchAndReplace } from "@/lib/search-and-replace";
 import { SectionCommands } from "@/lib/section-commands";
@@ -19,6 +19,7 @@ import { SlashMenu } from "@/lib/slash-menu";
 import { FocusMode } from "@/lib/focus-mode";
 import { MermaidPreview } from "@/lib/mermaid-preview";
 import { InlineMath, BlockMath } from "@/lib/math";
+import { OutlineHeading } from "@/lib/outline-heading";
 import { HeadingFlash } from "@/lib/heading-flash";
 import { applyMinimalEscaping, FaithfulCode, FaithfulText } from "@/lib/markdown-fidelity";
 import { RawInlineHTML, RawBlockHTML } from "@/lib/raw-html";
@@ -75,7 +76,7 @@ export function getExtensions(opts: ExtensionOptions) {
     Placeholder.configure({
       placeholder: "Start writing…",
     }),
-    Link.configure({
+    PathAwareLink.configure({
       // Don't navigate the webview on click (that would leave the app). Opening
       // in the system browser is a separate, capability-gated follow-up.
       openOnClick: false,
@@ -92,6 +93,7 @@ export function getExtensions(opts: ExtensionOptions) {
     SlashMenu,
     FocusMode,
     HeadingFlash,
+    OutlineHeading,
     MermaidPreview,
     InlineMath,
     BlockMath,

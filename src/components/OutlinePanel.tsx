@@ -83,6 +83,7 @@ export function OutlinePanel({ editor, sourceHeadings, onSourceHeadingClick }: O
   }, [editor]);
 
   useEffect(() => {
+    if (sourceHeadings) return;
     if (!editor || headings.length === 0) {
       setActiveHeadingIndex(null);
       return;
@@ -91,9 +92,9 @@ export function OutlinePanel({ editor, sourceHeadings, onSourceHeadingClick }: O
     const scrollContainer = editor.view.dom.closest(".markd-editor-scroll");
     if (!scrollContainer) return;
 
-    let ticking = false;
+    let frame: number | null = null;
     const updateActive = () => {
-      ticking = false;
+      frame = null;
       // After an outline click we pin the clicked heading active and ignore the
       // smooth-scroll's transient scroll events for ~700ms (see handleClick).
       if (performance.now() < suppressSpyUntilRef.current) return;
@@ -128,18 +129,31 @@ export function OutlinePanel({ editor, sourceHeadings, onSourceHeadingClick }: O
     };
 
     const onScroll = () => {
-      if (!ticking) {
-        ticking = true;
-        requestAnimationFrame(updateActive);
-      }
+      if (frame === null) frame = requestAnimationFrame(updateActive);
     };
 
     // NOTE: rAF deduplication (not throttling) — coalesces multiple scroll events into one computation per frame
     scrollContainer.addEventListener("scroll", onScroll, { passive: true });
     updateActive();
 
-    return () => scrollContainer.removeEventListener("scroll", onScroll);
-  }, [editor, headings]);
+    return () => {
+      scrollContainer.removeEventListener("scroll", onScroll);
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
+  }, [editor, headings, sourceHeadings]);
+
+  // One owner for both highlights: mirror the sidebar state rather than running
+  // another scroll spy in the document. Decorations survive editor rerenders.
+  useEffect(() => {
+    if (!editor || editor.isDestroyed) return;
+    const pos = !sourceHeadings && activeHeadingIndex !== null
+      ? headings[activeHeadingIndex]?.pos ?? null : null;
+    editor.commands.setOutlineHeading(pos);
+  }, [editor, sourceHeadings, headings, activeHeadingIndex]);
+
+  useEffect(() => () => {
+    if (editor && !editor.isDestroyed) editor.commands.setOutlineHeading(null);
+  }, [editor]);
 
   useEffect(() => {
     activeItemRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });

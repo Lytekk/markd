@@ -1,3 +1,5 @@
+import type { SourceHistory } from "@/lib/source-history";
+import type { EditorState } from "@tiptap/pm/state";
 import { useState, useCallback, useRef, useMemo, useEffect } from "react";
 import type { JSONContent } from "@tiptap/core";
 import { samePath } from "@/lib/path-identity";
@@ -29,6 +31,9 @@ export interface FileTab {
    * (undefined) wherever content comes from disk (hydrate/open). NOT persisted.
    */
   docJSON?: JSONContent;
+  /** Session-only immutable snapshot for per-tab undo/redo and selection. */
+  editorState?: EditorState;
+  sourceHistory?: SourceHistory;
 }
 
 interface PersistedTab {
@@ -265,6 +270,16 @@ export function useFileTabs() {
     getDocJSONRef.current = fn;
   }, []);
 
+  const getSourceHistoryRef = useRef<(() => SourceHistory | undefined) | null>(null);
+  const registerGetSourceHistory = useCallback((fn: () => SourceHistory | undefined) => {
+    getSourceHistoryRef.current = fn;
+  }, []);
+
+  const getEditorStateRef = useRef<(() => EditorState | undefined) | null>(null);
+  const registerGetEditorState = useCallback((fn: () => EditorState | undefined) => {
+    getEditorStateRef.current = fn;
+  }, []);
+
   // Authoritative "active buffer == its saved state" check (the editor's
   // doc.eq(savedDoc) — same predicate the revert-check uses, NOT a lagging dirty
   // flag). When true, the active tab's content is already savedContent, so leaving
@@ -298,7 +313,9 @@ export function useFileTabs() {
       : getMarkdownRef.current?.() ?? current?.content ?? "";
     // Capture the doc as JSON regardless (cheap — ~0.2ms, even on large docs) so a
     // later switch-back restores via JSON instead of re-parsing the markdown.
+    const sourceHistory = getSourceHistoryRef.current?.();
     const docJSON = getDocJSONRef.current?.();
+    const editorState = docJSON ? getEditorStateRef.current?.() : undefined;
     if (current?.content !== md) advanceTabRevision(id);
     // Update the REF synchronously, not just queued state: callers (newTab /
     // openInTab / reopenLastClosed) immediately read tabsRef.current and issue
@@ -307,7 +324,7 @@ export function useFileTabs() {
     // edits (user-hit data loss; switchTab was immune because it snapshots
     // inside its own single functional update).
     tabsRef.current = tabsRef.current.map((t) =>
-      t.id === id ? { ...t, content: md, docJSON } : t,
+      t.id === id ? { ...t, content: md, docJSON, editorState, sourceHistory } : t,
     );
     setTabs(tabsRef.current);
     return md;
@@ -325,11 +342,13 @@ export function useFileTabs() {
       const md = clean
         ? prevTab?.savedContent ?? prevTab?.content ?? ""
         : getMarkdownRef.current?.() ?? prevTab?.content ?? "";
+      const sourceHistory = getSourceHistoryRef.current?.();
       const docJSON = getDocJSONRef.current?.();
+      const editorState = docJSON ? getEditorStateRef.current?.() : undefined;
       if (prevTab?.content !== md) advanceTabRevision(prevId);
       const updated = tabsRef.current.map((t) =>
         t.id === prevId
-          ? { ...t, content: md, docJSON, scrollTop: departingScrollTop ?? t.scrollTop }
+          ? { ...t, content: md, docJSON, editorState, sourceHistory, scrollTop: departingScrollTop ?? t.scrollTop }
           : t,
       );
       tabsRef.current = updated;
@@ -377,7 +396,10 @@ export function useFileTabs() {
           isDirty: false,
           savedContent: content,
           scrollTop: 0,
-          docJSON: undefined, // content replaced from disk — no matching editor doc yet
+          // Disk bytes invalidate all session-only editor caches.
+          sourceHistory: undefined,
+          editorState: undefined,
+          docJSON: undefined,
         };
         const newTabs = currentTabs.map((t) =>
           t.id === currentTab.id ? updated : t,
@@ -663,7 +685,7 @@ export function useFileTabs() {
       advanceTabRevision(tabId);
       const updated = tabsRef.current.map((t) =>
           t.id === tabId
-            ? { ...t, content, savedContent: content, isDirty: false, isHydrated: true, docJSON: undefined }
+            ? { ...t, content, savedContent: content, isDirty: false, isHydrated: true, sourceHistory: undefined, editorState: undefined, docJSON: undefined }
             : t,
       );
       tabsRef.current = updated;
@@ -693,6 +715,8 @@ export function useFileTabs() {
     hydrateTab,
     registerGetMarkdown,
     registerGetJSON,
+    registerGetEditorState,
+    registerGetSourceHistory,
     registerIsClean,
     closedStack,
     reopenLastClosed,
