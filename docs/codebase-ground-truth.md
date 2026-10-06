@@ -195,7 +195,10 @@ the others.
 ### Shared editing follow-up (2026-10-06)
 
 Source coloring uses Lowlight Markdown/YAML tokens rendered as escaped React text
-in the existing search backdrop. Token colors do not change font metrics; input,
+in the existing search backdrop. Markdown roles are mapped separately from YAML:
+headings are orange, emphasis pink, code red, link labels cyan, and destinations
+green, with darker equivalents for the light theme. Nested inline roles override
+heading/quote colors, and ordinary prose retains the theme text color. Token colors do not change font metrics; input,
 selection, clipboard and find/replace continue to use the original textarea text.
 Source Outline scroll tracking measures heading offsets with the same textarea
 mirror used for navigation, caches those measurements between edits/resizes, and
