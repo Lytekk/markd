@@ -1,5 +1,8 @@
-import { captureModeScroll, restoreModeScroll, sourceBlockOffsets, type ModeScrollAnchor } from "@/lib/mode-scroll";
-import { createSourceHistory, recordSourceEdit, type SourceHistory } from "@/lib/source-history";
+import { applySourceCommand, type SourceCommand } from "@/lib/source-commands";
+import type { CommandProps } from "@tiptap/core";
+import { sourceSelectionForSnapshot, renderedStateForSnapshot } from "@/lib/edit-selection";
+import { captureModeScroll, restoreModeScroll, modeScroller, sourceBlockOffsets, type ModeScrollAnchor } from "@/lib/mode-scroll";
+import { createEditHistory, recordSourceEdit, recordRenderedEdit, attachRenderedState, travelEditHistory, type EditHistory } from "@/lib/edit-history";
 import type { EditorState } from "@tiptap/pm/state";
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import type { Node as PMNode } from "@tiptap/pm/model";
@@ -115,6 +118,19 @@ interface CloseTabOptions {
   skipDirtyPrompt?: boolean;
 }
 
+// Read the input owner directly at a surface/tab boundary. Find/replace can
+// move a textarea selection while the find box has focus (React onSelect then
+// does not fire), so its DOM range is authoritative at this boundary.
+function captureSourceSelection(history: EditHistory): void {
+  const ta = document.querySelector<HTMLTextAreaElement>(".markd-source-textarea");
+  if (!ta) return;
+  const current = history.current;
+  if (current.start !== ta.selectionStart || current.end !== ta.selectionEnd) current.rendered = undefined;
+  current.start = ta.selectionStart;
+  current.end = ta.selectionEnd;
+  current.sourceSelectionMapped = true;
+}
+
 export function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarTab, setSidebarTab] = useState<"files" | "outline">("outline");
@@ -216,7 +232,8 @@ export function App() {
   // editor, so reading the state there would capture stale closures.
   const sourceModeRef = useRef(sourceMode);
   sourceModeRef.current = sourceMode;
-  const sourceHistoryRef = useRef(createSourceHistory(""));
+  const editHistoryRef = useRef(createEditHistory(""));
+  const historyTravelRef = useRef<(redo: boolean, props: CommandProps) => boolean>(() => false);
   const sourceMarkdownRef = useRef(sourceMarkdown);
   sourceMarkdownRef.current = sourceMarkdown;
   // Latest source buffer awaiting a coalesced stats pass. Immediate stats
@@ -228,7 +245,10 @@ export function App() {
 
   const editor = useEditor({
     extensions: [
-      ...getExtensions({ getFileDir: () => fileDirRef.current }),
+      ...getExtensions({ getFileDir: () => fileDirRef.current, editingBridge: {
+        travel: (redo, props) => historyTravelRef.current(redo, props),
+        isSource: () => sourceModeRef.current,
+      } }),
       Markdown.configure({
         html: true,
         tightLists: true,
@@ -238,7 +258,18 @@ export function App() {
       }),
     ],
     content: "",
-    onUpdate: ({ editor: ed }) => {
+    onTransaction: ({ editor: ed, transaction }) => {
+      if (transaction.getMeta("sharedHistoryRestore")) attachRenderedState(editHistoryRef.current.current, ed.state);
+      if (!sourceModeRef.current && !transaction.docChanged && (transaction.selectionSet || transaction.storedMarksSet)) {
+        editHistoryRef.current.group = undefined;
+        attachRenderedState(editHistoryRef.current.current, ed.state);
+        editHistoryRef.current.current.sourceSelectionMapped = false;
+      }
+    },
+    onUpdate: ({ editor: ed, transaction }) => {
+      if (sourceModeRef.current) return;
+      if (!transaction.getMeta("sharedHistoryRestore")) recordRenderedEdit(editHistoryRef.current, ed, frontmatterRef.current, transaction);
+      else attachRenderedState(editHistoryRef.current.current, ed.state);
       fileState.markDirty();
       fileTabsRef.current.markTabDirty();
       // Debounced revert check: if the doc returns to the saved baseline
@@ -251,6 +282,7 @@ export function App() {
         const fs = fileStateRef.current;
         if (
           canRevertClean(fs.filePath, fs.savedContent) &&
+          (editHistoryRef.current.current.origin !== "source" || editHistoryRef.current.current.text === textareaText(fs.savedContent)) &&
           docMatchesSaved(
             ed.state.doc,
             savedDocRef.current,
@@ -284,7 +316,9 @@ export function App() {
   const getEditorMarkdown = useCallback(
     () =>
       editor
-        ? joinFrontmatter(frontmatterRef.current, editor.storage.markdown.getMarkdown() as string)
+        ? (editHistoryRef.current.current.rendered?.doc === editor.state.doc
+          ? editHistoryRef.current.current.text
+          : joinFrontmatter(frontmatterRef.current, editor.storage.markdown.getMarkdown() as string))
         : "",
     [editor],
   );
@@ -335,11 +369,12 @@ export function App() {
   // tab snapshots and the closed-tab stack (see source-truth.ts).
   useEffect(() => {
     if (!editor) return;
+    if (!editHistoryRef.current.current.rendered) attachRenderedState(editHistoryRef.current.current, editor.state);
     fileState.registerGetMarkdown(() =>
       currentMarkdown(sourceModeRef.current, sourceMarkdownRef.current, getEditorMarkdown),
     );
     fileState.registerSetContent(
-      (md: string, fileDir: string, docJSON?: JSONContent, isDirty?: boolean, editorState?: EditorState, sourceHistory?: SourceHistory) => {
+      (md: string, fileDir: string, docJSON?: JSONContent, isDirty?: boolean, editorState?: EditorState, editHistory?: EditHistory) => {
         fileDirRef.current = fileDir;
         const { frontmatter, body } = splitFrontmatter(md);
         frontmatterRef.current = frontmatter;
@@ -348,19 +383,23 @@ export function App() {
         // Fast path: when the tab carries a cached PM JSON doc (set on switch-away),
         // load that — it skips the slow markdown re-parse (the large-doc switch lag).
         // First load / post-external-change has no cache → parse the markdown body.
-        loadEditorContent(editor, docJSON ?? body, editorState);
+        const restoredState = editorState ?? (editHistory ? renderedStateForSnapshot(editor, editHistory.current) : undefined);
+        loadEditorContent(editor, docJSON ?? body, restoredState);
+        editHistoryRef.current = editHistory && (editHistory.current.rendered?.doc.eq(editor.state.doc) || editHistory.current.text === textareaText(md))
+          ? editHistory : createEditHistory(textareaText(md));
+        attachRenderedState(editHistoryRef.current.current, editor.state);
         // Source mode: the textarea is the visible buffer — re-derive it VERBATIM
         // from the arriving content. Every load path funnels here (tab switch,
         // new tab, open, reload, reopen), so without this the textarea keeps
         // showing the DEPARTING tab's text and a later commit would bleed it
         // into this tab.
         if (sourceModeRef.current) {
+          sourceSelectionForSnapshot(editor, editHistoryRef.current.current);
           cancelPendingMarkdownStats();
           // textareaText: the DOM normalizes CRLF on write, so the view state
           // must match or every state-computed offset drifts (source-truth.ts).
           const viewMd = textareaText(md);
-          sourceHistoryRef.current = sourceHistory?.current.text === viewMd
-            ? sourceHistory : createSourceHistory(viewMd);
+          sourceMarkdownRef.current = viewMd;
           setSourceMarkdown(viewMd);
           sourceEntryMdRef.current = viewMd;
           sourceEntryDirtyRef.current = isDirty ?? false;
@@ -382,9 +421,11 @@ export function App() {
     fileTabs.registerGetJSON(() =>
       currentDocJSON(sourceModeRef.current, () => editor.getJSON()),
     );
-    fileTabs.registerGetSourceHistory(() =>
-      sourceModeRef.current ? sourceHistoryRef.current : undefined,
-    );
+    fileTabs.registerGetEditHistory(() => {
+      if (sourceModeRef.current) captureSourceSelection(editHistoryRef.current);
+      editHistoryRef.current.group = undefined;
+      return editHistoryRef.current;
+    });
     fileTabs.registerGetEditorState(() =>
       sourceModeRef.current ? undefined : editor.state,
     );
@@ -393,6 +434,7 @@ export function App() {
     // Never clean in source mode — the predicate can't see the textarea.
     fileTabs.registerIsClean(() =>
       editorBufferIsClean(sourceModeRef.current, () =>
+        (editHistoryRef.current.current.origin !== "source" || editHistoryRef.current.current.text === textareaText(fileStateRef.current.savedContent)) &&
         docMatchesSaved(
           editor.state.doc,
           savedDocRef.current,
@@ -411,7 +453,7 @@ export function App() {
     fileTabs.registerGetMarkdown,
     fileTabs.registerGetJSON,
     fileTabs.registerGetEditorState,
-    fileTabs.registerGetSourceHistory,
+    fileTabs.registerGetEditHistory,
     fileTabs.registerIsClean,
   ]);
 
@@ -598,7 +640,7 @@ export function App() {
             fs.handleOpenByPath(activeTab.filePath, content);
             requestAnimationFrame(() => {
               if (!isCurrent()) return;
-              const el = document.querySelector(".markd-editor-scroll") as HTMLElement | null;
+              const el = modeScroller(sourceModeRef.current);
               if (el) el.scrollTop = activeTab.scrollTop;
             });
           }
@@ -760,6 +802,7 @@ export function App() {
     // Both editor components remount on a mode change. Restore after the new
     // DOM mounts and source autofocus settles; cancel if another tab/mode wins.
     const frame = requestAnimationFrame(() => {
+      if (!sourceMode) editor.view.focus();
       restoreModeScroll(editor, sourceMode, pending.offsets, pending.anchor);
     });
     return () => cancelAnimationFrame(frame);
@@ -782,12 +825,14 @@ export function App() {
       anchor: captureModeScroll(editor, sourceMode, offsets),
     };
 
+    editHistoryRef.current.group = undefined;
     if (!sourceMode) {
       // Switching TO source: serialize current editor content
       const md = transitionMarkdown;
       // The find panel survives the toggle: it is keyed by (tab, mode), so it
       // remounts onto the matching search backend with its state recalled.
-      sourceHistoryRef.current = createSourceHistory(md);
+      attachRenderedState(editHistoryRef.current.current, editor.state);
+      sourceSelectionForSnapshot(editor, editHistoryRef.current.current);
       setSourceMarkdown(md);
       sourceEntryMdRef.current = md;
       sourceEntryDirtyRef.current = fileStateRef.current.isDirty;
@@ -795,16 +840,14 @@ export function App() {
       dispatchMarkdownStats(md);
       setSourceMode(true);
     } else {
-      // Switching FROM source: re-parse only if the source actually changed.
-      // Passing false suppresses onUpdate so a no-op toggle never flags a clean
-      // doc dirty (dirty is driven solely by edits via handleSourceMarkdownChange),
-      // and skipping the re-parse entirely keeps an unedited buffer byte-stable
-      // (no markdown normalization of list markers / spacing on a round-trip).
-      if (sourceMarkdown !== sourceEntryMdRef.current) {
-        const { frontmatter, body } = splitFrontmatter(sourceMarkdown);
-        frontmatterRef.current = frontmatter;
-        editor.commands.setContent(body, false);
-      }
+      // Changing the surface is not an edit. Reuse the current snapshot's
+      // parsed document and mapped selection without creating a history step.
+      captureSourceSelection(editHistoryRef.current);
+      const current = editHistoryRef.current.current;
+      const state = renderedStateForSnapshot(editor, current);
+      frontmatterRef.current = splitFrontmatter(current.text).frontmatter;
+      loadEditorContent(editor, state.doc.toJSON(), state);
+      attachRenderedState(current, editor.state);
       setSourceMode(false);
     }
   }, [
@@ -821,7 +864,8 @@ export function App() {
   // and keep the footer counts live while the PM editor is unmounted.
   const handleSourceMarkdownChange = useCallback(
     (md: string) => {
-      recordSourceEdit(sourceHistoryRef.current, md);
+      recordSourceEdit(editHistoryRef.current, md);
+      sourceMarkdownRef.current = md;
       setSourceMarkdown(md);
       // SourceEditor is controlled by React. Refresh search from the same
       // onChange path, after this state update commits, instead of attaching a
@@ -861,6 +905,59 @@ export function App() {
     [fileState.markDirty, fileState.markClean, dispatchMarkdownStats],
   );
 
+  historyTravelRef.current = (redo, { editor: ed, tr, dispatch }) => {
+    const history = editHistoryRef.current;
+    const target = (redo ? history.future : history.past).slice(-1)[0];
+    if (!target) return false;
+    if (!dispatch) return true;
+    if (sourceModeRef.current) {
+      sourceSelectionForSnapshot(ed, target);
+      travelEditHistory(history, redo);
+      tr.setMeta("preventDispatch", true);
+      handleSourceMarkdownChange(target.text);
+      requestAnimationFrame(() => {
+        if (editHistoryRef.current !== history || history.current !== target || !sourceModeRef.current) return;
+        const ta = document.querySelector<HTMLTextAreaElement>(".markd-source-textarea");
+        if (ta) { ta.focus({ preventScroll: true }); revealRange(ta, target); }
+      });
+    } else {
+      const restored = renderedStateForSnapshot(ed, target);
+      travelEditHistory(history, redo);
+      frontmatterRef.current = splitFrontmatter(target.text).frontmatter;
+      tr.replaceWith(0, tr.doc.content.size, restored.doc.content);
+      tr.setSelection(restored.selection.getBookmark().resolve(tr.doc));
+      tr.setStoredMarks(restored.storedMarks);
+      tr.setMeta("sharedHistoryRestore", true).setMeta("addToHistory", false).scrollIntoView();
+      // Raw spelling/frontmatter can change while the parsed doc stays equal;
+      // TipTap omits onUpdate in that case, but this is still an unsaved edit.
+      fileState.markDirty();
+      fileTabsRef.current.markTabDirty();
+      const fs = fileStateRef.current;
+      if (canRevertClean(fs.filePath, fs.savedContent) && target.text === textareaText(fs.savedContent)) fileState.markClean();
+    }
+    return true;
+  };
+
+  const runSourceCommand = useCallback((command: SourceCommand) => {
+    const ta = document.querySelector<HTMLTextAreaElement>(".markd-source-textarea");
+    if (!ta) return;
+    const history = editHistoryRef.current;
+    const result = applySourceCommand(ta.value, { start: ta.selectionStart, end: ta.selectionEnd }, command);
+    recordSourceEdit(history, result.text, result.start, result.end);
+    handleSourceMarkdownChange(result.text);
+    const snapshot = history.current;
+    requestAnimationFrame(() => {
+      if (history !== editHistoryRef.current || snapshot !== history.current || !ta.isConnected) return;
+      ta.focus({ preventScroll: true });
+      revealRange(ta, result);
+    });
+  }, [handleSourceMarkdownChange]);
+
+  const runEditingCommand = (command: SourceCommand, rendered: () => void) => {
+    if (sourceModeRef.current) runSourceCommand(command);
+    else rendered();
+  };
+
   // Insert a snippet body at the caret. Rendered mode routes through the
   // caret-safe snippet-insert helper; source mode splices the raw text into the
   // textarea at the captured (or live, blur-retained) caret and restores it.
@@ -874,15 +971,16 @@ export function App() {
             ? { start: live.selectionStart, end: live.selectionEnd }
             : { start: sourceMarkdown.length, end: sourceMarkdown.length });
         const { text: next, caret: caretPos } = spliceSnippetText(sourceMarkdown, sel.start, sel.end, body);
-        recordSourceEdit(sourceHistoryRef.current, next, caretPos);
-        setSourceMarkdown(next);
-        fileState.markDirty();
-        fileTabsRef.current.markTabDirty();
+        const history = editHistoryRef.current;
+        recordSourceEdit(history, next, caretPos);
+        handleSourceMarkdownChange(next);
+        const snapshot = history.current;
         requestAnimationFrame(() => {
+          if (editHistoryRef.current !== history || history.current !== snapshot || !sourceModeRef.current) return;
           const t = document.querySelector(".markd-source-textarea") as HTMLTextAreaElement | null;
           if (t) {
             t.focus();
-            t.selectionStart = t.selectionEnd = caretPos;
+            revealRange(t, { start: caretPos, end: caretPos });
           }
         });
       } else if (editor) {
@@ -890,7 +988,7 @@ export function App() {
       }
       sourceCaretRef.current = null;
     },
-    [sourceMode, sourceMarkdown, editor, fileState.markDirty],
+    [sourceMode, sourceMarkdown, editor, handleSourceMarkdownChange],
   );
 
   // Ref mirror so the search backend (created once per mode/tab) routes
@@ -1139,14 +1237,14 @@ export function App() {
       // content-truth accessors (source-truth.ts) make switchTab's snapshot
       // read the textarea verbatim, and the registered setContent callback
       // re-derives the textarea for the arriving tab.
-      const scrollEl = document.querySelector(".markd-editor-scroll") as HTMLElement | null;
+      const scrollEl = modeScroller(sourceModeRef.current);
       const departingScroll = scrollEl?.scrollTop ?? 0;
       const switched = fileTabsRef.current.switchTab(tabId, departingScroll);
       if (!switched) return;
       fileStateRef.current.restoreState(ready);
       requestAnimationFrame(() => {
         if (!bufferLoadGuardRef.current.isCurrent(request)) return;
-        const el = document.querySelector(".markd-editor-scroll") as HTMLElement | null;
+        const el = modeScroller(sourceModeRef.current);
         if (el) el.scrollTop = ready.scrollTop;
       });
     },
@@ -1365,7 +1463,7 @@ export function App() {
         fileStateRef.current.restoreState(ready ?? switchTo);
         requestAnimationFrame(() => {
           if (!bufferLoadGuardRef.current.isCurrent(request)) return;
-          const el = document.querySelector(".markd-editor-scroll") as HTMLElement | null;
+          const el = modeScroller(sourceModeRef.current);
           if (el) el.scrollTop = (ready ?? switchTo).scrollTop;
         });
       }
@@ -1585,7 +1683,7 @@ export function App() {
     fileTabsRef.current.newTab();
     fileStateRef.current.handleNew();
     requestAnimationFrame(() => {
-      const el = document.querySelector(".markd-editor-scroll") as HTMLElement | null;
+      const el = modeScroller(sourceModeRef.current);
       if (el) el.scrollTop = 0;
     });
   }, []);
@@ -1635,7 +1733,7 @@ export function App() {
       fileStateRef.current.restoreState(inserted);
       requestAnimationFrame(() => {
         if (!bufferLoadGuardRef.current.isCurrent(request)) return;
-        const el = document.querySelector(".markd-editor-scroll") as HTMLElement | null;
+        const el = modeScroller(sourceModeRef.current);
         if (el) el.scrollTop = tab.scrollTop;
       });
     } catch {
@@ -1658,6 +1756,25 @@ export function App() {
   // Ctrl+K: add / edit / remove a link on the selection (or insert a linked URL).
   const handleEditLink = useCallback(async () => {
     if (!editor) return;
+    if (sourceModeRef.current) {
+      const ta = document.querySelector<HTMLTextAreaElement>(".markd-source-textarea");
+      if (!ta) return;
+      const history = editHistoryRef.current;
+      const snapshot = history.current;
+      const { selectionStart: start, selectionEnd: end } = ta;
+      const input = await promptModal({ title: "Add Link", label: "URL", placeholder: "https://…", okLabel: "Add", isCurrent: () => editHistoryRef.current === history && history.current === snapshot && sourceModeRef.current });
+      if (input === null || editHistoryRef.current !== history || history.current !== snapshot || !sourceModeRef.current) return;
+      const url = normalizeUrl(input);
+      if (!url) return;
+      const label = snapshot.text.slice(start, end) || url;
+      const text = snapshot.text.slice(0, start) + `[${label}](${url})` + snapshot.text.slice(end);
+      recordSourceEdit(history, text, start + 1, start + 1 + label.length);
+      handleSourceMarkdownChangeRef.current(text);
+      requestAnimationFrame(() => {
+        if (ta.isConnected && history === editHistoryRef.current) { ta.focus({ preventScroll: true }); revealRange(ta, history.current); }
+      });
+      return;
+    }
     const ownerDoc = editor.state.doc;
     const { from: ownerFrom, to: ownerTo } = editor.state.selection;
     const ownerSelection = { from: ownerFrom, to: ownerTo };
@@ -1907,8 +2024,6 @@ export function App() {
             break;
           case "k":
             e.preventDefault();
-            // Source mode: the link editor mutates the hidden PM doc — inert.
-            if (sourceModeRef.current) break;
             void handleEditLink();
             break;
           case "e":
@@ -2757,7 +2872,7 @@ export function App() {
           onPrevTab={() => cycleTab(-1)}
         />
         <div className="markd-topbar">
-          <Toolbar editor={editor} heldModifier={heldModifier} disabled={sourceMode} />
+          <Toolbar editor={editor} heldModifier={heldModifier} onSourceCommand={sourceMode ? runSourceCommand : undefined} />
         </div>
         <div className="markd-editor-content">
           {findReplaceOpen && (
@@ -2774,7 +2889,8 @@ export function App() {
           )}
           {sourceMode ? (
             <SourceEditor
-              history={sourceHistoryRef.current}
+              history={editHistoryRef.current}
+              onHistory={(redo) => { if (redo) editor?.commands.redo(); else editor?.commands.undo(); }}
               markdown={sourceMarkdown}
               onMarkdownChange={handleSourceMarkdownChange}
               lineNumbers={lineNumbers}
@@ -2860,11 +2976,7 @@ export function App() {
           { id: "close-all", label: "Close All Tabs", hint: "Ctrl+Shift+W", run: handleCloseAllTabs },
           { id: "find", label: "Find", hint: "Ctrl+F", keywords: "search", run: () => { setFindReplaceShowReplace(false); setFindReplaceOpen(true); window.dispatchEvent(new Event("markd:find-focus")); } },
           { id: "replace", label: "Find and Replace", hint: "Ctrl+H", keywords: "search substitute", run: () => { setFindReplaceShowReplace(true); setFindReplaceOpen(true); } },
-          // Link editing stays PM-bound — hidden while source mode owns the
-          // buffer (it would mutate the invisible rendered doc).
-          ...(sourceMode ? [] : [
-            { id: "link", label: "Add / Edit Link", hint: "Ctrl+K", keywords: "url href hyperlink anchor", run: handleEditLink },
-          ]),
+          { id: "link", label: "Add / Edit Link", hint: "Ctrl+K", keywords: "url href hyperlink anchor", run: handleEditLink },
           { id: "toggle-source", label: "Toggle Source / Rendered View", hint: "Ctrl+/", keywords: "markdown raw code", run: handleToggleSource },
           { id: "toggle-theme", label: "Toggle Theme (Day / Night)", keywords: "dark light appearance", run: handleThemeToggle },
           { id: "full-width", label: "Toggle Full Width", keywords: "column wide narrow", run: toggleFullWidth },
@@ -2878,16 +2990,16 @@ export function App() {
           { id: "zoom-reset", label: "Reset Zoom", hint: "Ctrl+0", run: resetZoom },
           ...(editor
             ? [
-                { id: "h1", label: "Heading 1", keywords: "title section", run: () => editor.chain().focus().toggleHeading({ level: 1 }).run() },
-                { id: "h2", label: "Heading 2", keywords: "section", run: () => editor.chain().focus().toggleHeading({ level: 2 }).run() },
-                { id: "h3", label: "Heading 3", keywords: "section", run: () => editor.chain().focus().toggleHeading({ level: 3 }).run() },
-                { id: "bullet", label: "Bullet List", keywords: "unordered", run: () => editor.chain().focus().toggleBulletList().run() },
-                { id: "ordered", label: "Numbered List", keywords: "ordered", run: () => editor.chain().focus().toggleOrderedList().run() },
-                { id: "task", label: "Task List", keywords: "checkbox todo", run: () => editor.chain().focus().toggleTaskList().run() },
-                { id: "quote", label: "Blockquote", keywords: "citation", run: () => editor.chain().focus().toggleBlockquote().run() },
-                { id: "code-block", label: "Code Block", keywords: "fenced pre", run: () => editor.chain().focus().toggleCodeBlock().run() },
-                { id: "table", label: "Insert Table", keywords: "grid", run: () => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run() },
-                { id: "hr", label: "Horizontal Rule", keywords: "divider separator", run: () => editor.chain().focus().setHorizontalRule().run() },
+                { id: "h1", label: "Heading 1", keywords: "title section", run: () => runEditingCommand("Heading 1", () => { editor.chain().focus().toggleHeading({ level: 1 }).run(); }) },
+                { id: "h2", label: "Heading 2", keywords: "section", run: () => runEditingCommand("Heading 2", () => { editor.chain().focus().toggleHeading({ level: 2 }).run(); }) },
+                { id: "h3", label: "Heading 3", keywords: "section", run: () => runEditingCommand("Heading 3", () => { editor.chain().focus().toggleHeading({ level: 3 }).run(); }) },
+                { id: "bullet", label: "Bullet List", keywords: "unordered", run: () => runEditingCommand("Bullet List", () => { editor.chain().focus().toggleBulletList().run(); }) },
+                { id: "ordered", label: "Numbered List", keywords: "ordered", run: () => runEditingCommand("Ordered List", () => { editor.chain().focus().toggleOrderedList().run(); }) },
+                { id: "task", label: "Task List", keywords: "checkbox todo", run: () => runEditingCommand("Task List", () => { editor.chain().focus().toggleTaskList().run(); }) },
+                { id: "quote", label: "Blockquote", keywords: "citation", run: () => runEditingCommand("Blockquote", () => { editor.chain().focus().toggleBlockquote().run(); }) },
+                { id: "code-block", label: "Code Block", keywords: "fenced pre", run: () => runEditingCommand("Code Block", () => { editor.chain().focus().toggleCodeBlock().run(); }) },
+                { id: "table", label: "Insert Table", keywords: "grid", run: () => runEditingCommand("Insert Table", () => { editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run(); }) },
+                { id: "hr", label: "Horizontal Rule", keywords: "divider separator", run: () => runEditingCommand("Horizontal Rule", () => { editor.chain().focus().setHorizontalRule().run(); }) },
               ]
             : []),
         ]}

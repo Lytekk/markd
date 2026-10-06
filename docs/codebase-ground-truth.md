@@ -142,7 +142,7 @@ representation from corrupting a save, restore, or status count.
 | Claim | Source-verified edge |
 |---|---|
 | Source-mode saves and tab snapshots use the textarea verbatim. | `currentMarkdown` returns `sourceMarkdown` in source mode; `App.tsx` registers it with both `useFileState` and `useFileTabs`. The stale ProseMirror JSON is withheld by `currentDocJSON`, and the clean-serialize skip is disabled by `editorBufferIsClean`. |
-| Undo/redo is isolated per open tab in both views. | `useFileTabs` snapshots rendered `editorState` alongside `docJSON`, or `sourceHistory` alongside raw textarea content. `useFileState.restoreState` forwards these session-only caches. `loadEditorContent` restores only the matching document's history plugin and selection; fresh loads reset history. `SourceEditor` owns keyboard undo/redo against the tab's bounded text history; source replacements and snippet inserts also record edits. Disk hydration clears both caches, closing a tab releases them, and neither is persisted across application restarts. |
+| Editing history is shared by both views and isolated per tab. | `edit-history.ts` owns one bounded session-only timeline of raw source snapshots and persistent rendered states. `SharedEditing` replaces native rendered undo/redo; Source keyboard/native history events and Edit menu commands use the same timeline. Mode switches map selection without creating edits; source spelling survives a no-edit round trip. Toolbar, palette, shortcuts, find/replace and snippets route to the active surface. Tab caches retain selection/history; disk hydration invalidates them. These caches are not persisted across restarts. |
 | Switching Source/Rendered preserves the reading position by document block. | `mode-scroll.ts` pairs the configured markdown parser's top-level source ranges (including the frontmatter offset) with rendered ProseMirror blocks. A single textarea mirror pass measures source boundaries; the mode toggle captures block/fraction before unmount and restores after mount. Pending restoration is canceled on tab/mode changes. Document top and bottom remain pinned; this maps within-block progress rather than assuming equal pixel heights across views. |
 | The rendered heading highlight follows the sidebar's active row. | `OutlinePanel` forwards its existing scroll/click-driven `activeHeadingIndex` as a heading position to `OutlineHeading`. The extension renders a persistent node decoration with theme colors from `outline-flash.css`, independent of the transient click flash. It maps across edits, clears on document loads/source mode/outline unmount, and does not change content, selection, dirty state, or undo history. |
 | Pasted path suffixes do not become guessed domain links. | `PathAwareLink` retains TipTap's URL finder and safety checks, but checks the document character before each paste-rule match. A slash/backslash suppresses the automatic mark, including when only a filename is pasted after an existing directory prefix. Explicit links and standalone domain/email detection retain the upstream behavior. |
@@ -169,7 +169,7 @@ width change.
 |---|---|
 | Source line numbers describe logical Markdown lines only. | `SourceEditor` measures each logical line's soft-wrapped height, including the final line, and syncs the gutter to textarea scroll. A width-only `ResizeObserver` debounces remeasurement so Full/Column, sidebar, and window changes cannot leave stale row heights. Rendered mode does not present block counters as source lines. |
 | The active tab is reachable without moving the New Tab affordance. | `.markd-tab-list` owns horizontal overflow while hiding only its scrollbar; `TabBar` compares the active tab's offset box with the list viewport and minimally updates that list's `scrollLeft` on activation or resize. The outer bar keeps the New Tab button fixed. |
-| A live wide table has one persistent horizontal scroll owner. | `.markd-editor-scroll` owns horizontal overflow. In the live shell, TipTap's `.tableWrapper` and table overflow remain visible and the table stays intrinsic-width, so every column contributes to the outer scrollbar. Standalone HTML exports and print retain their bounded table-local fallback because they lack that live owner. |
+| Live tables wrap within the available editor width. | Fixed table layout, 100% width and `overflow-wrap: anywhere` wrap prose and long identifiers; code blocks inside cells also wrap. Very high column counts and explicit resized-column minimums may still require the outer editor scrollbar. Standalone HTML exports and print retain their bounded fallback. |
 | Footer membership and tracks do not move neighboring controls. | `StatusBar` keeps named slots mounted; CSS assigns fixed grid tracks, fixed delta subtracks, tabular numerals, and an inner focus-following horizontal rail for narrow widths. The Width control stays labeled `Full`; state is expressed through paint/pressed state rather than text replacement. |
 | Sidebar state cannot hide keyboard focus or strand the editor below its usable width. | The persistent 35px toggle sits before `TabBar`, owns `aria-expanded`, and controls an `inert`/`aria-hidden` collapsed sidebar. The native capability surface explicitly grants `core:window:allow-set-min-size` and `core:window:allow-set-size`; minimum width follows state: 640px collapsed, 900px open. Opening grows a too-small restored window, collapsing only lowers the floor. |
 
@@ -191,3 +191,14 @@ replace falsified claims rather than appending around them. Re-run the named
 tests after every affected wiring change. Distinguish a native package/CI build,
 a native UI replay, and an end-to-end OS scope lifecycle; none is evidence for
 the others.
+
+### Shared editing follow-up (2026-10-06)
+
+Source coloring uses Lowlight Markdown/YAML tokens rendered as escaped React text
+in the existing search backdrop. Token colors do not change font metrics; input,
+selection, clipboard and find/replace continue to use the original textarea text.
+Source Outline scroll tracking measures heading offsets with the same textarea
+mirror used for navigation, caches those measurements between edits/resizes, and
+uses the rendered view's 40-percent threshold and first/last clamping.
+Mode transitions restore focus before restoring the reading anchor. Keyboard edits
+reveal their selection in both surfaces, including formatting and history travel.

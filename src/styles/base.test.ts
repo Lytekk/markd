@@ -41,7 +41,7 @@ function ruleBody(selector: string): string | null {
 }
 
 describe("base.css layout", () => {
-  test("wide tables contribute their full width to the editor's single horizontal scrollbar", () => {
+  test("tables wrap within the editor width", () => {
     const editor = ruleBody(".markd-editor-scroll");
     const wrapper = ruleBody(".markd-editor-scroll #write .tableWrapper");
     const table = ruleBody(".markd-editor-scroll #write table");
@@ -52,8 +52,9 @@ describe("base.css layout", () => {
     expect(editor!).toMatch(/overflow-x:\s*auto/);
     expect(wrapper!).toMatch(/overflow-x:\s*visible/);
     expect(table!).toMatch(/display:\s*table/);
-    expect(table!).toMatch(/width:\s*max-content/);
-    expect(table!).toMatch(/max-width:\s*none/);
+    expect(table!).toMatch(/width:\s*100%/);
+    expect(table!).toMatch(/table-layout:\s*fixed/);
+    expect(table!).toMatch(/max-width:\s*100%/);
     expect(table!).toMatch(/overflow-x:\s*visible/);
     expect(table!).not.toMatch(/overflow-x:\s*(?:auto|scroll)/);
   });

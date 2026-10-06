@@ -1,4 +1,4 @@
-import type { SourceHistory } from "@/lib/source-history";
+import type { EditHistory } from "@/lib/edit-history";
 import type { EditorState } from "@tiptap/pm/state";
 import { useState, useCallback, useRef, useMemo, useEffect } from "react";
 import type { JSONContent } from "@tiptap/core";
@@ -33,7 +33,7 @@ export interface FileTab {
   docJSON?: JSONContent;
   /** Session-only immutable snapshot for per-tab undo/redo and selection. */
   editorState?: EditorState;
-  sourceHistory?: SourceHistory;
+  editHistory?: EditHistory;
 }
 
 interface PersistedTab {
@@ -270,9 +270,9 @@ export function useFileTabs() {
     getDocJSONRef.current = fn;
   }, []);
 
-  const getSourceHistoryRef = useRef<(() => SourceHistory | undefined) | null>(null);
-  const registerGetSourceHistory = useCallback((fn: () => SourceHistory | undefined) => {
-    getSourceHistoryRef.current = fn;
+  const getEditHistoryRef = useRef<(() => EditHistory | undefined) | null>(null);
+  const registerGetEditHistory = useCallback((fn: () => EditHistory | undefined) => {
+    getEditHistoryRef.current = fn;
   }, []);
 
   const getEditorStateRef = useRef<(() => EditorState | undefined) | null>(null);
@@ -313,7 +313,7 @@ export function useFileTabs() {
       : getMarkdownRef.current?.() ?? current?.content ?? "";
     // Capture the doc as JSON regardless (cheap — ~0.2ms, even on large docs) so a
     // later switch-back restores via JSON instead of re-parsing the markdown.
-    const sourceHistory = getSourceHistoryRef.current?.();
+    const editHistory = getEditHistoryRef.current?.();
     const docJSON = getDocJSONRef.current?.();
     const editorState = docJSON ? getEditorStateRef.current?.() : undefined;
     if (current?.content !== md) advanceTabRevision(id);
@@ -324,7 +324,7 @@ export function useFileTabs() {
     // edits (user-hit data loss; switchTab was immune because it snapshots
     // inside its own single functional update).
     tabsRef.current = tabsRef.current.map((t) =>
-      t.id === id ? { ...t, content: md, docJSON, editorState, sourceHistory } : t,
+      t.id === id ? { ...t, content: md, docJSON, editorState, editHistory } : t,
     );
     setTabs(tabsRef.current);
     return md;
@@ -342,13 +342,13 @@ export function useFileTabs() {
       const md = clean
         ? prevTab?.savedContent ?? prevTab?.content ?? ""
         : getMarkdownRef.current?.() ?? prevTab?.content ?? "";
-      const sourceHistory = getSourceHistoryRef.current?.();
+      const editHistory = getEditHistoryRef.current?.();
       const docJSON = getDocJSONRef.current?.();
       const editorState = docJSON ? getEditorStateRef.current?.() : undefined;
       if (prevTab?.content !== md) advanceTabRevision(prevId);
       const updated = tabsRef.current.map((t) =>
         t.id === prevId
-          ? { ...t, content: md, docJSON, editorState, sourceHistory, scrollTop: departingScrollTop ?? t.scrollTop }
+          ? { ...t, content: md, docJSON, editorState, editHistory, scrollTop: departingScrollTop ?? t.scrollTop }
           : t,
       );
       tabsRef.current = updated;
@@ -397,7 +397,7 @@ export function useFileTabs() {
           savedContent: content,
           scrollTop: 0,
           // Disk bytes invalidate all session-only editor caches.
-          sourceHistory: undefined,
+          editHistory: undefined,
           editorState: undefined,
           docJSON: undefined,
         };
@@ -685,7 +685,7 @@ export function useFileTabs() {
       advanceTabRevision(tabId);
       const updated = tabsRef.current.map((t) =>
           t.id === tabId
-            ? { ...t, content, savedContent: content, isDirty: false, isHydrated: true, sourceHistory: undefined, editorState: undefined, docJSON: undefined }
+            ? { ...t, content, savedContent: content, isDirty: false, isHydrated: true, editHistory: undefined, editorState: undefined, docJSON: undefined }
             : t,
       );
       tabsRef.current = updated;
@@ -716,7 +716,7 @@ export function useFileTabs() {
     registerGetMarkdown,
     registerGetJSON,
     registerGetEditorState,
-    registerGetSourceHistory,
+    registerGetEditHistory,
     registerIsClean,
     closedStack,
     reopenLastClosed,

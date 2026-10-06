@@ -48,3 +48,14 @@ it("clears the rendered highlight in source mode and when the outline unmounts",
   mounted.rerender(view(false, false));
   expect(mounted.container.querySelector(".markd-outline-heading-active")).toBeNull();
 });
+
+it("follows source scrolling and clamps both ends", () => {
+  const heads = [{ id: "a", pos: 0, level: 1, text: "First" }, { id: "b", pos: 20, level: 1, text: "Last" }];
+  const { container } = render(<><textarea className="markd-source-textarea" defaultValue={"# First\nbody\n\n# Last"} /><OutlinePanel editor={editor} sourceHeadings={heads} /></>);
+  const ta = container.querySelector("textarea")!;
+  Object.defineProperties(ta, { clientHeight: { value: 300 }, scrollHeight: { value: 1200 } });
+  act(() => { ta.scrollTop = 900; fireEvent.scroll(ta); vi.advanceTimersByTime(1); });
+  expect(container.querySelector(".markd-outline-item.active")?.textContent).toContain("Last");
+  act(() => { ta.scrollTop = 0; fireEvent.scroll(ta); vi.advanceTimersByTime(1); });
+  expect(container.querySelector(".markd-outline-item.active")?.textContent).toContain("First");
+});

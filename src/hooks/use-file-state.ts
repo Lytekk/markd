@@ -1,4 +1,4 @@
-import type { SourceHistory } from "@/lib/source-history";
+import type { EditHistory } from "@/lib/edit-history";
 import type { EditorState } from "@tiptap/pm/state";
 import { useState, useCallback, useRef, useEffect } from "react";
 import type { JSONContent } from "@tiptap/core";
@@ -92,7 +92,7 @@ export function useFileState() {
 
   const getMarkdownRef = useRef<(() => string) | null>(null);
   const setContentRef = useRef<
-    ((md: string, fileDir: string, docJSON?: JSONContent, isDirty?: boolean, editorState?: EditorState, sourceHistory?: SourceHistory) => void) | null
+    ((md: string, fileDir: string, docJSON?: JSONContent, isDirty?: boolean, editorState?: EditorState, editHistory?: EditHistory) => void) | null
   >(null);
 
   const registerGetMarkdown = useCallback((fn: () => string) => {
@@ -100,7 +100,7 @@ export function useFileState() {
   }, []);
 
   const registerSetContent = useCallback(
-    (fn: (md: string, fileDir: string, docJSON?: JSONContent, isDirty?: boolean, editorState?: EditorState, sourceHistory?: SourceHistory) => void) => {
+    (fn: (md: string, fileDir: string, docJSON?: JSONContent, isDirty?: boolean, editorState?: EditorState, editHistory?: EditHistory) => void) => {
       setContentRef.current = fn;
     },
     [],
@@ -416,7 +416,7 @@ export function useFileState() {
       /** Cached PM JSON of content's body — restore via this (fast) when present. */
       docJSON?: JSONContent;
       editorState?: EditorState;
-      sourceHistory?: SourceHistory;
+      editHistory?: EditHistory;
     }) => {
       const revision = ++contentRevisionRef.current;
       clearAutoSave();
@@ -429,7 +429,7 @@ export function useFileState() {
         // source mode must not inherit the previous tab's entry flag).
         snapshot.isDirty,
         snapshot.docJSON ? snapshot.editorState : undefined,
-        snapshot.sourceHistory,
+        snapshot.editHistory,
       );
       updateState((prev) => ({
         ...prev,

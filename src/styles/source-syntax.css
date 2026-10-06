@@ -1,0 +1,45 @@
+/* The textarea remains the input/selection owner. Its exact text is painted by
+   React in the noninteractive twin underneath; tokens never change metrics. */
+.markd-source-textarea.markd-source-colored {
+  color: transparent;
+  caret-color: var(--text-color);
+}
+.markd-source-backdrop.markd-source-syntax,
+.markd-source-backdrop.markd-source-syntax mark {
+  color: var(--text-color);
+}
+.markd-source-syntax span, .markd-source-syntax mark {
+  font: inherit;
+  letter-spacing: inherit;
+}
+.markd-source-syntax {
+  --source-heading: #315c9b;
+  --source-emphasis: #82419d;
+  --source-code: #956020;
+  --source-link: #167277;
+  --source-muted: #6c7564;
+}
+[data-theme="night"] .markd-source-syntax {
+  --source-heading: #89b4fa;
+  --source-emphasis: #cba6f7;
+  --source-code: #f9e2af;
+  --source-link: #89dceb;
+  --source-muted: #a6b38f;
+}
+.markd-source-syntax .hljs-section { color: var(--source-heading); }
+.markd-source-syntax .hljs-strong,
+.markd-source-syntax .hljs-emphasis { color: var(--source-emphasis); }
+.markd-source-syntax .hljs-code,
+.markd-source-syntax .hljs-string { color: var(--source-code); }
+.markd-source-syntax .hljs-link,
+.markd-source-syntax .hljs-symbol,
+.markd-source-syntax .hljs-attr { color: var(--source-link); }
+.markd-source-syntax .hljs-bullet,
+.markd-source-syntax .hljs-quote,
+.markd-source-syntax .hljs-comment,
+.markd-source-syntax .hljs-meta { color: var(--source-muted); }
+.markd-source-backdrop.markd-source-syntax mark { color: inherit; }
+@media (forced-colors: active) {
+  .markd-source-textarea.markd-source-colored { color: CanvasText; caret-color: CanvasText; }
+  .markd-source-backdrop.markd-source-syntax { visibility: hidden; }
+}

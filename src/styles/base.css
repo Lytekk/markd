@@ -766,28 +766,32 @@ body {
   margin: 0.8em 0;
 }
 
-/* In the live editor, `.markd-editor-scroll` is the ONE horizontal scroll
- * owner. A table-local scrollbar measures only TipTap's clamped outer box; on
- * very wide tables its remaining columns live in a second range whose bar can
- * sit thousands of vertical pixels below the viewport. Keep both wrapper and
- * table overflow visible here so the table's full intrinsic width contributes
- * to the editor's persistent scrollbar and that bar reaches every cell.
- */
+/* Tables share the available editor width. Fixed layout and breakable cell
+ * content prevent long URLs/identifiers from forcing a horizontal document. */
 .markd-editor-scroll #write .tableWrapper {
   overflow-x: visible;
 }
 
 .markd-editor-scroll #write table {
   display: table;
-  width: max-content;
-  max-width: none;
+  width: 100%;
+  max-width: 100%;
+  table-layout: fixed;
   overflow-x: visible;
 }
 
 #write th, #write td {
+  overflow-wrap: anywhere;
+  white-space: normal;
   border: 1px solid var(--border-color);
   padding: 8px 12px;
   text-align: left;
+}
+
+.markd-editor-scroll #write td pre,
+.markd-editor-scroll #write th pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 #write th {
