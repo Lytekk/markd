@@ -1,38 +1,73 @@
+import { parser, GFM } from "@lezer/markdown";
 import { common, createLowlight } from "lowlight";
 import { splitFrontmatter } from "./frontmatter";
-const highlighter = createLowlight({ markdown: common.markdown!, yaml: common.yaml! });
+
+const markdownParser = parser.configure(GFM);
+const yamlHighlighter = createLowlight({ yaml: common.yaml! });
 export interface SyntaxSpan { start: number; end: number; className: string }
-// Markdown's grammar calls link labels "string". Keep language-specific roles
-// separate so labels do not inherit code/YAML string colors.
-const markdownRoles: Record<string, string> = {
-  "hljs-section": "source-heading",
-  "hljs-strong": "source-strong",
-  "hljs-emphasis": "source-emphasis",
-  "hljs-code": "source-code",
-  "hljs-string": "source-link-label",
-  "hljs-link": "source-link-url",
-  "hljs-symbol": "source-link-url",
-  "hljs-bullet": "source-list",
-  "hljs-quote": "source-quote",
-};
 interface HighlightNode { type: string; value?: string; properties?: { className?: string[] }; children?: HighlightNode[] }
-/** Lowlight returns a syntax tree, never trusted HTML. Offsets refer to the
- * exact raw textarea text, so coloring cannot alter editing or search ranges. */
+
+const roles: Record<string, string> = {
+  StrongEmphasis: "hljs-strong source-strong",
+  Emphasis: "hljs-emphasis source-emphasis",
+  Strikethrough: "source-emphasis",
+  InlineCode: "hljs-code source-code",
+  FencedCode: "hljs-code source-code",
+  CodeBlock: "hljs-code source-code",
+  Blockquote: "source-quote",
+  ListMark: "source-list",
+  TaskMarker: "source-list",
+  Link: "source-link-label",
+  Image: "source-link-label",
+  LinkLabel: "source-link-label",
+  URL: "source-link-url",
+  LinkTitle: "source-link-url",
+};
+
+/** Parse Markdown into source-positioned syntax nodes. Code, escapes and
+ * emphasis delimiters follow Markdown boundaries, including inside quotes and
+ * headings. Coloring never changes the original text or relies on rendered HTML. */
 export function sourceSyntax(text: string): SyntaxSpan[] {
   const spans: SyntaxSpan[] = [];
-  let offset = 0;
-  const walk = (node: HighlightNode, markdown: boolean, inherited = "") => {
-    const scopes = node.properties?.className ?? [];
-    const roles = markdown ? scopes.map(scope => markdownRoles[scope]).filter(Boolean) : [];
-    const classes = [inherited, ...scopes, ...roles].filter(Boolean).join(" ");
-    if (node.type === "text") {
-      const end = offset + (node.value?.length ?? 0);
-      if (end > offset) spans.push({ start: offset, end, className: classes });
-      offset = end;
-    } else node.children?.forEach(child => walk(child, markdown, classes));
+  const emit = (start: number, end: number, className: string) => {
+    if (end <= start) return;
+    const previous = spans[spans.length - 1];
+    if (previous?.end === start && previous.className === className) previous.end = end;
+    else spans.push({ start, end, className });
   };
   const { frontmatter, body } = splitFrontmatter(text);
-  if (frontmatter) walk(highlighter.highlight("yaml", frontmatter), false);
-  walk(highlighter.highlight("markdown", body), true);
+  let offset = 0;
+  const walkYaml = (node: HighlightNode, inherited = "") => {
+    const classes = [inherited, ...(node.properties?.className ?? [])].filter(Boolean).join(" ");
+    if (node.type === "text") {
+      const end = offset + (node.value?.length ?? 0);
+      emit(offset, end, classes);
+      offset = end;
+    } else node.children?.forEach(child => walkYaml(child, classes));
+  };
+  if (frontmatter) walkYaml(yamlHighlighter.highlight("yaml", frontmatter));
+
+  const prefix = frontmatter.length;
+  const cursor = markdownParser.parse(body).cursor();
+  const walkMarkdown = (inherited: string): void => {
+    const name = cursor.name;
+    const role = /^(ATX|Setext)Heading[1-6]$/.test(name) ? "hljs-section source-heading" : roles[name];
+    let classes = [inherited, role].filter(Boolean).join(" ");
+    // Brackets and parentheses stay neutral; label and URL content are distinct.
+    if (name === "LinkMark") classes = inherited.split(" ").filter(c => c !== "source-link-label").join(" ");
+    let from = cursor.from;
+    const end = cursor.to;
+    // Code is opaque: its backticks, wildcards and underscores are not markup.
+    if (!['InlineCode', 'FencedCode', 'CodeBlock'].includes(name) && cursor.firstChild()) {
+      do {
+        emit(prefix + from, prefix + cursor.from, classes);
+        walkMarkdown(classes);
+        from = cursor.to;
+      } while (cursor.nextSibling());
+      cursor.parent();
+    }
+    emit(prefix + from, prefix + end, classes);
+  };
+  walkMarkdown("");
   return spans;
 }
