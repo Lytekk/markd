@@ -123,3 +123,41 @@ describe("loadEditorContent (history isolation across loads)", () => {
     expect(editor.state.doc.textContent).toContain("typed");
   });
 });
+
+
+describe("per-tab undo snapshots", () => {
+  it("restores each tab's undo, redo and selection without crossing documents", () => {
+    loadEditorContent(editor, DOC_A);
+    editor.commands.insertContent("edit A");
+    const a = editor.state;
+    const aJSON = editor.getJSON();
+    loadEditorContent(editor, DOC_B);
+    editor.commands.insertContent("edit B");
+    editor.commands.undo();
+    const b = editor.state;
+    const bJSON = editor.getJSON();
+
+    loadEditorContent(editor, aJSON, a);
+    expect(editor.state.selection.eq(a.selection)).toBe(true);
+    expect(editor.commands.undo()).toBe(true);
+    expect(editor.state.doc.textContent).not.toContain("edit A");
+    expect(editor.state.doc.textContent).toContain("alpha content");
+    expect(editor.commands.undo()).toBe(false);
+    expect(editor.commands.redo()).toBe(true);
+    expect(editor.state.doc.textContent).toContain("edit A");
+
+    loadEditorContent(editor, bJSON, b);
+    expect(editor.commands.redo()).toBe(true);
+    expect(editor.state.doc.textContent).toContain("edit B");
+    expect(editor.state.doc.textContent).not.toContain("alpha content");
+  });
+
+  it("rejects history whose document no longer matches after a disk reload", () => {
+    loadEditorContent(editor, DOC_A);
+    editor.commands.insertContent("edit A");
+    const stale = editor.state;
+    loadEditorContent(editor, DOC_B, stale);
+    expect(editor.commands.undo()).toBe(false);
+    expect(editor.state.doc.textContent).toContain("beta content");
+  });
+});

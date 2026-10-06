@@ -1,4 +1,4 @@
-import { act, cleanup, render } from "@testing-library/react";
+import { act, cleanup, render, fireEvent } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SourceEditor } from "./SourceEditor";
 
@@ -110,4 +110,29 @@ describe("SourceEditor line-number gutter", () => {
     });
     expect(metrics.measureLineHeights).not.toHaveBeenCalled();
   });
+});
+
+
+it("preserves independent source undo and redo across tab switches", () => {
+  const a = { past: [], future: [], current: { text: "alpha", start: 0, end: 0 } };
+  const b = { past: [], future: [], current: { text: "beta", start: 0, end: 0 } };
+  const onChange = vi.fn();
+  const props = { onMarkdownChange: onChange, lineNumbers: false, zoom: 100 };
+  const view = render(<SourceEditor {...props} markdown="alpha" history={a} />);
+  const textarea = () => view.container.querySelector("textarea")!;
+  fireEvent.change(textarea(), { target: { value: "alpha edit" } });
+  view.rerender(<SourceEditor {...props} markdown="beta" history={b} />);
+  fireEvent.change(textarea(), { target: { value: "beta edit" } });
+  fireEvent.keyDown(textarea(), { key: "z", ctrlKey: true });
+  expect(textarea().value).toBe("beta");
+  view.rerender(<SourceEditor {...props} markdown="alpha edit" history={a} />);
+  fireEvent.keyDown(textarea(), { key: "z", ctrlKey: true });
+  expect(textarea().value).toBe("alpha");
+  expect(onChange).toHaveBeenLastCalledWith("alpha");
+  fireEvent.keyDown(textarea(), { key: "z", ctrlKey: true });
+  expect(textarea().value).toBe("alpha");
+  view.rerender(<SourceEditor {...props} markdown="beta" history={b} />);
+  fireEvent.keyDown(textarea(), { key: "z", ctrlKey: true, shiftKey: true });
+  expect(textarea().value).toBe("beta edit");
+  view.unmount();
 });

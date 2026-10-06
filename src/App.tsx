@@ -1,3 +1,6 @@
+import { captureModeScroll, restoreModeScroll, sourceBlockOffsets, type ModeScrollAnchor } from "@/lib/mode-scroll";
+import { createSourceHistory, recordSourceEdit, type SourceHistory } from "@/lib/source-history";
+import type { EditorState } from "@tiptap/pm/state";
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import type { Node as PMNode } from "@tiptap/pm/model";
 import { useEditor } from "@tiptap/react";
@@ -213,6 +216,7 @@ export function App() {
   // editor, so reading the state there would capture stale closures.
   const sourceModeRef = useRef(sourceMode);
   sourceModeRef.current = sourceMode;
+  const sourceHistoryRef = useRef(createSourceHistory(""));
   const sourceMarkdownRef = useRef(sourceMarkdown);
   sourceMarkdownRef.current = sourceMarkdown;
   // Latest source buffer awaiting a coalesced stats pass. Immediate stats
@@ -335,16 +339,16 @@ export function App() {
       currentMarkdown(sourceModeRef.current, sourceMarkdownRef.current, getEditorMarkdown),
     );
     fileState.registerSetContent(
-      (md: string, fileDir: string, docJSON?: JSONContent, isDirty?: boolean) => {
+      (md: string, fileDir: string, docJSON?: JSONContent, isDirty?: boolean, editorState?: EditorState, sourceHistory?: SourceHistory) => {
         fileDirRef.current = fileDir;
         const { frontmatter, body } = splitFrontmatter(md);
         frontmatterRef.current = frontmatter;
-        // loadEditorContent (NOT bare setContent): resets PM history so Ctrl+Z
-        // can never pull the previous tab's doc into this one (see editor-load.ts).
+        // Restore this tab's history, or start fresh for a disk load.
+        // Never retain the departing tab's undo stack (see editor-load.ts).
         // Fast path: when the tab carries a cached PM JSON doc (set on switch-away),
         // load that — it skips the slow markdown re-parse (the large-doc switch lag).
         // First load / post-external-change has no cache → parse the markdown body.
-        loadEditorContent(editor, docJSON ?? body);
+        loadEditorContent(editor, docJSON ?? body, editorState);
         // Source mode: the textarea is the visible buffer — re-derive it VERBATIM
         // from the arriving content. Every load path funnels here (tab switch,
         // new tab, open, reload, reopen), so without this the textarea keeps
@@ -355,6 +359,8 @@ export function App() {
           // textareaText: the DOM normalizes CRLF on write, so the view state
           // must match or every state-computed offset drifts (source-truth.ts).
           const viewMd = textareaText(md);
+          sourceHistoryRef.current = sourceHistory?.current.text === viewMd
+            ? sourceHistory : createSourceHistory(viewMd);
           setSourceMarkdown(viewMd);
           sourceEntryMdRef.current = viewMd;
           sourceEntryDirtyRef.current = isDirty ?? false;
@@ -375,6 +381,12 @@ export function App() {
     // mode — the editor doc is stale relative to the textarea.
     fileTabs.registerGetJSON(() =>
       currentDocJSON(sourceModeRef.current, () => editor.getJSON()),
+    );
+    fileTabs.registerGetSourceHistory(() =>
+      sourceModeRef.current ? sourceHistoryRef.current : undefined,
+    );
+    fileTabs.registerGetEditorState(() =>
+      sourceModeRef.current ? undefined : editor.state,
     );
     // Authoritative "buffer == saved" check (same doc.eq predicate as the
     // revert-check) so leaving a clean tab can skip the markdown serialize.
@@ -398,6 +410,8 @@ export function App() {
     fileState.registerSetContent,
     fileTabs.registerGetMarkdown,
     fileTabs.registerGetJSON,
+    fileTabs.registerGetEditorState,
+    fileTabs.registerGetSourceHistory,
     fileTabs.registerIsClean,
   ]);
 
@@ -733,6 +747,24 @@ export function App() {
     return () => { cancelled = true; unlisten?.(); };
   }, [editor]);
 
+  const pendingModeScrollRef = useRef<{
+    tabId: string;
+    source: boolean;
+    offsets: number[];
+    anchor: ModeScrollAnchor;
+  } | null>(null);
+  useEffect(() => {
+    const pending = pendingModeScrollRef.current;
+    pendingModeScrollRef.current = null;
+    if (!editor || !pending || pending.tabId !== fileTabs.activeTabId || pending.source !== sourceMode) return;
+    // Both editor components remount on a mode change. Restore after the new
+    // DOM mounts and source autofocus settles; cancel if another tab/mode wins.
+    const frame = requestAnimationFrame(() => {
+      restoreModeScroll(editor, sourceMode, pending.offsets, pending.anchor);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [editor, sourceMode, fileTabs.activeTabId]);
+
   // Toggle source mode
   const handleToggleSource = useCallback(() => {
     if (!editor) return;
@@ -741,11 +773,21 @@ export function App() {
     // fire across the mode boundary.
     if (revertCheckTimerRef.current) clearTimeout(revertCheckTimerRef.current);
 
+    const transitionMarkdown = textareaText(sourceMode ? sourceMarkdown : getEditorMarkdown());
+    const offsets = sourceBlockOffsets(editor, transitionMarkdown);
+    pendingModeScrollRef.current = {
+      tabId: fileTabsRef.current.getActiveTabId(),
+      source: !sourceMode,
+      offsets,
+      anchor: captureModeScroll(editor, sourceMode, offsets),
+    };
+
     if (!sourceMode) {
       // Switching TO source: serialize current editor content
-      const md = getEditorMarkdown();
+      const md = transitionMarkdown;
       // The find panel survives the toggle: it is keyed by (tab, mode), so it
       // remounts onto the matching search backend with its state recalled.
+      sourceHistoryRef.current = createSourceHistory(md);
       setSourceMarkdown(md);
       sourceEntryMdRef.current = md;
       sourceEntryDirtyRef.current = fileStateRef.current.isDirty;
@@ -779,6 +821,7 @@ export function App() {
   // and keep the footer counts live while the PM editor is unmounted.
   const handleSourceMarkdownChange = useCallback(
     (md: string) => {
+      recordSourceEdit(sourceHistoryRef.current, md);
       setSourceMarkdown(md);
       // SourceEditor is controlled by React. Refresh search from the same
       // onChange path, after this state update commits, instead of attaching a
@@ -831,6 +874,7 @@ export function App() {
             ? { start: live.selectionStart, end: live.selectionEnd }
             : { start: sourceMarkdown.length, end: sourceMarkdown.length });
         const { text: next, caret: caretPos } = spliceSnippetText(sourceMarkdown, sel.start, sel.end, body);
+        recordSourceEdit(sourceHistoryRef.current, next, caretPos);
         setSourceMarkdown(next);
         fileState.markDirty();
         fileTabsRef.current.markTabDirty();
@@ -2730,6 +2774,7 @@ export function App() {
           )}
           {sourceMode ? (
             <SourceEditor
+              history={sourceHistoryRef.current}
               markdown={sourceMarkdown}
               onMarkdownChange={handleSourceMarkdownChange}
               lineNumbers={lineNumbers}

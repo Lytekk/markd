@@ -1,9 +1,11 @@
+import { createSourceHistory, recordSourceEdit, travelSourceHistory, type SourceHistory } from "@/lib/source-history";
 import { useState, useEffect, useMemo, useRef, useCallback, type ReactNode } from "react";
 import type { TextRange } from "@/lib/text-search";
 import { lineStartOffsets, measureLineHeights } from "@/lib/textarea-metrics";
 
 interface SourceEditorProps {
   markdown: string;
+  history?: SourceHistory;
   onMarkdownChange: (md: string) => void;
   lineNumbers: boolean;
   /** Font zoom changes wrapping/row height without changing the textarea box. */
@@ -41,20 +43,32 @@ function renderHighlightSegments(
 
 export function SourceEditor({
   markdown,
+  history: tabHistory,
   onMarkdownChange,
   lineNumbers,
   zoom,
   searchRanges,
   searchCurrent,
 }: SourceEditorProps) {
+  const localHistory = useRef(createSourceHistory(markdown));
+  const history = tabHistory ?? localHistory.current;
+  const historyRef = useRef(history);
+  historyRef.current = history;
   const [value, setValue] = useState(markdown);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const displayedHistoryRef = useRef<SourceHistory | null>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
   const backdropRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    recordSourceEdit(history, markdown);
     setValue(markdown);
-  }, [markdown]);
+    const ta = textareaRef.current;
+    if (ta && displayedHistoryRef.current !== history) {
+      ta.setSelectionRange(history.current.start, history.current.end);
+    }
+    displayedHistoryRef.current = history;
+  }, [markdown, history]);
 
   useEffect(() => {
     textareaRef.current?.focus();
@@ -62,14 +76,31 @@ export function SourceEditor({
 
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      recordSourceEdit(history, e.target.value, e.target.selectionStart, e.target.selectionEnd);
       setValue(e.target.value);
       onMarkdownChange(e.target.value);
     },
-    [onMarkdownChange],
+    [onMarkdownChange, history],
   );
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey &&
+          (e.key.toLowerCase() === "z" || e.key.toLowerCase() === "y")) {
+        e.preventDefault();
+        const next = travelSourceHistory(history, e.shiftKey || e.key.toLowerCase() === "y");
+        if (next) {
+          setValue(next.text);
+          onMarkdownChange(next.text);
+          const textarea = e.currentTarget;
+          requestAnimationFrame(() => {
+            if (textareaRef.current === textarea && historyRef.current === history && history.current === next) {
+              textarea.setSelectionRange(next.start, next.end);
+            }
+          });
+        }
+        return;
+      }
       if (e.key === "Tab") {
         e.preventDefault();
         const textarea = e.currentTarget;
@@ -77,14 +108,17 @@ export function SourceEditor({
         const end = textarea.selectionEnd;
         const newValue =
           value.substring(0, start) + "  " + value.substring(end);
+        recordSourceEdit(history, newValue, start + 2);
         setValue(newValue);
         onMarkdownChange(newValue);
         requestAnimationFrame(() => {
-          textarea.selectionStart = textarea.selectionEnd = start + 2;
+          if (textareaRef.current === textarea && historyRef.current === history) {
+            textarea.selectionStart = textarea.selectionEnd = start + 2;
+          }
         });
       }
     },
-    [value, onMarkdownChange],
+    [value, onMarkdownChange, history],
   );
 
   // Keep the backdrop's box and scroll in lockstep with the textarea. The
@@ -212,6 +246,10 @@ export function SourceEditor({
         ref={textareaRef}
         className="markd-source-textarea"
         value={value}
+        onSelect={(e) => {
+          history.current.start = e.currentTarget.selectionStart;
+          history.current.end = e.currentTarget.selectionEnd;
+        }}
         onChange={handleChange}
         onKeyDown={handleKeyDown}
         onScroll={handleScroll}

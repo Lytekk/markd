@@ -62,3 +62,10 @@
     }
   }
 }
+
+/* Persistent counterpart to the active outline row. Background and radius do
+ * not change heading geometry, caret position, or the scroll-spy threshold. */
+.markd-outline-heading-active {
+  background-color: var(--heading-flash-bg);
+  border-radius: 4px;
+}

@@ -50,6 +50,26 @@ export function textOffsetTop(ta: HTMLTextAreaElement, offset: number): number {
   return top;
 }
 
+/** Measure sorted source offsets in a single mirror/layout pass. */
+export function textOffsetTops(ta: HTMLTextAreaElement, offsets: number[]): number[] {
+  const mirror = createTextareaMirror(ta);
+  const markers: HTMLSpanElement[] = [];
+  let previous = 0;
+  for (const offset of offsets) {
+    mirror.appendChild(document.createTextNode(ta.value.slice(previous, offset)));
+    const marker = document.createElement("span");
+    marker.textContent = "\u200b";
+    mirror.appendChild(marker);
+    markers.push(marker);
+    previous = offset;
+  }
+  mirror.appendChild(document.createTextNode(ta.value.slice(previous)));
+  document.body.appendChild(mirror);
+  const tops = markers.map(marker => marker.offsetTop);
+  mirror.remove();
+  return tops;
+}
+
 /** Start offset of every logical line (split on \n), incl. a trailing empty one. */
 export function lineStartOffsets(text: string): number[] {
   const starts = [0];
